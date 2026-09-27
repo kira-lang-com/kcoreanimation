@@ -1,0 +1,203 @@
+import KiraGraphics
+import KiraLayout
+import Foundation
+function foundationTextIntrinsicWidth(size: Float, characterCount: Int) -> Float {
+    let glyphWidth = size * 0.48
+    let gap = size * 0.18
+    if characterCount <= 0 {
+        return 0.0
+    }
+    let measured = intAsFloat(value: characterCount) * glyphWidth + intAsFloat(value: characterCount - 1) * gap
+    return measured + size * 0.02
+}
+
+function foundationTextIntrinsicHeight(size: Float) -> Float {
+    return size * 1.20
+}
+
+// Real measurement from the FreeType engine, using the same (path,size) face
+// cache as rasterization so measured advances match what gets drawn. Falls back
+// to the proportional estimate if the engine is unavailable (e.g. no font found).
+// Measured at the oversampled face size the rasterizer draws from, and divided
+// back into points. Hinting is nonlinear: a face at 15px reports advances that
+// disagree with the same face at the raster size by whole pixels, and a layout
+// box built from the small answer is narrower than the glyph that lands in it.
+// One face size for measuring and drawing is what makes the box and the ink the
+// same width.
+@Native
+function foundationTextRunWidth(content: borrow String, size: Float, weight: Float) -> Float {
+    return kira_text_measure_run("", content, size * textOversample(), weight) / textOversample()
+}
+
+@Native
+function foundationTextRunLineHeight(size: Float, weight: Float) -> Float {
+    return kira_text_line_height("", size * textOversample(), weight) / textOversample()
+}
+
+// The face's own ascent and descent: baseline to the top of the line box, and
+// baseline to the bottom of it. The rasterizer places a run by these, so
+// anything that has to line up WITH the run — a glyph beside it, a second run at
+// another size — has to ask the same two questions rather than guess from ink.
+@Native
+function foundationTextAscent(size: Float, weight: Float) -> Float {
+    return kira_text_ascent("", size * textOversample(), weight) / textOversample()
+}
+
+@Native
+function foundationTextDescent(size: Float, weight: Float) -> Float {
+    return kira_text_descent("", size * textOversample(), weight) / textOversample()
+}
+
+// Where a run's baseline sits inside a box `height` tall — the same arithmetic
+// the rasterizer does, in one place, so the two cannot drift apart.
+function foundationTextBaseline(size: Float, weight: Float, height: Float) -> Float {
+    let ascent = foundationTextAscent(size, weight)
+    let descent = foundationTextDescent(size, weight)
+    let lineBox = ascent + descent
+    if lineBox <= 0.0 {
+        return height
+    }
+    return (height - lineBox) / 2.0 + ascent
+}
+
+// Visible glyph bounds relative to the baseline. These are deliberately kept
+// separate from line height: layout must not reserve the font's invisible
+// leading when a text leaf is placed inside a padded card or stack.
+@Native
+function foundationTextRunInkTop(content: borrow String, size: Float, weight: Float) -> Float {
+    return kira_text_run_ink_top("", content, size * textOversample(), weight) / textOversample()
+}
+
+@Native
+function foundationTextRunInkBottom(content: borrow String, size: Float, weight: Float) -> Float {
+    return kira_text_run_ink_bottom("", content, size * textOversample(), weight) / textOversample()
+}
+
+@Native
+function foundationTextRunInkLeft(content: borrow String, size: Float, weight: Float) -> Float {
+    return kira_text_run_ink_left("", content, size * textOversample(), weight) / textOversample()
+}
+
+@Native
+function foundationTextRunInkRight(content: borrow String, size: Float, weight: Float) -> Float {
+    return kira_text_run_ink_right("", content, size * textOversample(), weight) / textOversample()
+}
+
+// Decode an opaque String into its Unicode codepoints (up to 512), so an editable
+// text buffer can be SEEDED from an existing String. String is otherwise opaque
+// (count/+/== only); the native decoder walks the UTF-8 bytes in one call.
+@Native
+function foundationStringToCodepoints(content: borrow String) -> [Int] {
+    var codes: [Int] = []
+    if content.count > 0 {
+        let max = 512
+        let out: int32_t_ptr = allocateBytes(U64(max * 4))
+        let count = Int(kira_text_decode_codepoints(content, out, I32(max)))
+        var i = 0
+        while i < count {
+            codes.append(Int(signedWordAt(out, U64(i * 4))))
+            i += 1
+        }
+        freeBytes(out)
+    }
+    return move codes
+}
+
+// Build a display String from a codepoint slice [start, end) — the inverse of
+// foundationStringToCodepoints, for rendering/measuring an editable buffer.
+function foundationStringFromCodepoints(codes: borrow [Int], start: Int, end: Int) -> String {
+    var s = ""
+    var i = start
+    while i < end {
+        if i >= 0 && i < codes.count {
+            s += graphicsStringFromCodepoint(codes[i])
+        }
+        i += 1
+    }
+    return s
+}
+
+function foundationTextMeasure(content: borrow String, size: Float, weight: Float) -> Size {
+    if content.count <= 0 {
+        return Size {
+            width: 0.0,
+            height: foundationTextIntrinsicHeight(size: size)
+        }
+    }
+
+    var width = foundationTextRunWidth(content: content, size: size, weight: weight)
+    if width <= 0.0 {
+        width = foundationTextIntrinsicWidth(size: size, characterCount: content.count)
+    }
+
+    // The height is the box the RASTERIZER treats as a full line, and that box
+    // is `ascent + descent` — the two metrics it places the baseline from. The
+    // face's reported line height is a different number, and where it is the
+    // smaller of the two the rasterizer decides the box is tighter than a line
+    // and falls back to centring the run's INK instead. That fallback exists for
+    // a leaf deliberately sized under a line; reaching it by accident is how
+    // "Hide" ends up a point below "Copy" beside it, because one of them has a
+    // descender and the other does not. Ask for whichever is larger and the
+    // fallback is only ever reached on purpose.
+    var height = foundationTextRunLineHeight(size: size, weight: weight)
+    let lineBox = foundationTextAscent(size, weight) + foundationTextDescent(size, weight)
+    if lineBox > height {
+        height = lineBox
+    }
+    if height <= 0.0 {
+        height = foundationTextIntrinsicHeight(size: size)
+    }
+
+    return Size {
+        width: width,
+        height: height
+    }
+}
+
+class FoundationTextMeasurer {
+    function intrinsicWidth(size: Float, characterCount: Int) -> Float {
+        return foundationTextIntrinsicWidth(size: size, characterCount: characterCount)
+    }
+
+    function intrinsicHeight(size: Float) -> Float {
+        return foundationTextIntrinsicHeight(size: size)
+    }
+
+    function measure(content: borrow String, size: Float, weight: Float) -> Size {
+        return foundationTextMeasure(content: content, size: size, weight: weight)
+    }
+}
+
+// --- Symbol metrics ----------------------------------------------------------
+//
+// Where a symbol's ink sits inside its own box, as fractions of that box from
+// its top edge. A library is not one shape: a folder fills the middle of its
+// canvas and an open folder is drawn lower and shorter, so a caller that sizes
+// or places symbols against text has to ask per SYMBOL — exactly as it asks a
+// font per glyph. Asking one constant for the whole set is how one symbol lands
+// on the line and the next one sits below it.
+
+@Native
+function foundationIconInkTop(svg: borrow String) -> Float {
+    return kira_icon_ink_top(svg)
+}
+
+@Native
+function foundationIconInkBottom(svg: borrow String) -> Float {
+    return kira_icon_ink_bottom(svg)
+}
+
+// The shape of a symbol's ink: its width over its height. A folder is wider
+// than it is tall and a chevron is narrower, so a caller that wants the INK to
+// occupy a box needs the shape of that box rather than a square.
+@Native
+function foundationIconInkAspect(svg: borrow String) -> Float {
+    return kira_icon_ink_aspect(svg)
+}
+
+// How much of its own box a symbol's drawing covers: low for a stroked symbol,
+// high for a solid one.
+@Native
+function foundationIconInkDensity(svg: borrow String) -> Float {
+    return kira_icon_ink_density(svg)
+}

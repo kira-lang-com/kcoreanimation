@@ -1,0 +1,164 @@
+import Foundation
+
+// Light: the other half of what glass does when it is touched.
+//
+// `MotionPull` is the flex — where the material goes and what shape it takes.
+// This is the light it energizes with: a soft radial highlight that appears
+// under the fingertip, travels with it, and fades when the finger lifts.
+//
+// The numbers here are read off a shipping implementation rather than fitted by
+// eye. The highlight is a two-state fade, NOT an envelope with an attack and a
+// decay: while a finger is down the light is at its level, and when the finger
+// goes the light goes. What makes it read as a material rather than a lamp is
+// that the two directions have different durations and different curves — a
+// tenth of a second to arrive, twice that to leave.
+//
+// A run of taps overlapping each other is NOT modelled as one glow accumulating
+// charge. Each touch owns its own highlight, and touches that overlap in time
+// simply add up: a second finger, or a second tap while the first is still
+// fading, is a second `MotionGlowState` and the host sums them. That is why a
+// fast run of taps looks like it ramps and holds — the fades overlap — and why
+// it drops in one go when the tapping stops. Modelling it as a single
+// accumulating reservoir gets the same silhouette for the wrong reason and then
+// disagrees everywhere else: it cannot put two lights in two places, which is
+// the ordinary case of two fingers.
+
+// One touch's light.
+struct MotionGlowState {
+    // Whether the finger that owns this light is still down.
+    var held: Bool = false
+    // The level being animated from, and how far through the animation we are.
+    var from: Float = 0.0
+    var elapsed: Float = 0.0
+    // What to draw this frame, 0…`motionGlowLevel()`.
+    var opacity: Float = 0.0
+    // Where the light is centred, in the element's own coordinates. It follows
+    // the finger rather than sitting at the element's middle — the light comes
+    // from where it was touched.
+    var x: Float = 0.0
+    var y: Float = 0.0
+}
+
+// How bright the highlight gets. A tenth, which is far less than it looks:
+// this is white laid over a material that is already bright, and the radial
+// falloff below means only the very centre reaches even this.
+function motionGlowLevel() -> Float {
+    return 0.1
+}
+
+// How long the light takes to arrive, and to go.
+//
+// Not the same number, and not the same curve. Arriving is eased out — fast
+// first, so the press is answered immediately — over about a tenth of a second.
+// Leaving is eased at both ends and takes nearly twice as long, so the light
+// drains rather than switches off.
+function motionGlowFadeIn() -> Float {
+    return 0.12
+}
+
+function motionGlowFadeOut() -> Float {
+    return 0.22
+}
+
+// The diameter of the highlight, in points.
+//
+// Fixed rather than a fraction of the element: the light is the size of a
+// fingertip's influence, not the size of what was touched, so the same tap
+// lights a small button and a large panel identically. Anything smaller than
+// this is simply covered by it.
+function motionGlowDiameter() -> Float {
+    return 300.0
+}
+
+// The finger goes down at a point in the element's coordinates.
+function motionGlowPress(state: borrow mut MotionGlowState, x: Float, y: Float) {
+    state.held = true
+    state.from = state.opacity
+    state.elapsed = 0.0
+    state.x = x
+    state.y = y
+    return
+}
+
+// The finger moves. The light goes with it, with no animation of its own — a
+// highlight that eased toward the finger would lag behind the thing that is
+// causing it.
+function motionGlowMove(state: borrow mut MotionGlowState, x: Float, y: Float) {
+    state.x = x
+    state.y = y
+    return
+}
+
+// The finger lifts. The light begins to drain from wherever it had got to,
+// which is what makes a tap too quick to reach full brightness fade from half
+// rather than jumping up first.
+function motionGlowRelease(state: borrow mut MotionGlowState) {
+    state.held = false
+    state.from = state.opacity
+    state.elapsed = 0.0
+    return
+}
+
+// Advances the light by one frame and answers what to draw at the centre.
+function motionGlowAdvance(state: borrow mut MotionGlowState, delta: Float) -> Float {
+    state.elapsed += max(delta, 0.0)
+    var duration = motionGlowFadeOut()
+    var target = 0.0
+    if state.held {
+        duration = motionGlowFadeIn()
+        target = motionGlowLevel()
+    }
+    let t = min(state.elapsed / max(duration, 0.0001), 1.0)
+    // Eased out on the way in and eased at both ends on the way out — the two
+    // directions are not the same motion reversed.
+    var shaped = motionEase(.EaseInOut, t)
+    if state.held {
+        shaped = motionEase(.EaseOut, t)
+    }
+    state.opacity = lerp(state.from, target, shaped)
+    return state.opacity
+}
+
+// The light's strength at a distance from its centre, as a fraction of its
+// radius.
+//
+// Two halves with different shapes, which is what stops the highlight reading
+// as a disc with an edge. The inner half falls STRAIGHT from full strength to
+// half — gentle enough to look like a core without being flat. The outer half
+// eases the remaining half away to nothing, so the light meets the material on
+// a curve and there is no ring where the two touch.
+function motionGlowFalloff(distance: Float) -> Float {
+    let r = max(distance, 0.0) / (motionGlowDiameter() * 0.5)
+    if r >= 1.0 {
+        return 0.0
+    }
+    if r <= 0.5 {
+        // Linear from 1.0 at the centre to 0.5 at the halfway mark.
+        return 1.0 - r
+    }
+    // And eased from that half to nothing at the rim.
+    let outer = (r - 0.5) / 0.5
+    return 0.5 * (1.0 - motionEase(.EaseInOut, outer))
+}
+
+// What to draw at a point, combining the fade with the falloff. `x` and `y` are
+// in the same coordinates the press was given in.
+function motionGlowAt(state: borrow MotionGlowState, x: Float, y: Float) -> Float {
+    return state.opacity * motionGlowFalloff(hypot(x - state.x, y - state.y))
+}
+
+// Whether this light still needs frames.
+function motionGlowLit(state: borrow MotionGlowState) -> Bool {
+    if state.held {
+        return true
+    }
+    return state.opacity > 0.0001
+}
+
+function motionGlowClear(state: borrow mut MotionGlowState) {
+    state.held = false
+    state.from = 0.0
+    state.elapsed = 0.0
+    state.opacity = 0.0
+    return
+}

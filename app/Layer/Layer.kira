@@ -1,0 +1,67 @@
+import Foundation
+
+// How a layer wants to be arranged and sized, for a toolkit's layout pass to
+// resolve into absolute `position`/`size` before the frame is composited.
+//
+// The compositor STORES this and never acts on it: layout is the toolkit's, and
+// this is the request a widget's lowering records so the toolkit can lay the
+// retained tree out without a second tree beside it. Defaults describe a
+// fill-both leaf, so a description that sets nothing lays out as one.
+enum CAAxis {
+    None
+    Row
+    Column
+}
+
+struct CALayoutIntent {
+    // For a container, the axis its sublayers stack along.
+    var axis: CAAxis = .None
+    // The gap between sublayers along `axis`.
+    var spacing: Float = 0.0
+    // Whether the layer fills the space offered on each axis, or hugs its
+    // content / fixed size.
+    var widthFill: Bool = true
+    var heightFill: Bool = true
+    // A fixed extent, or negative for none.
+    var fixedWidth: Float = -1.0
+    var fixedHeight: Float = -1.0
+    // The size the layer's own content wants (a run of text, a glyph), when it
+    // neither fills nor is fixed.
+    var intrinsicWidth: Float = 0.0
+    var intrinsicHeight: Float = 0.0
+    // Space held inside the layer's box, before its content or sublayers.
+    var paddingLeading: Float = 0.0
+    var paddingTop: Float = 0.0
+    var paddingTrailing: Float = 0.0
+    var paddingBottom: Float = 0.0
+    // A flex weight for a sublayer that shares leftover main-axis space.
+    var flex: Int = 0
+}
+
+// Declarative layer value consumed by the retained tree reconciler. Identity is
+// the sibling key; the CALayerTree owns the stable LayerId assigned to it.
+class CALayerDescription {
+    var key: Int = 0
+    var position: Point = Point {}
+    var size: Size = Size {}
+    var anchorPoint: Point = Point { x: 0.5, y: 0.5 }
+    var opacity: Float = 1.0
+    var scaleX: Float = 1.0
+    var scaleY: Float = 1.0
+    var rotation: Float = 0.0
+    var cornerRadius: Float = 0.0
+    var borderWidth: Float = 0.0
+    var backgroundColor: CAColor = CAColor { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }
+    var borderColor: CAColor = CAColor {}
+    var clipsChildren: Bool = false
+    var content: CAContent = .Empty
+    var level: CALevel = .Inline
+    var renderTarget: Bool = false
+    var capturesBackdrop: Bool = false
+    var hittable: Bool = false
+    var hitKey: Int = 0
+    // How this layer wants to be sized and how it arranges its sublayers; a
+    // toolkit's layout pass reads this and writes `position`/`size`.
+    var layout: CALayoutIntent = CALayoutIntent {}
+    var sublayers: [CALayerDescription] = []
+}

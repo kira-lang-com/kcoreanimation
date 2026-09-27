@@ -1,0 +1,119 @@
+import Foundation
+import KiraGraphics
+// What one frame of Liquid Glass cost the compositor, counted rather than
+// inferred.
+//
+// The frame's own `statistics()` reports passes, draws and triangles for the
+// whole frame, which cannot say whether a glass frame spent its time on forty
+// surfaces or on one replayed forty times. These counters name the quantities
+// the Liquid Glass architecture is judged on: how many surfaces were pushed,
+// how many quads they expanded into, how many times the scene beneath them was
+// replayed into a capture, and how many blur dispatches those captures cost.
+//
+// Every counter is reset by `beginBatch` and read after `presentBatch`, so a
+// reading always describes exactly one frame.
+
+// One frame's Liquid Glass workload.
+@Derive(Clone)
+struct UiGlassFrameStats {
+    // Glass surfaces the frame pushed: `pushGlass` calls past the degenerate-size
+    // and no-stream rejections, whether or not the clip left any of them visible.
+    var surfaces: Int = 0
+    // Quads those surfaces expanded into, counted after the clip, so a surface
+    // scrolled off screen adds to `surfaces` and nothing here. The ratio between
+    // the two is the per-frame CPU geometry expansion.
+    var patchQuads: Int = 0
+    // Glass layers the frame cut itself into. Each one owns a capture and a
+    // blur chain.
+    var layers: Int = 0
+    // Times the scene beneath a glass layer was drawn into that layer's capture
+    // target. One per layer is the architectural target; one per capture region
+    // is what a per-bound scissor loop costs.
+    var captureReplays: Int = 0
+    // Scissor regions those replays ran under.
+    var captureRegions: Int = 0
+    // Compute dispatches the blur pyramid cost.
+    var blurDispatches: Int = 0
+    // Surfaces whose interior was presented from the cache, and surfaces that
+    // shaded their interior live.
+    var cachedInteriors: Int = 0
+    var liveInteriors: Int = 0
+}
+
+// Clear the emission counters. Called by `beginBatch`.
+//
+// Only the emission half: a re-presented frame never calls `beginBatch`, and
+// what it draws is the retained stream the last full frame emitted, so those
+// counts still describe the quads on screen. The presentation half is cleared
+// by `presentBatch`, which every frame runs.
+function uiGlassStatsResetEmission(state: borrow mut UiBatchState) {
+    state.glassStatSurfaces = 0
+    state.glassStatPatchQuads = 0
+    state.glassStatCachedInteriors = 0
+    state.glassStatLiveInteriors = 0
+    return
+}
+
+// Where one frame's `presentBatch` spent its time, in nanoseconds.
+//
+// The four are a partition of the present phase: everything between entering
+// `presentBatch` and leaving it falls in exactly one of them, so a reader who
+// sums them gets the phase back and never has to wonder what the remainder was.
+@Derive(Clone)
+struct UiBatchPhaseTimes {
+    // Uniform, atlas and vertex-stream uploads: what the GPU must have before
+    // the first pass reads it.
+    var uploadNs: Int = 0
+    // The per-layer scene passes that draw what sits beneath the glass into
+    // that layer's capture target, plus the decision of whether a capture is
+    // needed at all — a layer standing on a photograph takes neither.
+    var captureNs: Int = 0
+    // The blur pyramid: two compute dispatches per glass layer and the retile
+    // that follows them.
+    var blurNs: Int = 0
+    // The interior-cache pass and the swapchain composite that ends the frame.
+    var compositeNs: Int = 0
+}
+
+// Clear the presentation counters. Called by `presentBatch`.
+function uiGlassStatsResetPresentation(state: borrow mut UiBatchState) {
+    state.glassStatLayers = 0
+    state.glassStatCaptureReplays = 0
+    state.glassStatCaptureRegions = 0
+    state.glassStatBlurDispatches = 0
+    state.presentUploadNs = 0
+    state.presentCaptureNs = 0
+    state.presentBlurNs = 0
+    state.presentCompositeNs = 0
+    return
+}
+
+// This frame's Liquid Glass workload, as the compositor counted it.
+extend UiBatch {
+    function glassFrameStats() -> UiGlassFrameStats {
+        var state = nativeRecover<UiBatchState>(self.storage)
+        return UiGlassFrameStats {
+            surfaces: state.glassStatSurfaces,
+            patchQuads: state.glassStatPatchQuads,
+            layers: state.glassStatLayers,
+            captureReplays: state.glassStatCaptureReplays,
+            captureRegions: state.glassStatCaptureRegions,
+            blurDispatches: state.glassStatBlurDispatches,
+            cachedInteriors: state.glassStatCachedInteriors,
+            liveInteriors: state.glassStatLiveInteriors
+        }
+    }
+}
+
+// Where the frame just presented spent the present phase.
+extend UiBatch {
+    function presentPhaseTimes() -> UiBatchPhaseTimes {
+        var state = nativeRecover<UiBatchState>(self.storage)
+        return UiBatchPhaseTimes {
+            uploadNs: state.presentUploadNs,
+            captureNs: state.presentCaptureNs,
+            blurNs: state.presentBlurNs,
+            compositeNs: state.presentCompositeNs
+        }
+    }
+}

@@ -1,0 +1,89 @@
+import Foundation
+
+// The harness owns collection and the per-test protocol. The CLI runs each
+// action in a separate child so a test trap cannot stop the suite.
+
+comptime macro TestRunner {
+    kind { collector }
+    expand(declarations: [Declaration]) -> Syntax {
+        if !Build.testing() {
+            return quote { }
+        }
+        var functions: [Syntax] = []
+        var names: [Syntax] = []
+        var dispatch: [Syntax] = []
+        for d in declarations {
+            if d.family == "Test" {
+                names.append(quote {
+                    printLine("__kira_test_name__:" + #{d.name.asString()})
+                })
+                functions.append(quote {
+                    function __kira_test_expect_#{d.name}() -> Int {
+                        let want: Result<Any, TestFailure> = #{d.name}.expect()
+                        match want {
+                            Ok(expected) -> { return __kira_test_protocol_result(10) }
+                            Error(failure) -> {
+                                match failure {
+                                    Runtime(message) -> { return __kira_test_protocol_result(11) }
+                                    Diagnostic(error) -> { return __kira_test_protocol_result(12) }
+                                    Compile(text) -> { return __kira_test_protocol_result(12) }
+                                }
+                            }
+                        }
+                    }
+
+                    function __kira_test_check_#{d.name}() -> Int {
+                        let want: Result<Any, TestFailure> = #{d.name}.expect()
+                        match want {
+                            Ok(expected) -> {
+                                let got: Any = #{d.name}.test()
+                                if got == expected {
+                                    return __kira_test_protocol_result(0)
+                                }
+                                return __kira_test_protocol_result(2)
+                            }
+                            Error(failure) -> { return __kira_test_protocol_result(3) }
+                        }
+                    }
+
+                    function __kira_test_body_#{d.name}() -> Int {
+                        let _ = #{d.name}.test()
+                        return __kira_test_protocol_result(2)
+                    }
+                })
+                dispatch.append(quote {
+                    if name == #{d.name.asString()} {
+                        if action == "expect" {
+                            return __kira_test_expect_#{d.name}()
+                        }
+                        if action == "check" {
+                            return __kira_test_check_#{d.name}()
+                        }
+                        if action == "body" {
+                            return __kira_test_body_#{d.name}()
+                        }
+                    }
+                })
+            }
+        }
+        return quote {
+            function __kira_test_protocol_result(code: Int) -> Int {
+                printLine("__kira_test_result__:" + String(code))
+                return code
+            }
+
+            #{functions}
+
+            function kiraTestMain() -> Int {
+                let action = processArgument(0)
+                let name = processArgument(1)
+                if action == "list" {
+                    #{names}
+                    return __kira_test_protocol_result(0)
+                }
+                #{dispatch}
+                return __kira_test_protocol_result(3)
+            }
+        }
+    }
+}

@@ -1,0 +1,62 @@
+Package KCoreAnimation {
+    let version = "0.1.0"
+    let kira = "0.1.0"
+    let kind = PackageKind.Library
+    let moduleRoot = "KCoreAnimation"
+    let defaults = Defaults { executionMode: Backend.Llvm, buildTarget: BuildTarget.Host }
+    let allowThinFfiShim = true
+    let dependencies = [
+        Dependency { name: "KiraLayout", path: "../kira-layout" },
+        Dependency { name: "KiraGraphics", path: "../kira-graphics" }
+    ]
+    let nativeLibraries = [
+        NativeLibrary {
+            name: "kiratext",
+            linkMode: LinkMode.Static,
+            headers: Headers { entrypoint: "NativeLibs/Text/kira_text.h", includeDirs: ["NativeLibs/Text", "NativeLibs/Text/vendor/freetype/include", "NativeLibs/Text/vendor/harfbuzz/src"], defines: ["FT2_BUILD_LIBRARY", "FT_CONFIG_MODULES_H=<kira_ftmodules.h>", "HAVE_FREETYPE=1", "HB_NO_PRAGMA_GCC_DIAGNOSTIC"] },
+            sources: ["NativeLibs/Text/vendor/freetype/src/base/ftbase.c", "NativeLibs/Text/vendor/freetype/src/base/ftmm.c", "NativeLibs/Text/vendor/freetype/src/base/ftinit.c", "NativeLibs/Text/vendor/freetype/src/base/ftsystem.c", "NativeLibs/Text/vendor/freetype/src/base/ftdebug.c", "NativeLibs/Text/vendor/freetype/src/base/ftbbox.c", "NativeLibs/Text/vendor/freetype/src/base/ftbitmap.c", "NativeLibs/Text/vendor/freetype/src/base/ftglyph.c", "NativeLibs/Text/vendor/freetype/src/base/ftstroke.c", "NativeLibs/Text/vendor/freetype/src/sfnt/sfnt.c", "NativeLibs/Text/vendor/freetype/src/truetype/truetype.c", "NativeLibs/Text/vendor/freetype/src/cff/cff.c", "NativeLibs/Text/vendor/freetype/src/psaux/psaux.c", "NativeLibs/Text/vendor/freetype/src/psnames/psnames.c", "NativeLibs/Text/vendor/freetype/src/pshinter/pshinter.c", "NativeLibs/Text/vendor/freetype/src/smooth/smooth.c", "NativeLibs/Text/vendor/freetype/src/autofit/autofit.c", "NativeLibs/Text/vendor/freetype/src/raster/raster.c", "NativeLibs/Text/vendor/freetype/src/gzip/ftgzip.c", "NativeLibs/Text/vendor/harfbuzz/src/harfbuzz.cc", "NativeLibs/Text/kira_text.c"],
+            autobind: Autobind { module: "text", headers: ["NativeLibs/Text/kira_text.h"], mode: AutobindMode.AllPublic },
+            nativeTargets: [
+                NativeTarget { triple: "x86_64-windows-msvc", staticLib: "NativeLibs/../generated/native/x86_64-windows-msvc/kiratext.lib" },
+                NativeTarget { triple: "x86_64-linux-gnu", staticLib: "NativeLibs/../generated/native/x86_64-linux-gnu/libkiratext.a", systemLibs: ["stdc++"] },
+                NativeTarget { triple: "aarch64-linux-gnu", systemLibs: ["stdc++"] },
+                NativeTarget { triple: "aarch64-macos-none", staticLib: "NativeLibs/../generated/native/aarch64-macos/libkiratext.a", systemLibs: ["c++"] },
+                NativeTarget { triple: "aarch64-ios-none", staticLib: "NativeLibs/../generated/native/aarch64-ios/libkiratext.a" },
+                NativeTarget { triple: "aarch64-ios-simulator", staticLib: "NativeLibs/../generated/native/aarch64-ios-simulator/libkiratext.a" },
+                NativeTarget { triple: "wasm32-emscripten-unknown", staticLib: "NativeLibs/../generated/native/wasm32-emscripten/libkiratext.a" }
+            ],
+        },
+        NativeLibrary {
+            name: "kirastatestore",
+            linkMode: LinkMode.Static,
+            headers: Headers { entrypoint: "NativeLibs/StateStore/kira_state_store.h", includeDirs: ["NativeLibs/StateStore"] },
+            sources: ["NativeLibs/StateStore/kira_state_store.c"],
+            autobind: Autobind { module: "state_store", headers: ["NativeLibs/StateStore/kira_state_store.h"], functions: ["kira_state_scope_create", "kira_state_scope_current", "kira_state_scope_enter", "kira_state_slot_count", "kira_state_slot_count_all", "kira_state_slot_get", "kira_state_slot_has", "kira_state_slot_remove", "kira_state_slot_reset", "kira_state_slot_reset_all"], mode: AutobindMode.Selected },
+            nativeTargets: [
+                NativeTarget { triple: "x86_64-windows-msvc", staticLib: "NativeLibs/../generated/native/x86_64-windows-msvc/kirastatestore.lib" },
+                NativeTarget { triple: "x86_64-linux-gnu", staticLib: "NativeLibs/../generated/native/x86_64-linux-gnu/libkirastatestore.a" },
+                NativeTarget { triple: "aarch64-linux-gnu" },
+                NativeTarget { triple: "aarch64-macos-none", staticLib: "NativeLibs/../generated/native/aarch64-macos/libkirastatestore.a" },
+                NativeTarget { triple: "aarch64-ios-none", staticLib: "NativeLibs/../generated/native/aarch64-ios/libkirastatestore.a" },
+                NativeTarget { triple: "aarch64-ios-simulator", staticLib: "NativeLibs/../generated/native/aarch64-ios-simulator/libkirastatestore.a" },
+                NativeTarget { triple: "wasm32-emscripten-unknown", staticLib: "NativeLibs/../generated/native/wasm32-emscripten/libkirastatestore.a" }
+            ],
+        },
+        NativeLibrary {
+            name: "kiraicon",
+            linkMode: LinkMode.Static,
+            headers: Headers { entrypoint: "NativeLibs/Icon/kira_icon.h", includeDirs: ["NativeLibs/Icon"] },
+            sources: ["NativeLibs/Icon/kira_icon.c"],
+            autobind: Autobind { module: "icon", headers: ["NativeLibs/Icon/kira_icon.h"], mode: AutobindMode.AllPublic },
+            nativeTargets: [
+                NativeTarget { triple: "x86_64-windows-msvc", staticLib: "NativeLibs/../generated/native/x86_64-windows-msvc/kiraicon.lib" },
+                NativeTarget { triple: "x86_64-linux-gnu", staticLib: "NativeLibs/../generated/native/x86_64-linux-gnu/libkiraicon.a" },
+                NativeTarget { triple: "aarch64-linux-gnu" },
+                NativeTarget { triple: "aarch64-macos-none", staticLib: "NativeLibs/../generated/native/aarch64-macos/libkiraicon.a" },
+                NativeTarget { triple: "aarch64-ios-none", staticLib: "NativeLibs/../generated/native/aarch64-ios/libkiraicon.a" },
+                NativeTarget { triple: "aarch64-ios-simulator", staticLib: "NativeLibs/../generated/native/aarch64-ios-simulator/libkiraicon.a" },
+                NativeTarget { triple: "wasm32-emscripten-unknown", staticLib: "NativeLibs/../generated/native/wasm32-emscripten/libkiraicon.a" }
+            ],
+        }
+    ]
+}

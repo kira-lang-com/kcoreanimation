@@ -1,0 +1,20 @@
+// The motion suite: springs, decay, rubber banding, scrolling, gestures and
+// transitions, all driven with no window open.
+//
+// Everything in KCoreAnimation's motion slice is a function of numbers and a clock, which is the
+// whole reason it depends on nothing that draws — so the assertions here are on
+// the values themselves rather than on a screenshot of them. Run with:
+//
+//   kira test --backend vm tests/motion_kik
+//   kira test --backend llvm tests/motion_kik
+//
+// Names use the `mt`/`Mt` prefix; the harness shares one flat namespace.
+
+import Foundation
+import KCoreAnimation
+
+@Main
+function main() {
+    print("motion-kik")
+    return
+}

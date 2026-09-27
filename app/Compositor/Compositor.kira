@@ -1,0 +1,350 @@
+import Foundation
+import KiraGraphics
+import KiraLayout
+
+// The submit adapter: a render plan (or the flat presentation list) turned into
+// draw calls on the extracted batched backend.
+//
+// This is the one place that touches the FFI batch, so it is also the one place
+// the package cannot run on the VM; the plan it consumes and the core that builds
+// it are proven there on their own.
+//
+// Fills, gradients and glass draw as EXACT oriented quads (`pushLayerQuad`), so a
+// rotated or scaled layer is drawn turned rather than as a bounding box. A
+// command carries the clip it was planned under, so subtree clipping needs no
+// push/pop bracket. Glass draws through the backend's real backdrop-capture path,
+// which stacks in the batch. A COMPOSITE command draws another pass's texture at
+// the group's alpha — the isolated result of `caPlan`'s offscreen group-opacity
+// and render-target passes; the runner renders those passes into `passTextures`
+// (indexed by pass id) and hands them here.
+
+function caColorToFoundation(color: borrow CAColor, opacity: Float) -> Color {
+    return Color { r: color.r, g: color.g, b: color.b, a: color.a * opacity }
+}
+
+// The inverse seam: a foundation (graphics) colour as the compositor's own model
+// colour. A toolkit lowers a widget's `FoundationColor` into layer content
+// through this, so the model tree carries `CAColor` and never the graphics type.
+function caColorFromFoundation(color: borrow FoundationColor) -> CAColor {
+    return CAColor { r: color.r, g: color.g, b: color.b, a: color.a }
+}
+
+// A gradient command's far colour and axis; a flat fill returns a clear far.
+function caGradientFar(content: borrow CAContent) -> Color {
+    match content {
+        Gradient(g) -> return Color { r: g.end.r, g: g.end.g, b: g.end.b, a: g.end.a }
+        Empty -> return Color { a: 0.0 }
+        Solid(s) -> return Color { a: 0.0 }
+        Text(t) -> return Color { a: 0.0 }
+        Texture(x) -> return Color { a: 0.0 }
+        Icon(i) -> return Color { a: 0.0 }
+        Glass(gl) -> return Color { a: 0.0 }
+    }
+}
+
+function caGradientAxis(content: borrow CAContent) -> Float {
+    match content {
+        Gradient(g) -> return Float(g.axis)
+        Empty -> return 0.0
+        Solid(s) -> return 0.0
+        Text(t) -> return 0.0
+        Texture(x) -> return 0.0
+        Icon(i) -> return 0.0
+        Glass(gl) -> return 0.0
+    }
+}
+
+// Draw a fill/gradient/glass surface as an oriented quad through the batch.
+function caDrawSurfaceQuad(quad: borrow CAOrientedQuad, radius: Float, borderWidth: Float, fill: borrow Color, border: borrow Color, clipMinX: Float, clipMinY: Float, clipMaxX: Float, clipMaxY: Float, shapeMode: Float, gradient: borrow Color, gradientAxis: Float, backend: borrow mut KiraGraphicsFoundationBackend) {
+    backend.batch.pushLayerQuad(
+        quad.centerX, quad.centerY, quad.halfW, quad.halfH,
+        quad.rotCos, quad.rotSin,
+        radius, borderWidth,
+        fill, border,
+        clipMinX, clipMinY, clipMaxX, clipMaxY,
+        shapeMode,
+        gradient, gradientAxis
+    )
+    return
+}
+
+function caShiftRect(rect: borrow Rect, originX: Float, originY: Float) -> Rect {
+    return Rect {
+        x: rect.x - originX,
+        y: rect.y - originY,
+        width: rect.width,
+        height: rect.height
+    }
+}
+
+function caShiftQuad(quad: borrow CAOrientedQuad, originX: Float, originY: Float) -> CAOrientedQuad {
+    return CAOrientedQuad {
+        centerX: quad.centerX - originX,
+        centerY: quad.centerY - originY,
+        halfW: quad.halfW,
+        halfH: quad.halfH,
+        rotCos: quad.rotCos,
+        rotSin: quad.rotSin
+    }
+}
+
+function caQuadFrame(quad: borrow CAOrientedQuad) -> Rect {
+    return Rect {
+        x: quad.centerX - quad.halfW,
+        y: quad.centerY - quad.halfH,
+        width: quad.halfW * 2.0,
+        height: quad.halfH * 2.0
+    }
+}
+
+// One plan command. `passTextures[passId]` is the sampled view of the texture a
+// composite draws. `origin` is the world-space top-left of the pass target.
+function caSubmitCmdAt(
+    cmd: borrow CADrawCmd,
+    passTextures: borrow [TextureHandle],
+    originX: Float,
+    originY: Float,
+    backend: borrow mut KiraGraphicsFoundationBackend,
+) -> Int {
+    if cmd.opacity <= 0.0 {
+        return 0
+    }
+    let bounds = caShiftRect(cmd.worldBounds, originX, originY)
+    if cmd.kind == caCompositeKind() {
+        return match cmd.sourcePass {
+            None -> 0
+            Some(sourcePass) -> {
+                if sourcePass.raw >= passTextures.count { return 0 }
+                let texId = passTextures[sourcePass.raw]
+                if texId.raw <= 0 { return 0 }
+                backend.drawTextureFields(bounds, texId, TextureHandle(0), 0.0, cmd.opacity, 0.0)
+                1
+            }
+        }
+    }
+    let fill = caColorToFoundation(cmd.fill, cmd.opacity)
+    let border = caColorToFoundation(cmd.border, cmd.opacity)
+    let quad = caShiftQuad(cmd.quad, originX, originY)
+    let clipMinX = cmd.clipMinX - originX
+    let clipMinY = cmd.clipMinY - originY
+    let clipMaxX = cmd.clipMaxX - originX
+    let clipMaxY = cmd.clipMaxY - originY
+    if cmd.kind == caShadowKind() {
+        backend.drewVisibleUi = true
+        backend.batch.pushLayerShadowQuad(
+            quad.centerX, quad.centerY, quad.halfW, quad.halfH,
+            quad.rotCos, quad.rotSin,
+            cmd.cornerRadius, cmd.shadowRadius,
+            fill,
+            clipMinX, clipMinY, clipMaxX, clipMaxY,
+            cmd.shapeKind
+        )
+        return 1
+    }
+    if cmd.capturesBackdrop {
+        backend.beginRetainedBackdrop(bounds)
+    }
+    var drawn = 0
+    match cmd.content {
+        Empty -> {}
+        Solid(s) -> {
+            caDrawSurfaceQuad(quad, cmd.cornerRadius, cmd.borderWidth, fill, border, clipMinX, clipMinY, clipMaxX, clipMaxY, Float(s.shapeKind), Color { a: 0.0 }, 0.0, backend)
+            drawn = 1
+        }
+        Gradient(g) -> {
+            let far = caColorToFoundation(g.end, cmd.opacity)
+            caDrawSurfaceQuad(quad, cmd.cornerRadius, cmd.borderWidth, fill, border, clipMinX, clipMinY, clipMaxX, clipMaxY, Float(g.shapeKind), far, Float(g.axis), backend)
+            drawn = 1
+        }
+        Glass(g) -> {
+            backend.drawRetainedGlass(
+                quad, cmd.localWidth, cmd.localHeight,
+                cmd.cornerRadius, fill, g,
+                clipMinX, clipMinY, clipMaxX, clipMaxY
+            )
+            drawn = 1
+        }
+        Text(t) -> {
+            let frame = caQuadFrame(quad)
+            backend.drewVisibleUi = true
+            backend.batch.pushText(
+                backend.graphics,
+                t.content,
+                frame.x, frame.y, frame.width, frame.height,
+                fill, t.size * cmd.textScale, t.weight,
+                clipMinX, clipMinY, clipMaxX, clipMaxY,
+                t.adaptiveInk,
+                cmd.glassWash,
+                cmd.glassWashLuma,
+                t.inkLeft * cmd.textScale,
+                t.inkRight * cmd.textScale,
+                t.inkTop * cmd.textScale,
+                t.inkBottom * cmd.textScale,
+                quad.rotCos,
+                quad.rotSin
+            )
+            drawn = 1
+        }
+        Texture(x) -> {
+            if x.handle.raw > 0 {
+                backend.drewVisibleUi = true
+                backend.batch.setExternalTextures(backend.graphics, U32(x.handle.raw), U32(x.secondaryHandle.raw))
+                backend.batch.pushLayerTextureQuad(
+                    quad.centerX, quad.centerY, quad.halfW, quad.halfH,
+                    quad.rotCos, quad.rotSin,
+                    x.opacity * cmd.opacity, x.transition, cmd.cornerRadius,
+                    clipMinX, clipMinY, clipMaxX, clipMaxY
+                )
+                drawn = 1
+            }
+        }
+        Icon(i) -> {
+            let frame = caQuadFrame(quad)
+            backend.drewVisibleUi = true
+            backend.batch.pushIcon(
+                backend.graphics,
+                i.svg,
+                frame.x, frame.y, frame.width, frame.height,
+                fill,
+                clipMinX, clipMinY, clipMaxX, clipMaxY,
+                i.weightGrowth * cmd.lengthScale,
+                quad.rotCos,
+                quad.rotSin
+            )
+            drawn = 1
+        }
+    }
+    if cmd.capturesBackdrop {
+        backend.endBackdrop(bounds)
+    }
+    return drawn
+}
+
+function caSubmitCmd(cmd: borrow CADrawCmd, passTextures: borrow [TextureHandle], backend: borrow mut KiraGraphicsFoundationBackend) -> Int {
+    return caSubmitCmdAt(cmd, passTextures, 0.0, 0.0, backend)
+}
+
+// Submit one whole pass in order. Offscreen passes shift their world-space
+// commands by the pass bounds origin; the root uses (0,0).
+function caSubmitPassAt(
+    plan: borrow CARenderPlan,
+    passIndex: RenderPassId,
+    passTextures: borrow [TextureHandle],
+    originX: Float,
+    originY: Float,
+    backend: borrow mut KiraGraphicsFoundationBackend,
+) -> Int {
+    if passIndex.raw < 0 || passIndex.raw >= plan.passes.count {
+        return 0
+    }
+    var drawn = 0
+    for cmd in plan.passes[passIndex.raw].cmds {
+        drawn += caSubmitCmdAt(cmd, passTextures, originX, originY, backend)
+    }
+    return drawn
+}
+
+function caSubmitPass(plan: borrow CARenderPlan, passIndex: RenderPassId, passTextures: borrow [TextureHandle], backend: borrow mut KiraGraphicsFoundationBackend) -> Int {
+    return caSubmitPassAt(plan, passIndex, passTextures, 0.0, 0.0, backend)
+}
+
+// Draw one flat presentation item (the compat single-pass path).
+function caSubmitDrawItem(item: borrow CADrawItem, backend: borrow mut KiraGraphicsFoundationBackend) -> Int {
+    if item.opacity <= 0.0 {
+        return 0
+    }
+    let fill = caColorToFoundation(item.fill, item.opacity)
+    let border = caColorToFoundation(item.border, item.opacity)
+    if item.capturesBackdrop {
+        backend.beginRetainedBackdrop(item.worldBounds)
+    }
+    var drawn = 0
+    match item.content {
+        Empty -> {}
+        Solid(s) -> {
+            caDrawSurfaceQuad(item.quad, item.cornerRadius, item.borderWidth, fill, border, item.clipMinX, item.clipMinY, item.clipMaxX, item.clipMaxY, Float(s.shapeKind), Color { a: 0.0 }, 0.0, backend)
+            drawn = 1
+        }
+        Gradient(g) -> {
+            let far = caColorToFoundation(g.end, item.opacity)
+            caDrawSurfaceQuad(item.quad, item.cornerRadius, item.borderWidth, fill, border, item.clipMinX, item.clipMinY, item.clipMaxX, item.clipMaxY, Float(g.shapeKind), far, Float(g.axis), backend)
+            drawn = 1
+        }
+        Glass(g) -> {
+            backend.drawRetainedGlass(
+                item.quad, item.localWidth, item.localHeight,
+                item.cornerRadius, fill, g,
+                item.clipMinX, item.clipMinY, item.clipMaxX, item.clipMaxY
+            )
+            drawn = 1
+        }
+        Text(t) -> {
+            let frame = caQuadFrame(item.quad)
+            backend.drewVisibleUi = true
+            backend.batch.pushText(
+                backend.graphics,
+                t.content,
+                frame.x, frame.y, frame.width, frame.height,
+                fill, t.size * item.textScale, t.weight,
+                item.clipMinX, item.clipMinY, item.clipMaxX, item.clipMaxY,
+                t.adaptiveInk,
+                item.glassWash,
+                item.glassWashLuma,
+                t.inkLeft * item.textScale,
+                t.inkRight * item.textScale,
+                t.inkTop * item.textScale,
+                t.inkBottom * item.textScale,
+                item.quad.rotCos,
+                item.quad.rotSin
+            )
+            drawn = 1
+        }
+        Texture(x) -> {
+            if x.handle.raw > 0 {
+                backend.drewVisibleUi = true
+                backend.batch.setExternalTextures(backend.graphics, U32(x.handle.raw), U32(x.secondaryHandle.raw))
+                backend.batch.pushLayerTextureQuad(
+                    item.quad.centerX, item.quad.centerY, item.quad.halfW, item.quad.halfH,
+                    item.quad.rotCos, item.quad.rotSin,
+                    x.opacity * item.opacity, x.transition, item.cornerRadius,
+                    item.clipMinX, item.clipMinY, item.clipMaxX, item.clipMaxY
+                )
+                drawn = 1
+            }
+        }
+        Icon(i) -> {
+            let frame = caQuadFrame(item.quad)
+            backend.drewVisibleUi = true
+            backend.batch.pushIcon(
+                backend.graphics,
+                i.svg,
+                frame.x, frame.y, frame.width, frame.height,
+                fill,
+                item.clipMinX, item.clipMinY, item.clipMaxX, item.clipMaxY,
+                i.weightGrowth * item.lengthScale,
+                item.quad.rotCos,
+                item.quad.rotSin
+            )
+            drawn = 1
+        }
+    }
+    if item.capturesBackdrop {
+        backend.endBackdrop(item.worldBounds)
+    }
+    return drawn
+}
+
+function caSubmit(items: borrow [CADrawItem], backend: borrow mut KiraGraphicsFoundationBackend) -> Int {
+    var drawn = 0
+    for item in items {
+        drawn += caSubmitDrawItem(item, backend)
+    }
+    return drawn
+}
+
+// The compat single-pass path: flatten and submit in place. Group opacity here
+// is inherited, not isolated — the isolated result is `caPlan` + per-pass submit,
+// which the runner drives with real render targets.
+function caComposite(tree: borrow CALayerTree, backend: borrow mut KiraGraphicsFoundationBackend) -> Int {
+    return caSubmit(caFlatten(tree), backend)
+}

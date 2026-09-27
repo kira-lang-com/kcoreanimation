@@ -1,0 +1,12 @@
+import KiraGraphics
+function foundationAppendCodepoint(base: borrow String, codepoint: Int) -> String {
+    return graphicsAppendCodepoint(base, codepoint)
+}
+
+function foundationDropLastScalar(base: borrow String) -> String {
+    return graphicsDropLastScalar(base)
+}
+
+function foundationConcat(base: borrow String, suffix: borrow String) -> String {
+    return graphicsStringConcat(base, suffix)
+}

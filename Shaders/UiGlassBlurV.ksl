@@ -1,0 +1,68 @@
+// Liquid glass blur, the vertical half, reading what the horizontal pass wrote.
+//
+// Both levels are produced in one pass: near and far read the same source and
+// write their own target, so the pyramid costs one dispatch per axis rather
+// than one per level.
+//
+// The two reads here are the two LEVELS, not the two sources of a crossfade:
+// the horizontal half already blended those, so each level is filtered from the
+// one image that holds it and the weight the seam writes goes unread.
+//
+// The target extent arrives in a uniform rather than from a texture query,
+// which KSL cannot express — and the host knows the size it allocated anyway.
+
+import UiGlassBlurCommon
+
+// Only what this half reads. The horizontal one's block carries a third word
+// for the crossfade weight, and the seam writes it either way — but a member
+// declared here would be a uniform no stage reads, which GL eliminates and then
+// reports missing at every link. `std140` rounds both to the same 16 bytes, so
+// the two halves still take one upload.
+type BlurExtent {
+    let width: Float
+    let height: Float
+}
+
+type Q {
+    @builtin(thread_id)
+    let gid: UInt3
+}
+
+shader UiGlassBlurV {
+    // Same declaration order and count as the horizontal half — uniform,
+    // sampler, two reads, two writes — so both kernels present one slot layout
+    // to the dispatch seam.
+    group Blur {
+        uniform extent: BlurExtent
+        sampler glassSmp: Sampler
+        texture nearIn: Texture2d
+        texture farIn: Texture2d
+        texture write nearOut: Texture2d
+        texture write farOut: Texture2d
+    }
+
+    compute {
+        input Q
+        // Matches the threadgroup the seam dispatches with.
+        threads(16, 16, 1)
+
+        function entry(q: Q) {
+            // A dispatch is rounded up to whole threadgroups, so the tail
+            // threads address texels that do not exist.
+            let size = Float2(extent.width, extent.height)
+            let x = Float(q.gid.x)
+            let y = Float(q.gid.y)
+            if x >= size.x {
+                return
+            }
+            if y >= size.y {
+                return
+            }
+            let uv = Float2((x + 0.5) / size.x, (y + 0.5) / size.y)
+            let step = Float2(0.0, 1.0 / size.y)
+            store(nearOut, q.gid.xy, UiGlassBlurCommon.nearFilter(nearIn, nearIn, glassSmp, uv, step, 0.0))
+            store(farOut, q.gid.xy, UiGlassBlurCommon.farFilter(farIn, farIn, glassSmp, uv, step, 0.0))
+            return
+        }
+    }
+}

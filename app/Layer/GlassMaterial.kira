@@ -1,0 +1,35 @@
+// The complete material state a retained Liquid Glass layer shades with.
+//
+// These are per-layer values rather than shader constants: two surfaces in one
+// frame may use different materials, animation may move them, and the retained
+// content signature can account for every shader-visible input without reaching
+// into the legacy paint package.
+struct CAGlassMaterial {
+    let edgeStrokeStrength: Float = 0.0
+    let edgeStrokeDarken: Float = 0.62
+    let edgeStrokePeak: Float = 0.9
+    let edgeStrokeFade: Float = 2.0
+    let sheenStrength: Float = 0.0
+    let lensMaxBend: Float = 72.0
+    let refractionReach: Float = 180.0
+    let blurNearSplit: Float = 0.25
+
+    // Device-pixel hairlines. The glass emitter converts these into the quad's
+    // local units at the active render scale.
+    let borderSpread: Float = 1.0
+    let borderSideOffset: Float = 2.5
+    let borderSideSpread: Float = 1.5
+    let borderGrey: Float = 0.859
+    let borderSideGrey: Float = 0.859
+    let innerRimStrength: Float = 0.48
+    let innerRimWidth: Float = 2.0
+
+    // Two-layer material wash. The lower layer's color/alpha is the layer tint;
+    // this carries its blend mode and the complete upper layer.
+    let washBlend: Float = 0.0
+    let washUpperR: Float = 1.0
+    let washUpperG: Float = 1.0
+    let washUpperB: Float = 1.0
+    let washUpperAlpha: Float = 0.0
+    let washUpperBlend: Float = 0.0
+}

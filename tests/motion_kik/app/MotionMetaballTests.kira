@@ -1,0 +1,198 @@
+import Foundation
+import KCoreAnimation
+
+// The merge, asserted on the distance field rather than on a picture.
+//
+// A neck is not a thing that gets drawn — it is what the smooth minimum does to
+// the field BETWEEN two shapes. So the test for it is a point in the gap that no
+// shape covers, asking whether the merged surface has swallowed it.
+
+// Two shapes side by side with `gap` points of clear air between them.
+function mbLeft() -> MotionShape {
+    return MotionShape { x: 0.0, y: 0.0, width: 100.0, height: 100.0, radius: 20.0 }
+}
+
+function mbRight(gap: Float) -> MotionShape {
+    return MotionShape { x: 100.0 + gap, y: 0.0, width: 100.0, height: 100.0, radius: 20.0 }
+}
+
+// The midpoint of the gap, which is outside BOTH shapes.
+function mbMid(gap: Float) -> Float {
+    return 100.0 + gap * 0.5
+}
+
+// --- the smooth minimum ----------------------------------------------------
+
+// With no reach it is a plain union: the nearer surface, and nothing else.
+construct MbNoReachIsAPlainUnion() extends Test {
+    test { return mtScaled(motionSmoothUnion(4.0, 9.0, 0.0), 3) }
+    expect { return .Ok(4000) }
+}
+
+// With reach, the merged field is BELOW both — that dip is the whole effect.
+construct MbTheMergedFieldDipsBelowBoth() extends Test {
+    test {
+        let merged = motionSmoothUnion(4.0, 6.0, 20.0)
+        if merged < 4.0 {
+            return 1
+        }
+        return 0
+    }
+    expect { return .Ok(1) }
+}
+
+// Far apart, the reach cannot bridge them and the answer is the plain minimum
+// again — which is why two shapes across a screen do not smear together.
+construct MbDistantShapesDoNotFuse() extends Test {
+    test { return mtScaled(motionSmoothUnion(5.0, 400.0, 20.0), 3) }
+    expect { return .Ok(5000) }
+}
+
+// --- the neck --------------------------------------------------------------
+
+// A point in the clear air between two near shapes is INSIDE the merged
+// surface. That is the bridge: nothing covers it, and it is solid anyway.
+//
+// The gap has to be small relative to the reach, and the arithmetic says how
+// small: the quadratic smooth minimum pulls the field down by at most `k/4`, so
+// two surfaces each `d` away from a point fuse over it only when `d < k/4`. With
+// the reference reach of 20 that is a gap under ten points — which is why a
+// morph brings the shapes to overlapping before the neck appears, rather than
+// stringing one across the screen.
+construct MbANeckFormsAcrossASmallGap() extends Test {
+    test {
+        let gap = 8.0
+        let frame = MotionMetaballFrame { source: mbLeft(), target: mbRight(gap), blend: motionMetaballBlend() }
+        let atMid = motionMetaballDistance(frame, mbMid(gap), 50.0)
+        // Outside both shapes on their own...
+        let leftOnly = motionShapeDistance(mbLeft(), mbMid(gap), 50.0)
+        if leftOnly <= 0.0 {
+            return 0 - 1
+        }
+        // ...and inside the merged mass.
+        if atMid < 0.0 {
+            return 1
+        }
+        return 0
+    }
+    expect { return .Ok(1) }
+}
+
+// Widen the gap and the neck thins and then breaks, which is what makes the
+// merge read as surface tension rather than as a drawn connector.
+construct MbTheNeckBreaksAsTheGapWidens() extends Test {
+    test {
+        let near = MotionMetaballFrame { source: mbLeft(), target: mbRight(8.0), blend: motionMetaballBlend() }
+        let far = MotionMetaballFrame { source: mbLeft(), target: mbRight(40.0), blend: motionMetaballBlend() }
+        let joined = motionMetaballDistance(near, mbMid(8.0), 50.0)
+        let parted = motionMetaballDistance(far, mbMid(40.0), 50.0)
+        if joined < 0.0 && parted > 0.0 {
+            return 1
+        }
+        return 0
+    }
+    expect { return .Ok(1) }
+}
+
+// The neck is thinnest at the waist: the field at the midpoint is closer to the
+// surface than the field deep inside either shape.
+construct MbTheNeckIsThinnestAtTheWaist() extends Test {
+    test {
+        let gap = 24.0
+        let frame = MotionMetaballFrame { source: mbLeft(), target: mbRight(gap), blend: motionMetaballBlend() }
+        let waist = motionMetaballDistance(frame, mbMid(gap), 50.0)
+        let inside = motionMetaballDistance(frame, 50.0, 50.0)
+        if waist > inside {
+            return 1
+        }
+        return 0
+    }
+    expect { return .Ok(1) }
+}
+
+// --- the morph over time ---------------------------------------------------
+
+// At the ends there is nothing to fuse — one shape has not appeared and the
+// other has gone — so the reach is nothing, and it is greatest in the middle.
+construct MbTheReachPeaksInTheMiddle() extends Test {
+    test {
+        let start = motionMetaballReach(0.0)
+        let mid = motionMetaballReach(0.5)
+        let end = motionMetaballReach(1.0)
+        if start == 0.0 && end == 0.0 && mid > 15.0 {
+            return mtScaled(mid, 1)
+        }
+        return 0 - 1
+    }
+    expect { return .Ok(200) }
+}
+
+// At the start the frame IS the source, and at the end it IS the destination.
+// Anything else and the morph would begin or finish with a visible jump.
+construct MbTheMorphBeginsAndEndsOnItsShapes() extends Test {
+    test {
+        let from = MotionShape { x: 0.0, y: 0.0, width: 200.0, height: 120.0, radius: 24.0 }
+        let to = MotionShape { x: 300.0, y: 40.0, width: 44.0, height: 44.0, radius: 22.0 }
+        let first = motionMetaballFrameAt(from, to, 0.0)
+        let last = motionMetaballFrameAt(from, to, 1.0)
+        let startsRight = first.source.width == 200.0 && first.source.x == 0.0
+        let endsRight = last.target.width == 44.0 && last.target.x == 300.0
+        if startsRight && endsRight {
+            return 1
+        }
+        return 0
+    }
+    expect { return .Ok(1) }
+}
+
+// Halfway, BOTH shapes are real and separated — which is what gives the smooth
+// minimum something to bridge. A morph that interpolated one shape into the
+// other would have a single shape here and no neck could exist.
+construct MbHalfwayThereAreTwoRealShapes() extends Test {
+    test {
+        let from = MotionShape { x: 0.0, y: 0.0, width: 200.0, height: 120.0, radius: 24.0 }
+        let to = MotionShape { x: 300.0, y: 40.0, width: 44.0, height: 44.0, radius: 22.0 }
+        let mid = motionMetaballFrameAt(from, to, 0.5)
+        if mid.source.width > 4.0 && mid.target.width > 4.0 && mid.blend > 0.0 {
+            return 1
+        }
+        return 0
+    }
+    expect { return .Ok(1) }
+}
+
+// The source is gone by the end and the destination has not begun at the start,
+// so nothing is left behind and nothing appears early.
+construct MbTheSourceCollapsesAndTheTargetGrows() extends Test {
+    test {
+        let from = MotionShape { x: 0.0, y: 0.0, width: 200.0, height: 120.0, radius: 24.0 }
+        let to = MotionShape { x: 300.0, y: 40.0, width: 44.0, height: 44.0, radius: 22.0 }
+        let early = motionMetaballFrameAt(from, to, 0.15)
+        let late = motionMetaballFrameAt(from, to, 0.85)
+        if late.source.width < early.source.width && late.target.width > early.target.width {
+            return 1
+        }
+        return 0
+    }
+    expect { return .Ok(1) }
+}
+
+// A morph run to completion settles, and lands on its destination.
+construct MbAMorphCompletes() extends Test {
+    test {
+        var state = MotionMetaballState {}
+        let from = MotionShape { x: 0.0, y: 0.0, width: 200.0, height: 120.0, radius: 24.0 }
+        let to = MotionShape { x: 300.0, y: 40.0, width: 44.0, height: 44.0, radius: 22.0 }
+        motionMetaballStart(state, move from, move to, false)
+        var frames = 0
+        while frames < 600 {
+            let drawn = motionMetaballAdvance(state, 1.0 / 120.0)
+            frames = frames + 1
+            if motionMetaballSettled(state) {
+                return mtScaled(drawn.target.width, 1)
+            }
+        }
+        return 0 - 1
+    }
+    expect { return .Ok(440) }
+}

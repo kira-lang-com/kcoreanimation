@@ -1,0 +1,378 @@
+import Foundation
+import KiraGraphics
+import KiraLayout
+
+// The retained UI batch: one CPU vertex stream, submitted as a single indexed
+// draw per frame. `storage` is the native state every method recovers its
+// working set from; the methods themselves are spread across the UiBatch* files
+// through `extend`, grouped by what they draw.
+class UiBatch {
+    // Typed affine owner of the retained compositor state. There is no raw
+    // lifetime token: replacing or dropping a batch recursively releases its
+    // state and every typed graphics owner it contains.
+    var storage: NativeState<UiBatchState>
+}
+// Batched UI compositor — the one render path on every platform. Every primitive
+// the UI Foundation renders (rounded-rect / squircle surfaces with borders, and text)
+// is accumulated
+// into one CPU vertex stream and submitted as a SINGLE indexed draw per frame through
+// the Kira Graphics public abstraction — so it runs on any backend that implements
+// that abstraction (today the from-scratch, no-shim Metal path). Rounded shapes are
+// signed-distance-field rasterized in the fragment shader; glyphs are rasterized by
+// the real font engine into a Kira Graphics atlas texture and drawn as textured quads.
+// Nothing here is a host shim: resource creation, uploads and draws all go through
+// Kira + FFI.
+//
+// The persistent state (GPU resource ids, glyph atlas + cache, the CPU vertex stream)
+// lives in a UiBatchState behind a nativeState handle. Per-frame operations take that
+// RawPtr handle and recover the state inside, mutating fields directly — the same
+// handle/recover discipline the Metal context uses, so it survives the begin/draw/end
+// seam identically on the native and hybrid backends.
+//
+// Vertex layout (24 f32, tightly packed; matches the MSL `UiVertex` struct):
+//   posX posY  pxX pxY  localX localY  halfW halfH  radius borderWidth  mode
+//   edgeRefraction  fillR fillG fillB fillA  borderR borderG borderB borderA
+//   clipMinX clipMinY clipMaxX clipMaxY
+// `mode` 0 = SDF surface (local = pixel offset from centre), 1 = glyph (local = uv),
+// 2 = external texture, 3 = liquid glass, 4 = ADAPTIVE glyph — a glyph whose ink
+// comes from the blurred capture under the RUN it belongs to, so text stays legible
+// over whatever the backdrop turns out to be (see pushText).
+
+// 24 shared fields, a twenty-four-float material block (mode 3 only) and a
+// five-float gradient block (the far colour and its axis, zero when flat).
+// 24 shared floats + 24 material floats. The material block grew from 16 when the
+// wash stopped being one alpha and became the platform's own two-layer fill stack
+// (app/Core/Materials.kira): a layer is a colour, an opacity and a blend mode, and
+// the lower layer's colour/opacity already ride in `fill`, so the six that were
+// added are the lower blend and the whole upper layer.
+// One record per QUAD, matching `Shaders/UiBatch.ksl`'s `UiQuad`:
+//   posX0 posY0 posX1 posY1   pxX0 pxY0 pxX1 pxY1   localX0 localY0 localX1 localY1
+//   halfW halfH radius borderWidth mode edgeRefraction
+//   fillR fillG fillB fillA   borderR borderG borderB borderA
+//   clipMinX clipMinY clipMaxX clipMaxY
+//   + the 24-float material block, mode 3 only
+//   + the five-float gradient block
+//   + the six-float MORPH block (mode 3 only): the second shape this surface is
+//     fusing with and the smooth minimum's reach. Zero reach is a surface that
+//     is one shape, which is nearly all of them. See `writeQuadMorph`.
+//   + one float for the CORNER KIND: circular, or the continuous superellipse a
+//     squircle is. The generic pipeline reads this off `mode` (0.25 is a
+//     squircle rect), which the glass pipelines cannot — their `mode` says
+//     which region patch this is. See `writeQuadShapeKind`.
+// The twelve leading floats are the corner-varying values at their two extremes;
+// the vertex stage picks per corner. Eighteen shared floats used to be written
+// once per vertex, so a quad cost 192 floats where it now costs 54 — 30 for
+// everything but liquid glass, which is every glyph on screen.
+function quadFloatCount() -> Int { return 68 }
+// Where the material block starts inside a record.
+function quadMaterialOffset() -> Int { return 30 }
+function quadVertexCount() -> Int { return 4 }
+// One stream in the realistic Liquid Glass app peaks at 264 quads. Keep nearly
+// 4x that measured load for editor/text-heavy screens without making every
+// stream reserve a 48 MiB four-frame Metal ring. At 1,024 quads the ring is
+// 3 MiB per stream instead of 48 MiB.
+// Sized for a full screen of glyph quads plus glass surfaces at up to nine
+// region patches each (see pushGlass); 1024 overflowed — and quads past
+// the cap drop silently — once surfaces split.
+function maxQuadsPerBatch() -> Int { return 4096 }
+// The scale a frame is rendered at: the display's own, or `KIRA_UI_SCALE`.
+//
+// A UI is judged at the density it will be used at, and a low-density panel
+// cannot show what a dense one looks like — an unhinted stem 1.6 device pixels
+// wide straddles two of them there and resolves cleanly at 2x, with no change to
+// any code. Forcing the scale renders the same interface with more device pixels
+// per point, over LESS logical area, because the drawable is whatever the window
+// actually has. That is the honest simulation: it changes how finely the frame
+// is drawn, never what is drawn.
+// Stated as a PERCENTAGE — `KIRA_UI_SCALE=200` is 2x — because the environment
+// hands back text and the only number Foundation reads out of it is an integer.
+// A percentage is what a display scale is written as everywhere else anyway.
+function foundationRenderScale(displayScale: Float) -> Float {
+    let percent = environmentInt("KIRA_UI_SCALE", 0)
+    if percent > 0 {
+        return intAsFloat(value: percent) / 100.0
+    }
+    if displayScale <= 0.0 {
+        return 1.0
+    }
+    return displayScale
+}
+
+function glyphAtlasSize() -> Int { return 1024 }
+
+// Transparent texels left between packed entries.
+//
+// TWO, not one. A glyph is drawn with its quad grown out to whole device pixels and
+// its uv grown with it, by up to a texel — and a bilinear tap at that edge reads one
+// texel FURTHER still. With a single-texel gutter that second tap lands in whichever
+// entry was packed next, which shows up as a faint ghost of a neighbouring glyph
+// beside an icon or a letter. Two texels is the reach of the widest tap this
+// compositor takes, so the gutter is always what gets sampled.
+function atlasGutter() -> Int { return 2 }
+function glyphCacheCapacity() -> Int { return 1024 }
+
+// Stacked liquid glass. A frame is cut into emission STREAMS: stream 0 is
+// everything under the first glass surface, and each further stream is one glass
+// LAYER (its glass quads plus the content drawn above them). Layer k refracts the
+// capture of streams 0..k-1, so glass over glass refracts the glass beneath it.
+//
+// A new layer only starts when the incoming glass surface actually sits over
+// something already drawn in the current layer (glassLayerOccupied): a sidebar,
+// a centre card and a bottom dock that never touch each other share one layer, and
+// the frame costs exactly one capture + one blur chain, as before. Overlapping
+// glass pays one extra capture + blur chain per layer of overlap.
+function maxDrawStreams() -> Int { return 4 }
+
+// The HUD's own stream, reserved one past the last glass layer. Graphics telemetry
+// refreshes on a cadence of its own (a few times a second) while the application's
+// pixels are unchanged, so it is emitted into a stream nothing else writes: a HUD
+// refresh rewrites this buffer's slot and leaves every UI stream's vertices, quad
+// count and ring slot exactly as the last full frame left them. It is drawn last,
+// which is where the composed overlay drew before it had a stream, and it is never
+// part of a glass capture — captures hold streams 0..layer only.
+function hudStreamIndex() -> DrawStreamId { return DrawStreamId(maxDrawStreams()) }
+
+// Every stream slot a batch can ever hold: the glass layers plus the HUD. Slots are
+// allocated on first use, so a placeholder costs an entry and no GPU memory.
+function streamSlotCount() -> Int { return hudStreamIndex().raw + 1 }
+
+// Cells the overlap grid cuts the viewport into. A cell is ~33x33pt at 1600x900 —
+// fine enough that neighbouring chrome does not falsely read as overlapping, coarse
+// enough that marking a quad touches a handful of cells.
+function glassGridCols() -> Int { return 48 }
+function glassGridRows() -> Int { return 27 }
+function glassGridCells() -> Int { return glassGridCols() * glassGridRows() }
+
+// The blur pyramid's divisor: every blurred level is this fraction of the
+// capture per axis, and one of its texels is therefore this many capture
+// texels. Both the compute pair and the drawn ladder step by one texel of the
+// level they are writing, so this is also the scale their taps are measured in.
+function glassBlurDivisor() -> Int { return 4 }
+
+// How far the blur reaches past the pixel it is sampled at, in logical points.
+//
+// `Shaders/UiGlassBlurCommon.ksl`'s outermost far tap sits at `farOuterAt`
+// level texels and a bilinear fetch reads half a texel past its coordinate; a
+// level texel is at most `glassBlurDivisor()` points, because the capture is
+// never smaller than the viewport it holds. H and V each contribute this along
+// their own axis, so it is the reach per axis and not their sum.
+function glassBlurFarOuterTap() -> Float { return 5.333673259024 }
+function glassBlurReach() -> Float {
+    return (glassBlurFarOuterTap() + 0.5) * Float(glassBlurDivisor())
+}
+
+// A hairline length authored in DEVICE PIXELS, in the quad's own (point) units.
+//
+// The glass border block and the inner rim are pixel measurements off the
+// reference capture — a one-pixel ring, a two-pixel side edge — so they have to
+// stay that many device pixels whatever the backing scale is. Carried in points
+// instead, a border tuned on a 2x display comes out at 0.6 of a pixel on a 1.25x
+// one: a fainter, thinner line rather than the same line.
+//
+// Never below one device pixel: a hairline thinner than a pixel is a fainter
+// hairline, not a thinner one, and fading it out is not what any of these
+// numbers mean.
+function glassHairline(devicePixels: Float, scale: Float) -> Float {
+    var onePixel = 1.0
+    if scale > 0.0 {
+        onePixel = 1.0 / scale
+    }
+    if devicePixels < 1.0 {
+        return onePixel
+    }
+    return devicePixels * onePixel
+}
+
+// A rasterized edge, in points, moved onto the nearest whole device pixel.
+//
+// A glass surface's interior is rasterized twice from the same quads: once by
+// the cache pass, into an offscreen colour target, and once by the composite,
+// into the swapchain. Under GL those two targets disagree about which way rows
+// run, so one pass sees an edge as the top of its patch and the other as the
+// bottom — and when the edge falls exactly on a pixel centre the fill rule
+// answers differently, so that row of pixels is rasterized by one pass and not
+// the other. The cache holds it cleared, `UiGlassCopy` presents it at alpha 1,
+// and the surface grows a one-pixel black seam. Swapping stored rows corrects
+// where a row ends up, not which side of an edge owns a pixel, so it cannot
+// reach this.
+//
+// An edge on a whole device pixel has no pixel centre on it, so the two passes
+// cannot disagree — and a whole pixel stays whole under the row flip, because
+// the drawable's height is a whole number of pixels. Every patch of a surface
+// is emitted from shared edge values, so neighbours snap to the same place and
+// the region split stays gapless. The move is under half a device pixel, well
+// inside the guard each region keeps from the effects it drops.
+//
+// `scale` is pixels per point ON THE AXIS BEING SNAPPED — drawable over
+// viewport, which is what the vertex stage's point-to-clip mapping works out to
+// and is not the backing scale on a drawable that is not a whole number of
+// points.
+function glassSnapToDevicePixel(value: Float, scale: Float) -> Float {
+    if scale <= 0.0 {
+        return value
+    }
+    return floor(value * scale + 0.5) / scale
+}
+
+function streamFloatCapacity() -> Int {
+    return maxQuadsPerBatch() * quadFloatCount()
+}
+
+function zeroedInts(n: Int) -> [Int] {
+    var a: [Int] = []
+    var i = 0
+    while i < n {
+        a.append(0)
+        i += 1
+    }
+    return a
+}
+
+function zeroedBools(n: Int) -> [Bool] {
+    var a: [Bool] = []
+    var i = 0
+    while i < n {
+        a.append(false)
+        i += 1
+    }
+    return a
+}
+
+function zeroedTextureHandles(n: Int) -> [TextureHandle] {
+    var a: [TextureHandle] = []
+    var i = 0
+    while i < n {
+        a.append(TextureHandle(0))
+        i += 1
+    }
+    return a
+}
+
+
+function quadIndices(quadCount: Int) -> [U32] {
+    var indices: [U32] = []
+    var q = 0
+    while q < quadCount {
+        let base = q * 4
+        indices.append(base + 0)
+        indices.append(base + 1)
+        indices.append(base + 2)
+        indices.append(base + 0)
+        indices.append(base + 2)
+        indices.append(base + 3)
+        q += 1
+    }
+    return indices
+}
+
+// A candidate SYSTEM font path list for the host this program was built for; the
+// first that loads wins. Where a system face lives is a per-platform fact, and
+// the font engine has no auto-discovery for face_load, so the paths are named.
+//
+// Chosen by the BUILD's platform rather than by probing every path in turn: a
+// list that walks another operating system's directories asks the filesystem
+// questions whose answer is already known.
+//
+// Each list runs the platform's own UI face first and its most widely installed
+// fallback last, so a machine missing the modern face still gets the host's own
+// text rather than the bundled face.
+//
+// An EMPTY list is not "no text": `loadBatchFont` falls through to the face
+// compiled into libkiratext, which exists wherever the library is linked. That
+// is what makes the retained path unconditional — a browser has no filesystem
+// to name a face in, and it does not need one.
+function fontCandidates() -> [String] {
+    match hostPlatform() {
+        MacOS -> return appleFontCandidates()
+        IOS -> return appleFontCandidates()
+        Windows -> return windowsFontCandidates()
+        Linux -> return linuxFontCandidates()
+        Web -> return []
+        // A host the build does not recognize gets every list, because a wrong
+        // guess here costs a failed open and the bundled face is behind it.
+        Unknown -> return everyFontCandidate()
+    }
+}
+
+function everyFontCandidate() -> [String] {
+    var all: [String] = []
+    for path in appleFontCandidates() { all.append(path) }
+    for path in windowsFontCandidates() { all.append(path) }
+    for path in linuxFontCandidates() { all.append(path) }
+    return all
+}
+
+function appleFontCandidates() -> [String] {
+    return [
+        "/System/Library/Fonts/SFNS.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/Library/Fonts/Arial.ttf"
+    ]
+}
+
+// Windows names NO candidate, so the batch loads the Figtree face compiled into
+// libkiratext.
+//
+// The argument for a system face is that an application should look like the
+// platform it runs on, and on Apple platforms that argument holds: SF Pro is
+// what every other window on the screen is drawn in, and it carries optical
+// sizing that a display face scaled down cannot match. Windows offers Segoe UI,
+// which is none of those things — it is what a window falls back to, not what a
+// window is judged against — and the bundled face is a better one at every size
+// a UI is set in. So Windows takes the bundled face on purpose, and the empty
+// list is how `loadBatchFont` is told so.
+function windowsFontCandidates() -> [String] {
+    return []
+}
+
+function linuxFontCandidates() -> [String] {
+    return [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans.ttf"
+    ]
+}
+
+// Load the font into a freshly-built (local) state. Safe to take borrow mut here: the
+// state is a local value during creation, not yet behind a nativeState handle.
+//
+// The host's own UI face first, so an application looks like the platform it is
+// running on; the face compiled into libkiratext behind it, so the atlas has
+// outlines to rasterize on a host that has no readable system font at all — a
+// browser, a container image with no fonts installed, an embedded target. The
+// retained path is therefore not conditional on the platform: text is always
+// possible, and only WHICH face draws it varies.
+@Native
+function loadBatchFont(state: borrow mut UiBatchState) {
+    let engine = kira_text_engine_create()
+    state.engine = engine
+    if engine == RawPtr.null {
+        state.fontReady = false
+        return
+    }
+    let candidates = fontCandidates()
+    for i in 0..candidates.count {
+        let face = kira_text_face_load(engine, candidates[i], I32(0))
+        if face != RawPtr.null {
+            state.face = face
+            state.fontReady = true
+            return
+        }
+    }
+    let bundled = kira_text_face_load_bundled(engine)
+    if bundled != RawPtr.null {
+        state.face = bundled
+        state.fontReady = true
+        return
+    }
+    state.fontReady = false
+    return
+}
+
+
+// Claim every stream's slot for this frame. Runs right after beginBatch, before
+// anything emits. Streams the frame never reaches are claimed too: an unclaimed
+// buffer would keep the slot the last frame that used it left behind, and a later
+// frame writing that slot would be writing what a running frame is drawing.

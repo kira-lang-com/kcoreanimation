@@ -1,0 +1,339 @@
+// The glass shaders' shared arithmetic.
+//
+// `UiGlassCore`, `UiGlassFull`, `UiGlassLens` and `UiGlassBand` are four
+// specializations of one material, split for cost rather than for behaviour:
+// each does a subset of the work so a surface pays only for what it asks for.
+// That makes their *differences* the interesting part of each file — and until
+// this module existed, the lines they agreed on byte-for-byte sat in all four,
+// where a fix to one was a fix to one.
+//
+// Everything here is arithmetic with no state and no bindings, which is exactly
+// what survives being shared: a change to `blendChannel` is a change to how the
+// platform's materials composite, and it should never be true in three files
+// and false in the fourth.
+//
+// The scalar helpers the four used to carry — `minimum`, `maximum`,
+// `absolute` — are gone rather than moved. KSL has `min`, `max` and `abs`
+// builtins, and hand-rolling them cost a call for something the language
+// already says.
+
+// The wash ceiling — how opaque a frost step may ever make the surface.
+const washCeiling: Float = 0.9
+
+// The band inside the stroke over which the sheen falls off, and the band at
+// the edge over which blur fades in (the rim stays crisp). Shape, not amount:
+// how much sheen and how much blur are per-surface numbers a control can move,
+// carried in the vertex.
+const sheenStart: Float = 2.0
+const sheenEnd: Float = 5.0
+const blurEdgeStart: Float = 2.0
+const blurEdgeEnd: Float = 3.0
+
+// The sharp backdrop under a glass fragment.
+//
+// Two images and a weight, because the backdrop a scheme change presents IS a
+// crossfade between two photographs and the compositor no longer renders that
+// crossfade into a full-resolution capture for the glass to read back. At rest
+// the second image is not read at all, on the same threshold
+// `UiBackground.ksl` settles on — so the tap is one fetch except during the
+// 350ms a scheme takes to arrive, and it is the same colour the background pass
+// writes beside it.
+function backdropTap(first: Texture2d, firstSmp: Sampler, second: Texture2d, secondSmp: Sampler, uv: Float2, blend: Float) -> Float4 {
+    if blend <= 0.001 {
+        return sample(first, firstSmp, uv)
+    }
+    if blend >= 0.999 {
+        return sample(second, secondSmp, uv)
+    }
+    return mix(sample(first, firstSmp, uv), sample(second, secondSmp, uv), blend)
+}
+
+function blendChannel(base: Float, layer: Float, mode: Float) -> Float {
+    if mode < 0.5 { return layer }
+    if mode < 1.5 { return clamp(base + layer, 0.0, 1.0) }
+    if mode < 2.5 {
+        if layer >= 1.0 {
+            if base > 0.0 { return 1.0 }
+            return 0.0
+        }
+        return min(1.0, base / (1.0 - layer))
+    }
+    if mode < 3.5 {
+        if layer <= 0.5 { return 2.0 * base * layer }
+        return 1.0 - 2.0 * (1.0 - base) * (1.0 - layer)
+    }
+    if mode < 4.5 {
+        if base <= 0.5 { return 2.0 * base * layer }
+        return 1.0 - 2.0 * (1.0 - base) * (1.0 - layer)
+    }
+    if mode < 5.5 { return max(base, layer) }
+    if mode < 6.5 { return min(base, layer) }
+    return base * layer
+}
+
+function blendLayer(base: Float3, layer: Float3, alpha: Float, mode: Float) -> Float3 {
+    if alpha <= 0.0 { return base }
+    if mode < 0.5 { return mix(base, layer, alpha) }
+    if mode < 1.5 {
+        let added = Float3(
+            clamp(base.x + layer.x, 0.0, 1.0),
+            clamp(base.y + layer.y, 0.0, 1.0),
+            clamp(base.z + layer.z, 0.0, 1.0)
+        )
+        return mix(base, added, alpha)
+    }
+    if mode >= 4.5 {
+        if mode < 5.5 {
+            let lightened = Float3(
+                max(base.x, layer.x),
+                max(base.y, layer.y),
+                max(base.z, layer.z)
+            )
+            return mix(base, lightened, alpha)
+        }
+        if mode < 6.5 {
+            let darkened = Float3(
+                min(base.x, layer.x),
+                min(base.y, layer.y),
+                min(base.z, layer.z)
+            )
+            return mix(base, darkened, alpha)
+        }
+        return mix(base, base * layer, alpha)
+    }
+    let blended = Float3(
+        blendChannel(base.x, layer.x, mode),
+        blendChannel(base.y, layer.y, mode),
+        blendChannel(base.z, layer.z, mode)
+    )
+    return mix(base, blended, alpha)
+}
+
+function sdRound(point: Float2, halfSize: Float2, radius: Float) -> Float {
+    let q = Float2(
+        abs(point.x) - halfSize.x + radius,
+        abs(point.y) - halfSize.y + radius
+    )
+    let outside = Float2(max(q.x, 0.0), max(q.y, 0.0))
+    return min(max(q.x, q.y), 0.0) + length(outside) - radius
+}
+
+// A squircle is a superellipse in each corner, not a circular corner with a
+// larger radius. Keeping the straight portions of the rounded-rect SDF and
+// replacing only the corner distance gives a C1-continuous transition into the
+// edges while leaving the authored radius as the edge-to-corner distance.
+// Two is a circular rounded rectangle; increasing the exponent makes the
+// superellipse progressively more square.
+const squircleExponent: Float = 2.5
+
+function sdSquircle(point: Float2, halfSize: Float2, radius: Float) -> Float {
+    if radius <= 0.0 {
+        return sdRound(point, halfSize, radius)
+    }
+    let cornerOrigin = Float2(
+        max(halfSize.x - radius, 0.0),
+        max(halfSize.y - radius, 0.0)
+    )
+    let q = abs(point) - cornerOrigin
+    // One axis is still on a straight edge. This is also the entire interior
+    // when the point has not reached the corner quadrant yet.
+    if q.x <= 0.0 || q.y <= 0.0 {
+        let outside = Float2(max(q.x, 0.0), max(q.y, 0.0))
+        return min(max(q.x, q.y), 0.0) + length(outside) - radius
+    }
+
+    // Normalize the implicit superellipse by its boundary gradient. The raw
+    // superellipse equation is smooth but is not a Euclidean distance field;
+    // this normalization keeps the one-pixel coverage ramp consistent through
+    // the corner instead of making the diagonal edge look sharper or softer.
+    let safeRadius = max(radius, 0.001)
+    let nx = q.x / safeRadius
+    let ny = q.y / safeRadius
+    let nxPow = pow(nx, squircleExponent)
+    let nyPow = pow(ny, squircleExponent)
+    let sum = max(nxPow + nyPow, 0.000001)
+    let radial = pow(sum, 1.0 / squircleExponent)
+    let gx = pow(nx, squircleExponent - 1.0)
+    let gy = pow(ny, squircleExponent - 1.0)
+    let gradient = max(length(Float2(gx, gy)), 0.000001)
+    return ((radial - 1.0) * safeRadius) / gradient
+}
+
+function sdRoundNormal(point: Float2, halfSize: Float2, radius: Float) -> Float2 {
+    let sx = -1.0
+    if point.x >= 0.0 { sx = 1.0 }
+    let sy = -1.0
+    if point.y >= 0.0 { sy = 1.0 }
+    let q = Float2(
+        abs(point.x) - halfSize.x + radius,
+        abs(point.y) - halfSize.y + radius
+    )
+    let ox = max(q.x, 0.0)
+    let oy = max(q.y, 0.0)
+    if ox > 0.0 {
+        if oy > 0.0 {
+            return normalize(Float2(ox * sx, oy * sy) + Float2(0.0001, 0.0))
+        }
+        return Float2(sx, 0.0)
+    }
+    if oy > 0.0 {
+        return Float2(0.0, sy)
+    }
+    if q.x > q.y {
+        return Float2(sx, 0.0)
+    }
+    return Float2(0.0, sy)
+}
+
+function refractionCurve(value: Float) -> Float {
+    let e = 2.718281828459045
+    return 1.0 - 2.3 * pow(5.2 * e, -6.9 * value - 0.7)
+}
+
+// The touch highlight's falloff: full at the centre, straight down to half
+// across the inner half of the radius, then eased to nothing at the rim. The
+// same two halves as `motionGlowFalloff` on the Kira side, and the radius is
+// pinned to `motionGlowDiameter()` — the two must move together.
+function glowFalloff(distance: Float) -> Float {
+    let r = distance / 150.0
+    if r >= 1.0 {
+        return 0.0
+    }
+    if r <= 0.5 {
+        return 1.0 - r
+    }
+    let t = (r - 0.5) * 2.0
+    if t < 0.5 {
+        return 0.5 * (1.0 - 4.0 * t * t * t)
+    }
+    let inv = 2.0 - 2.0 * t
+    return 0.5 * (inv * inv * inv * 0.5)
+}
+
+// What the highlight adds at a point. `glow` carries its centre in the quad's
+// own space (xy) and its strength (z); zero strength costs one comparison.
+function touchGlow(local: Float2, glow: Float3, coverage: Float) -> Float {
+    if glow.z <= 0.0 {
+        return 0.0
+    }
+    let offset = Float2(local.x - glow.x, local.y - glow.y)
+    return glow.z * glowFalloff(length(offset)) * coverage
+}
+
+// The quadratic smooth minimum: two distance fields fused so the surface grows
+// a NECK between them as they approach, instead of the two simply overlapping.
+// This is what makes a menu collapsing into its button read as one liquid mass.
+// `k` is the reach in points — at zero this is a plain union, and the field can
+// be pulled down by at most `k/4`, so two surfaces fuse over a point only when
+// each is nearer than that.
+function smoothUnion(first: Float, second: Float, k: Float) -> Float {
+    if k <= 0.0 {
+        return min(first, second)
+    }
+    let e = max(k - abs(first - second), 0.0)
+    return min(first, second) - e * e * 0.25 / k
+}
+
+// The fused surface: this quad's own rounded rectangle smooth-unioned with the
+// second shape it is morphing into.
+//
+// `morph` carries that shape's centre in the quad's own space (xy) and its half
+// extent (zw); `morphRadius` its corner and `k` the reach. At zero reach the
+// second shape is not evaluated at all, which is every glass surface on screen
+// but the one or two in a morph.
+//
+// `inflate` grows BOTH shapes by the same amount, which is how the border stack
+// asks for its silhouettes: the ring is the shape spread outward and the side
+// bands are the shape pulled inward, and a morphing surface has to cast those
+// off the fused body rather than off one half of it.
+// One rounded rectangle, with the corner the surface asked for.
+//
+// `kind` at zero is a circular corner; anything above is the continuous
+// superellipse a squircle is — the curvature runs into the straight edges
+// instead of meeting them at a point where it jumps, which is the difference
+// between a rounded rectangle and the shape Apple's panels actually are.
+function shapeDistance(point: Float2, halfSize: Float2, radius: Float, kind: Float) -> Float {
+    if kind > 0.5 {
+        return sdSquircle(point, halfSize, radius)
+    }
+    return sdRound(point, halfSize, radius)
+}
+
+// Which way a single shape's surface faces.
+//
+// The closed-form normal is the circular rounded rectangle's and describes
+// nothing else, so a squircle takes central differences of its own field. Two
+// extra distance evaluations, paid only by a surface that asked for the
+// continuous corner.
+function shapeNormal(point: Float2, halfSize: Float2, radius: Float, kind: Float) -> Float2 {
+    if kind <= 0.5 {
+        return sdRoundNormal(point, halfSize, radius)
+    }
+    let e = 0.75
+    let dx = sdSquircle(point + Float2(e, 0.0), halfSize, radius) - sdSquircle(point - Float2(e, 0.0), halfSize, radius)
+    let dy = sdSquircle(point + Float2(0.0, e), halfSize, radius) - sdSquircle(point - Float2(0.0, e), halfSize, radius)
+    let gradient = Float2(dx, dy)
+    if length(gradient) < 0.00001 {
+        return Float2(0.0, -1.0)
+    }
+    return normalize(gradient)
+}
+
+function morphedDistanceInflated(
+    local: Float2,
+    hsize: Float2,
+    radius: Float,
+    morph: Float4,
+    morphRadius: Float,
+    k: Float,
+    inflate: Float,
+    kind: Float,
+) -> Float {
+    let grow = Float2(inflate, inflate)
+    let own = shapeDistance(local, hsize + grow, max(radius + inflate, 0.0), kind)
+    if k <= 0.0 {
+        return own
+    }
+    let other = shapeDistance(
+        local - Float2(morph.x, morph.y),
+        Float2(morph.z, morph.w) + grow,
+        max(morphRadius + inflate, 0.0),
+        kind
+    )
+    return smoothUnion(own, other, k)
+}
+
+function morphedDistance(local: Float2, hsize: Float2, radius: Float, morph: Float4, morphRadius: Float, k: Float, kind: Float) -> Float {
+    return morphedDistanceInflated(local, hsize, radius, morph, morphRadius, k, 0.0, kind)
+}
+
+// Which way the fused surface faces.
+//
+// Central differences rather than the rounded rectangle's own analytic normal,
+// because the whole point of the neck is that its surface belongs to NEITHER
+// shape: the direction that lights it, bends the lens through it and catches
+// the sheen along it has to come from the fused field or the join goes flat.
+// Four extra distance evaluations, paid only where a morph is live.
+function morphedNormal(local: Float2, hsize: Float2, radius: Float, morph: Float4, morphRadius: Float, k: Float, kind: Float) -> Float2 {
+    // The closed-form normal belongs to the circular rounded rectangle and to
+    // nothing else. A squircle's corner and a fused neck are both surfaces it
+    // does not describe, so both fall to differences below.
+    if k <= 0.0 && kind <= 0.5 {
+        return sdRoundNormal(local, hsize, radius)
+    }
+    // Three quarters of a point: wide enough that the difference is not noise
+    // in a 32-bit field, narrow enough to still resolve the corner of a shape
+    // whose radius is a few points.
+    let e = 0.75
+    let dx = morphedDistance(local + Float2(e, 0.0), hsize, radius, morph, morphRadius, k, kind)
+        - morphedDistance(local - Float2(e, 0.0), hsize, radius, morph, morphRadius, k, kind)
+    let dy = morphedDistance(local + Float2(0.0, e), hsize, radius, morph, morphRadius, k, kind)
+        - morphedDistance(local - Float2(0.0, e), hsize, radius, morph, morphRadius, k, kind)
+    let gradient = Float2(dx, dy)
+    // Dead centre of a shape the field is flat, and a normalized zero is a NaN
+    // that shows up as a black pixel. Nothing is lit there anyway.
+    if length(gradient) < 0.00001 {
+        return Float2(0.0, -1.0)
+    }
+    return normalize(gradient)
+}

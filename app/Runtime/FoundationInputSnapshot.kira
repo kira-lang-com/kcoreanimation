@@ -1,0 +1,223 @@
+import KiraLayout
+import KiraGraphics
+import Foundation
+// The ambient input snapshot, split out of FoundationInput.kira.
+//
+// Dispatch (the other file) OWNS the events; this file is the read side of
+// them: camera and tool code in any package asks the ambient slot store for the
+// held pointer button, the fly-key mask, the modifiers, the pointer position
+// and the viewport, with no path to the app state and no borrow of it.
+
+// --- Ambient input snapshot: camera/tool code (any package) reads the held
+// pointer button, fly-key mask and modifiers through the ambient slot store,
+// without a path to the app state. ---
+
+struct FoundationInputSnapshot {
+    var button: Int = 0
+    var keysMask: Int = 0
+    var shift: Bool = false
+    var alt: Bool = false
+    // Live logical viewport size (written once per frame by the interactive
+    // runner) — layout-aware code (viewport camera aspect) reads it ambiently.
+    var viewW: Float = 0.0
+    var viewH: Float = 0.0
+    // Latest pointer position and current hovered region. Pointer moves publish this
+    // snapshot so hover-driven widgets update immediately. Press-specific anchoring
+    // is kept separately in pressBounds below.
+    var pointerX: Float = 0.0
+    var pointerY: Float = 0.0
+    var hoveredKey: Int = 0
+    // Screen bounds of the region a click fired on (written by foundationEndPress
+    // just before onPress). A dropdown button reads these to anchor its popup to
+    // itself (bottom-left by default) instead of the cursor.
+    var pressBoundsX: Float = 0.0
+    var pressBoundsY: Float = 0.0
+    var pressBoundsW: Float = 0.0
+    var pressBoundsH: Float = 0.0
+}
+
+function foundationInputSlotKey() -> String {
+    return "foundation.input"
+}
+
+function foundationWriteInputSnapshot(ui: borrow FoundationUiContext) {
+    if stateSlotHas(foundationInputSlotKey()) == false {
+        stateSlotPut(foundationInputSlotKey(), nativeUserData(nativeState(FoundationInputSnapshot {})))
+    }
+    var snapshot = nativeRecover<FoundationInputSnapshot>(stateSlotGet(foundationInputSlotKey()))
+    snapshot.button = ui.pressButton
+    snapshot.keysMask = ui.keysMask
+    snapshot.shift = ui.modShift
+    snapshot.alt = ui.modAlt
+    snapshot.pointerX = ui.pointerX
+    snapshot.pointerY = ui.pointerY
+    snapshot.hoveredKey = ui.hoveredKey
+    return
+}
+
+// Held pointer button: 0 none, 1 left, 2 right, 3 middle.
+function foundationInputButton() -> Int {
+    if stateSlotHas(foundationInputSlotKey()) == false {
+        return 0
+    }
+    let snapshot = nativeRecover<FoundationInputSnapshot>(stateSlotGet(foundationInputSlotKey()))
+    return snapshot.button
+}
+
+// True while the given fly key is held (bit from foundationKeyBit).
+function foundationInputKeyHeld(bit: Int) -> Bool {
+    if bit <= 0 {
+        return false
+    }
+    if stateSlotHas(foundationInputSlotKey()) == false {
+        return false
+    }
+    let snapshot = nativeRecover<FoundationInputSnapshot>(stateSlotGet(foundationInputSlotKey()))
+    let mask = snapshot.keysMask
+    return (mask / bit) - ((mask / bit) / 2) * 2 == 1
+}
+
+function foundationInputShift() -> Bool {
+    if stateSlotHas(foundationInputSlotKey()) == false {
+        return false
+    }
+    let snapshot = nativeRecover<FoundationInputSnapshot>(stateSlotGet(foundationInputSlotKey()))
+    return snapshot.shift
+}
+
+// Record the bounds of the region a click just fired on (see foundationEndPress).
+function foundationWritePressBounds(ui: borrow FoundationUiContext, bounds: borrow Rect) {
+    if stateSlotHas(foundationInputSlotKey()) == false {
+        stateSlotPut(foundationInputSlotKey(), nativeUserData(nativeState(FoundationInputSnapshot {})))
+    }
+    var snapshot = nativeRecover<FoundationInputSnapshot>(stateSlotGet(foundationInputSlotKey()))
+    snapshot.pressBoundsX = bounds.x
+    snapshot.pressBoundsY = bounds.y
+    snapshot.pressBoundsW = bounds.width
+    snapshot.pressBoundsH = bounds.height
+    return
+}
+
+// Bounds of the button the last left-click fired on (for anchoring popups).
+function foundationPressBoundsX() -> Float {
+    if stateSlotHas(foundationInputSlotKey()) == false {
+        return 0.0
+    }
+    let snapshot = nativeRecover<FoundationInputSnapshot>(stateSlotGet(foundationInputSlotKey()))
+    return snapshot.pressBoundsX
+}
+
+function foundationPressBoundsY() -> Float {
+    if stateSlotHas(foundationInputSlotKey()) == false {
+        return 0.0
+    }
+    let snapshot = nativeRecover<FoundationInputSnapshot>(stateSlotGet(foundationInputSlotKey()))
+    return snapshot.pressBoundsY
+}
+
+function foundationPressBoundsW() -> Float {
+    if stateSlotHas(foundationInputSlotKey()) == false {
+        return 0.0
+    }
+    let snapshot = nativeRecover<FoundationInputSnapshot>(stateSlotGet(foundationInputSlotKey()))
+    return snapshot.pressBoundsW
+}
+
+function foundationPressBoundsH() -> Float {
+    if stateSlotHas(foundationInputSlotKey()) == false {
+        return 0.0
+    }
+    let snapshot = nativeRecover<FoundationInputSnapshot>(stateSlotGet(foundationInputSlotKey()))
+    return snapshot.pressBoundsH
+}
+
+// True when `key` is the region currently under the pointer — the primitive the
+// widget layer uses to give every button a default hover state.
+function foundationHovered(key: Int) -> Bool {
+    if key == 0 {
+        return false
+    }
+    return foundationHoveredKey() == key
+}
+
+// --- Menu placement setting ---
+// How dropdown popups anchor to their button. A simple app-wide KiraUI setting
+// so an app flips it once instead of threading it through every dropdown.
+//   0 = below, left-aligned (default)   1 = below, right-aligned
+//   2 = above, left-aligned             3 = above, right-aligned
+struct FoundationMenuSettings {
+    var placement: Int = 0
+}
+
+function foundationMenuSettingsSlotKey() -> String {
+    return "foundation.menu.settings"
+}
+
+function foundationSetMenuPlacement(placement: Int) {
+    if stateSlotHas(foundationMenuSettingsSlotKey()) == false {
+        stateSlotPut(foundationMenuSettingsSlotKey(), nativeUserData(nativeState(FoundationMenuSettings {})))
+    }
+    var settings = nativeRecover<FoundationMenuSettings>(stateSlotGet(foundationMenuSettingsSlotKey()))
+    settings.placement = placement
+    return
+}
+
+function foundationMenuPlacement() -> Int {
+    if stateSlotHas(foundationMenuSettingsSlotKey()) == false {
+        return 0
+    }
+    let settings = nativeRecover<FoundationMenuSettings>(stateSlotGet(foundationMenuSettingsSlotKey()))
+    return settings.placement
+}
+
+// Latest published pointer position (logical pixels).
+function foundationPointerX() -> Float {
+    if stateSlotHas(foundationInputSlotKey()) == false {
+        return 0.0
+    }
+    let snapshot = nativeRecover<FoundationInputSnapshot>(stateSlotGet(foundationInputSlotKey()))
+    return snapshot.pointerX
+}
+
+function foundationPointerY() -> Float {
+    if stateSlotHas(foundationInputSlotKey()) == false {
+        return 0.0
+    }
+    let snapshot = nativeRecover<FoundationInputSnapshot>(stateSlotGet(foundationInputSlotKey()))
+    return snapshot.pointerY
+}
+
+// Region currently under the pointer (0 = none). Pointer moves update it.
+function foundationHoveredKey() -> Int {
+    if stateSlotHas(foundationInputSlotKey()) == false {
+        return 0
+    }
+    let snapshot = nativeRecover<FoundationInputSnapshot>(stateSlotGet(foundationInputSlotKey()))
+    return snapshot.hoveredKey
+}
+
+function foundationWriteViewportSnapshot(width: Float, height: Float) {
+    if stateSlotHas(foundationInputSlotKey()) == false {
+        stateSlotPut(foundationInputSlotKey(), nativeUserData(nativeState(FoundationInputSnapshot {})))
+    }
+    var snapshot = nativeRecover<FoundationInputSnapshot>(stateSlotGet(foundationInputSlotKey()))
+    snapshot.viewW = width
+    snapshot.viewH = height
+    return
+}
+
+function foundationViewportWidth() -> Float {
+    if stateSlotHas(foundationInputSlotKey()) == false {
+        return 0.0
+    }
+    let snapshot = nativeRecover<FoundationInputSnapshot>(stateSlotGet(foundationInputSlotKey()))
+    return snapshot.viewW
+}
+
+function foundationViewportHeight() -> Float {
+    if stateSlotHas(foundationInputSlotKey()) == false {
+        return 0.0
+    }
+    let snapshot = nativeRecover<FoundationInputSnapshot>(stateSlotGet(foundationInputSlotKey()))
+    return snapshot.viewH
+}

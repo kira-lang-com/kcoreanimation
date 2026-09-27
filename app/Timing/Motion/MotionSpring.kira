@@ -1,0 +1,205 @@
+import Foundation
+
+// A damped harmonic oscillator, solved rather than stepped.
+//
+// The alternative — integrating `v += -k*x - c*v` once per frame — makes the
+// motion a function of the frame rate: the same spring settles differently at
+// 60Hz and 120Hz, and a frame that arrives late overshoots. The closed form
+// below is evaluated at an absolute time, so a dropped frame changes nothing
+// about where the value is, and a test can ask where a spring will be at 300ms
+// without running 18 frames to find out.
+//
+// A spring is described the way a designer states one — how long it takes and
+// how much it bounces — not as a stiffness and a damping coefficient. The two
+// are the same numbers: with unit mass, `stiffness = (2π/response)²` and
+// `damping = 4πζ/response`. Response is the period of the undamped oscillation
+// the spring would have, which is what makes it read as a duration; the damping
+// fraction is that oscillation's decay, where 1.0 is the fastest approach that
+// never crosses the target.
+
+struct MotionSpring {
+    // The undamped period, in seconds. Lower is faster. This is SwiftUI's
+    // `response` and the "response" column of Apple's own motion table.
+    let response: Float = 0.5
+    // The damping fraction ζ. 1.0 settles without ever passing the target;
+    // below that the value overshoots and comes back, and the deficit is what
+    // "bounce" means — a spring written as `bounce: 0.3` is ζ = 0.7.
+    let damping: Float = 1.0
+    // What the spring pulls toward.
+    let target: Float = 0.0
+}
+
+// A spring in flight: where it started, how fast, and when.
+//
+// Held apart from the spring itself because the two have different lifetimes.
+// The spring is a description a widget states once; this is the state of one
+// journey, and retargeting mid-flight replaces it while the description stands.
+struct MotionSpringState {
+    var spring: MotionSpring = MotionSpring {}
+    // Where the value was when this journey began, and how fast it was moving.
+    var origin: Float = 0.0
+    var velocity: Float = 0.0
+    // Seconds elapsed since the journey began.
+    var elapsed: Float = 0.0
+}
+
+// The angular frequency ω₀ = 2π/response.
+//
+// A response of zero would be an infinitely stiff spring, which has no motion
+// to describe; it is clamped to a frame at 120Hz rather than allowed to divide
+// by zero, so a caller that computes a response from a duration and gets zero
+// snaps instead of producing a NaN that spreads through the frame.
+function motionSpringOmega(spring: borrow MotionSpring) -> Float {
+    let response = max(spring.response, 0.008333)
+    return 6.283185307179586 / response
+}
+
+// The stiffness and damping coefficient the same spring has at unit mass, for
+// callers that hold a spring in those terms — a physics engine, or a designer
+// tool showing both spellings of one spring.
+function motionSpringStiffness(spring: borrow MotionSpring) -> Float {
+    let omega = motionSpringOmega(spring)
+    return omega * omega
+}
+
+function motionSpringDampingCoefficient(spring: borrow MotionSpring) -> Float {
+    return 2.0 * max(spring.damping, 0.0) * motionSpringOmega(spring)
+}
+
+// A spring written as a stiffness and a damping coefficient — the spelling a
+// physics engine and `interpolatingSpring` use — as one written as a response
+// and a fraction. Both describe the same oscillator; only one reads as a
+// duration.
+function motionSpringFromCoefficients(stiffness: Float, damping: Float, target: Float) -> MotionSpring {
+    let k = max(stiffness, 0.0001)
+    let omega = sqrt(k)
+    return MotionSpring {
+        response: 6.283185307179586 / omega,
+        damping: damping / (2.0 * omega),
+        target: target
+    }
+}
+
+// Starts a spring from a value and a velocity.
+//
+// The velocity is the one the value ALREADY has — a finger's at the moment it
+// lifts, or the one a previous animation was carrying. Handing it over is what
+// makes a release continue the gesture rather than restart from still.
+function motionSpringStart(spring: MotionSpring, from: Float, velocity: Float) -> MotionSpringState {
+    return MotionSpringState {
+        spring: spring,
+        origin: from,
+        velocity: velocity,
+        elapsed: 0.0
+    }
+}
+
+// The displacement from the target at `t` seconds, and its rate of change.
+//
+// Solved in the three regimes the discriminant gives, because one expression
+// cannot cover them: under critical damping the roots are complex and the
+// motion is a decaying sine, at critical damping they coincide and the sine
+// degenerates to a linear term, and above it they are two real exponentials.
+// Using the underdamped form near ζ = 1 divides by an ωd that has gone to
+// zero, which is where a spring written once and reused at damping 1.0 turns
+// into NaN.
+struct MotionSpringSample {
+    let value: Float = 0.0
+    let velocity: Float = 0.0
+}
+
+function motionSpringSample(state: borrow MotionSpringState, t: Float) -> MotionSpringSample {
+    let spring = state.spring
+    let omega = motionSpringOmega(spring)
+    let zeta = max(spring.damping, 0.0)
+    // Displacement is measured from the target, so the whole solution is of a
+    // spring pulling to zero and the target is added back at the end.
+    let x0 = state.origin - spring.target
+    let v0 = state.velocity
+    let time = max(t, 0.0)
+
+    if zeta < 0.9999 {
+        let omegaD = omega * sqrt(1.0 - zeta * zeta)
+        let decay = exp(-zeta * omega * time)
+        let c1 = x0
+        let c2 = (v0 + zeta * omega * x0) / omegaD
+        let s = sin(omegaD * time)
+        let c = cos(omegaD * time)
+        let x = decay * (c1 * c + c2 * s)
+        // The product rule on the line above: the envelope's derivative times
+        // the oscillation, plus the envelope times the oscillation's.
+        let v = decay * ((-zeta * omega) * (c1 * c + c2 * s) + omegaD * (c2 * c - c1 * s))
+        return MotionSpringSample { value: spring.target + x, velocity: v }
+    }
+
+    if zeta < 1.0001 {
+        let decay = exp(-omega * time)
+        let coefficient = v0 + omega * x0
+        let x = (x0 + coefficient * time) * decay
+        let v = (coefficient - omega * (x0 + coefficient * time)) * decay
+        return MotionSpringSample { value: spring.target + x, velocity: v }
+    }
+
+    let root = omega * sqrt(zeta * zeta - 1.0)
+    let r1 = -omega * zeta + root
+    let r2 = -omega * zeta - root
+    let c1 = (v0 - r2 * x0) / (r1 - r2)
+    let c2 = x0 - c1
+    let e1 = exp(r1 * time)
+    let e2 = exp(r2 * time)
+    return MotionSpringSample {
+        value: spring.target + c1 * e1 + c2 * e2,
+        velocity: c1 * r1 * e1 + c2 * r2 * e2
+    }
+}
+
+// Advances a spring by one frame and answers where it now is.
+//
+// `delta` is the frame's own duration rather than a fixed step: the sample is
+// taken at an absolute elapsed time, so a long frame lands exactly where three
+// short ones would have.
+function motionSpringAdvance(state: borrow mut MotionSpringState, delta: Float) -> MotionSpringSample {
+    state.elapsed += max(delta, 0.0)
+    return motionSpringSample(state, state.elapsed)
+}
+
+// Whether the spring has arrived, to within a tolerance scaled by how far it
+// had to travel.
+//
+// Both conditions are needed. A value passing through its target at speed is
+// not settled, and a value that has crept to a stop short of it is not either;
+// checking only position stops the animation mid-swing, and checking only
+// velocity leaves it running while nothing visibly moves.
+function motionSpringSettled(state: borrow MotionSpringState, sample: borrow MotionSpringSample, epsilon: Float) -> Bool {
+    let scale = max(abs(state.origin - state.spring.target), 1.0)
+    let tolerance = epsilon * scale
+    if abs(sample.value - state.spring.target) > tolerance {
+        return false
+    }
+    return abs(sample.velocity) <= tolerance * 8.0
+}
+
+// A tolerance fine enough that the last frame it hides is below a pixel.
+function motionSpringEpsilon() -> Float {
+    return 0.001
+}
+
+// Retargets a spring in flight, keeping the velocity it currently has.
+//
+// This is the whole reason the state carries a velocity. A widget whose target
+// changes mid-animation — a list that scrolls again before the last scroll
+// settled, a toggle flicked twice — restarts here from where it actually is,
+// moving as fast as it actually was. Starting from rest instead is the visible
+// hitch that makes an interface feel like it is fighting the user.
+function motionSpringRetarget(state: borrow mut MotionSpringState, target: Float) {
+    let now = motionSpringSample(state, state.elapsed)
+    state.spring = MotionSpring {
+        response: state.spring.response,
+        damping: state.spring.damping,
+        target: target
+    }
+    state.origin = now.value
+    state.velocity = now.velocity
+    state.elapsed = 0.0
+    return
+}

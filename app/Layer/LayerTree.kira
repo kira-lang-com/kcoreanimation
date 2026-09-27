@@ -1,0 +1,660 @@
+import Foundation
+
+// The retained layer tree: stable handles, a model/presentation value per
+// animatable channel, a nested-transaction stack, damage bits, and a keyed
+// reconcile. The tree is a real owned value the caller HOLDS across frames — it
+// is not rebuilt each frame and it does not hide behind a native handle. A
+// `LayerId` names a node for the tree's whole life; the node behind it is found
+// through a dense id->slot index so a lookup is O(1) and never a scan.
+//
+// Time is absolute: the tree carries a clock, every set stamps a channel with
+// it, and a frame samples every channel at the clock reading it was handed. The
+// delta form (`advance`) is the clock advanced by dt and then sampled.
+
+distinct LayerId = Int
+
+function caNoLayer() -> LayerId {
+    return LayerId(0)
+}
+
+// Where a layer draws in the z order. `Inline` draws in tree order under its
+// ancestors' clips. `Overlay(level)` escapes every ancestor clip and draws from
+// the canvas root, ordered by level (lower first), after all inline content —
+// the semantic hoist a menu, popover or dialog needs.
+function caDuplicateLayerKeyTrap(key: Int) {
+    printLine("KCoreAnimation: duplicate sibling layer key " + String(key) + " is ambiguous and is not allowed")
+    let ignored = "duplicate-layer-key".charAt("duplicate-layer-key".count)
+    return
+}
+
+struct CALayerTree {
+    var nodes: [CALayerNode] = []
+    var indexOfId: [Option<LayerSlot>] = []
+    var nextId: LayerId = LayerId(1)
+    var rootId: LayerId = LayerId(0)
+    var txStack: [CATiming] = []
+    var overlays: [LayerId] = []
+    var moving: Bool = false
+    var teardownCount: Int = 0
+    // Absolute clock, in seconds. Sets stamp channels with it; a frame samples
+    // every channel at it. Fed from the graphics monotonic clock by the runner.
+    var clock: Float = 0.0
+    function nodeSlot(id: LayerId) -> Option<LayerSlot> {
+        if id.raw <= 0 || id.raw >= self.indexOfId.count { return .None }
+        return self.indexOfId[id.raw]
+    }
+
+    // --- construction ------------------------------------------------------
+
+    function makeLayer(parent: LayerId, key: Int, content: CAContent) -> LayerId {
+        if parent != LayerId(0) && key != 0 {
+            match self.nodeSlot(parent) {
+                Some(parentSlot) -> {
+                    for childId in self.nodes[parentSlot.raw].childIds {
+                        match self.nodeSlot(childId) {
+                            Some(childSlot) -> {
+                                if self.nodes[childSlot.raw].mounted && self.nodes[childSlot.raw].key == key { caDuplicateLayerKeyTrap(key) }
+                            }
+                            None -> {}
+                        }
+                    }
+                }
+                None -> {}
+            }
+        }
+        let newId = self.nextId
+        self.nextId = LayerId(self.nextId.raw + 1)
+        let signature = caContentSignature(content)
+        var node = CALayerNode {
+            id: newId,
+            parentId: parent,
+            key: key,
+            content: move content,
+            contentSignature: signature,
+            reused: true
+        }
+        let index = self.nodes.count
+        self.nodes.append(move node)
+        while self.indexOfId.count <= newId.raw {
+            self.indexOfId.append(.None)
+        }
+        self.indexOfId[newId.raw] = .Some(LayerSlot(index))
+        var created = self.nodes[index]
+        caInitAppearanceFromContent(created)
+        self.nodes[index] = created
+        if parent == LayerId(0) {
+            self.rootId = newId
+        } else {
+            match self.nodeSlot(parent) {
+                Some(pidx) -> {
+                    var p = self.nodes[pidx.raw]
+                    p.childIds.append(newId)
+                    self.nodes[pidx.raw] = p
+                }
+                None -> {}
+            }
+        }
+        return newId
+    }
+
+    // --- transactions ------------------------------------------------------
+
+    function beginTransaction(timing: CATiming) {
+        self.txStack.append(move timing)
+        return
+    }
+
+    function commitTransaction() {
+        if self.txStack.count > 0 {
+            var shorter: [CATiming] = []
+            let keep = self.txStack.count - 1
+            for i in 0..keep {
+                shorter.append(self.txStack[i])
+            }
+            self.txStack = move shorter
+        }
+        return
+    }
+
+    // The action a set fires under: the innermost open transaction, or the
+    // default 0.25s ease-out when none is open.
+    function currentTiming() -> CATiming {
+        if self.txStack.count == 0 {
+            return caDefaultTiming()
+        }
+        return self.txStack[self.txStack.count - 1]
+    }
+
+    // --- animatable setters (idiomatic method surface) ---------------------
+
+    function setPosition(id: LayerId, x: Float, y: Float) {
+        var idx = LayerSlot(0)
+    match self.nodeSlot(id) {
+        None -> { return }
+        Some(slot) -> { idx = slot }
+    }
+        let timing = self.currentTiming()
+        var node = self.nodes[idx.raw]
+        let changedX = caApplyTiming(node.posX, timing, x, self.clock)
+        let changedY = caApplyTiming(node.posY, timing, y, self.clock)
+        if changedX || changedY {
+            node.damaged = true
+        }
+        self.nodes[idx.raw] = node
+        return
+    }
+
+    function setBounds(id: LayerId, width: Float, height: Float) {
+        var idx = LayerSlot(0)
+    match self.nodeSlot(id) {
+        None -> { return }
+        Some(slot) -> { idx = slot }
+    }
+        let timing = self.currentTiming()
+        var node = self.nodes[idx.raw]
+        let changedW = caApplyTiming(node.boundsW, timing, width, self.clock)
+        let changedH = caApplyTiming(node.boundsH, timing, height, self.clock)
+        if changedW || changedH {
+            node.damaged = true
+        }
+        self.nodes[idx.raw] = node
+        return
+    }
+
+    function setFrame(id: LayerId, x: Float, y: Float, width: Float, height: Float) {
+        self.setPosition(id, x, y)
+        self.setBounds(id, width, height)
+        return
+    }
+
+    function setOpacity(id: LayerId, value: Float) {
+        var idx = LayerSlot(0)
+    match self.nodeSlot(id) {
+        None -> { return }
+        Some(slot) -> { idx = slot }
+    }
+        let timing = self.currentTiming()
+        var node = self.nodes[idx.raw]
+        if caApplyTiming(node.opacity, timing, value, self.clock) {
+            node.damaged = true
+        }
+        self.nodes[idx.raw] = node
+        return
+    }
+
+    function setScale(id: LayerId, scaleX: Float, scaleY: Float) {
+        var idx = LayerSlot(0)
+    match self.nodeSlot(id) {
+        None -> { return }
+        Some(slot) -> { idx = slot }
+    }
+        let timing = self.currentTiming()
+        var node = self.nodes[idx.raw]
+        let changedX = caApplyTiming(node.scaleX, timing, scaleX, self.clock)
+        let changedY = caApplyTiming(node.scaleY, timing, scaleY, self.clock)
+        if changedX || changedY {
+            node.damaged = true
+        }
+        self.nodes[idx.raw] = node
+        return
+    }
+
+    function setRotation(id: LayerId, radians: Float) {
+        var idx = LayerSlot(0)
+    match self.nodeSlot(id) {
+        None -> { return }
+        Some(slot) -> { idx = slot }
+    }
+        let timing = self.currentTiming()
+        var node = self.nodes[idx.raw]
+        if caApplyTiming(node.rotation, timing, radians, self.clock) {
+            node.damaged = true
+        }
+        self.nodes[idx.raw] = node
+        return
+    }
+
+    // --- animatable appearance ---------------------------------------------
+
+    function setFillColor(id: LayerId, color: CAColor) {
+        var idx = LayerSlot(0)
+    match self.nodeSlot(id) {
+        None -> { return }
+        Some(slot) -> { idx = slot }
+    }
+        let timing = self.currentTiming()
+        var node = self.nodes[idx.raw]
+        if caColorApplyTiming(node.fillColor, timing, color, self.clock) {
+            node.damaged = true
+        }
+        self.nodes[idx.raw] = node
+        return
+    }
+
+    function setBorderColor(id: LayerId, color: CAColor) {
+        var idx = LayerSlot(0)
+    match self.nodeSlot(id) {
+        None -> { return }
+        Some(slot) -> { idx = slot }
+    }
+        let timing = self.currentTiming()
+        var node = self.nodes[idx.raw]
+        if caColorApplyTiming(node.borderColor, timing, color, self.clock) {
+            node.damaged = true
+        }
+        self.nodes[idx.raw] = node
+        return
+    }
+
+    function setCornerRadius(id: LayerId, radius: Float) {
+        var idx = LayerSlot(0)
+    match self.nodeSlot(id) {
+        None -> { return }
+        Some(slot) -> { idx = slot }
+    }
+        let timing = self.currentTiming()
+        var node = self.nodes[idx.raw]
+        if caApplyTiming(node.cornerRadius, timing, radius, self.clock) {
+            node.damaged = true
+        }
+        self.nodes[idx.raw] = node
+        return
+    }
+
+    function setBorderWidth(id: LayerId, width: Float) {
+        var idx = LayerSlot(0)
+    match self.nodeSlot(id) {
+        None -> { return }
+        Some(slot) -> { idx = slot }
+    }
+        let timing = self.currentTiming()
+        var node = self.nodes[idx.raw]
+        if caApplyTiming(node.borderWidth, timing, width, self.clock) {
+            node.damaged = true
+        }
+        self.nodes[idx.raw] = node
+        return
+    }
+
+    // Shadow: blur radius, opacity, and offset — each animatable.
+    function setShadow(id: LayerId, radius: Float, opacity: Float, offsetX: Float, offsetY: Float) {
+        var idx = LayerSlot(0)
+    match self.nodeSlot(id) {
+        None -> { return }
+        Some(slot) -> { idx = slot }
+    }
+        let timing = self.currentTiming()
+        var node = self.nodes[idx.raw]
+        let changedRadius = caApplyTiming(node.shadowRadius, timing, radius, self.clock)
+        let changedOpacity = caApplyTiming(node.shadowOpacity, timing, opacity, self.clock)
+        let changedX = caApplyTiming(node.shadowX, timing, offsetX, self.clock)
+        let changedY = caApplyTiming(node.shadowY, timing, offsetY, self.clock)
+        if changedRadius || changedOpacity || changedX || changedY {
+            node.damaged = true
+        }
+        self.nodes[idx.raw] = node
+        return
+    }
+
+    function setShadowColor(id: LayerId, color: CAColor) {
+        var idx = LayerSlot(0)
+    match self.nodeSlot(id) {
+        None -> { return }
+        Some(slot) -> { idx = slot }
+    }
+        let timing = self.currentTiming()
+        var node = self.nodes[idx.raw]
+        if caColorApplyTiming(node.shadowColor, timing, color, self.clock) {
+            node.damaged = true
+        }
+        self.nodes[idx.raw] = node
+        return
+    }
+
+    // --- non-animated structure --------------------------------------------
+
+    function setContent(id: LayerId, content: CAContent) {
+        var idx = LayerSlot(0)
+    match self.nodeSlot(id) {
+        None -> { return }
+        Some(slot) -> { idx = slot }
+    }
+        let signature = caContentSignature(content)
+        var node = self.nodes[idx.raw]
+        if signature != node.contentSignature {
+            node.damaged = true
+        }
+        node.content = move content
+        node.contentSignature = signature
+        self.nodes[idx.raw] = node
+        return
+    }
+
+    function setAnchor(id: LayerId, anchorX: Float, anchorY: Float) {
+        var idx = LayerSlot(0)
+        match self.nodeSlot(id) {
+            None -> { return }
+            Some(slot) -> { idx = slot }
+        }
+        var node = self.nodes[idx.raw]
+        if node.anchorX != anchorX || node.anchorY != anchorY {
+            node.anchorX = anchorX
+            node.anchorY = anchorY
+            node.damaged = true
+            self.nodes[idx.raw] = node
+        }
+        return
+    }
+
+    function setClip(id: LayerId, clip: Bool) {
+        var idx = LayerSlot(0)
+        match self.nodeSlot(id) {
+            None -> { return }
+            Some(slot) -> { idx = slot }
+        }
+        var node = self.nodes[idx.raw]
+        if node.clip != clip {
+            node.clip = clip
+            node.damaged = true
+            self.nodes[idx.raw] = node
+        }
+        return
+    }
+
+    function setGroupOpacity(id: LayerId, group: Bool) {
+        var idx = LayerSlot(0)
+        match self.nodeSlot(id) {
+            None -> { return }
+            Some(slot) -> { idx = slot }
+        }
+        var node = self.nodes[idx.raw]
+        if node.groupOpacity != group {
+            node.groupOpacity = group
+            node.damaged = true
+            self.nodes[idx.raw] = node
+        }
+        return
+    }
+
+    function setRenderTarget(id: LayerId, enabled: Bool, targetId: RenderTargetId) {
+        var idx = LayerSlot(0)
+        match self.nodeSlot(id) {
+            None -> { return }
+            Some(slot) -> { idx = slot }
+        }
+        var node = self.nodes[idx.raw]
+        if node.renderTarget != enabled || node.renderTargetId != targetId {
+            node.renderTarget = enabled
+            node.renderTargetId = targetId
+            node.damaged = true
+            self.nodes[idx.raw] = node
+        }
+        return
+    }
+
+    function setCapturesBackdrop(id: LayerId, captures: Bool) {
+        var idx = LayerSlot(0)
+        match self.nodeSlot(id) {
+            None -> { return }
+            Some(slot) -> { idx = slot }
+        }
+        var node = self.nodes[idx.raw]
+        if node.capturesBackdrop != captures {
+            node.capturesBackdrop = captures
+            node.damaged = true
+            self.nodes[idx.raw] = node
+        }
+        return
+    }
+
+    function setHit(id: LayerId, hit: Bool, hitKey: Int) {
+        var idx = LayerSlot(0)
+        match self.nodeSlot(id) {
+            None -> { return }
+            Some(slot) -> { idx = slot }
+        }
+        var node = self.nodes[idx.raw]
+        if node.hit != hit || node.hitKey != hitKey {
+            node.hit = hit
+            node.hitKey = hitKey
+            self.nodes[idx.raw] = node
+        }
+        return
+    }
+
+    // Set the layer's z level. Overlay(level) also hoists it out of ancestor
+    // clips; Inline puts it back in tree order.
+    function setLevel(id: LayerId, level: CALevel) {
+        var idx = LayerSlot(0)
+    match self.nodeSlot(id) {
+        None -> { return }
+        Some(slot) -> { idx = slot }
+    }
+        var node = self.nodes[idx.raw]
+        var overlay = false
+        match level {
+            Inline -> {
+                overlay = false
+            }
+            Overlay(z) -> {
+                overlay = true
+            }
+        }
+        node.level = move level
+        node.hoisted = overlay
+        self.nodes[idx.raw] = node
+        if overlay && !caIntArrayContains(self.overlays, id) {
+            self.overlays.append(id)
+        }
+        return
+    }
+
+    // Lift a layer onto the overlay list at level 0.
+    function hoist(id: LayerId) {
+        self.setLevel(id, .Overlay(0))
+        return
+    }
+
+    // --- clock and frame sampling ------------------------------------------
+
+    function setClock(now: Float) {
+        self.clock = now
+        return
+    }
+
+    // Sample every channel at the current clock; returns whether anything is
+    // still moving (what a runner passes as `needsRebuild`).
+    function sample() -> Bool {
+        var anyMoving = false
+        for i in 0..self.nodes.count {
+            var node = self.nodes[i]
+            if node.mounted {
+                if caSampleNode(node, self.clock) {
+                    node.damaged = true
+                    anyMoving = true
+                }
+                self.nodes[i] = node
+            }
+        }
+        self.moving = anyMoving
+        return anyMoving
+    }
+
+    // Set the absolute clock and sample. Drift-free: the result depends only on
+    // `now`, never on how the frames leading here were spaced.
+    function sampleAt(now: Float) -> Bool {
+        self.clock = now
+        return self.sample()
+    }
+
+    // Compatibility delta form: advance the clock by dt and sample.
+    function advance(dt: Float) -> Bool {
+        self.clock += dt
+        return self.sample()
+    }
+
+    function clearDamage() {
+        for i in 0..self.nodes.count {
+            var node = self.nodes[i]
+            node.damaged = false
+            self.nodes[i] = node
+        }
+        return
+    }
+
+    // --- keyed reconcile ---------------------------------------------------
+
+    function beginReconcile() {
+        for i in 0..self.nodes.count {
+            var node = self.nodes[i]
+            node.reused = false
+            self.nodes[i] = node
+        }
+        return
+    }
+
+    function reuse(id: LayerId) {
+        match self.nodeSlot(id) {
+            None -> { return }
+            Some(slot) -> {
+                var node = self.nodes[slot.raw]
+                node.reused = true
+                self.nodes[slot.raw] = node
+            }
+        }
+        return
+    }
+
+    function matchChild(parent: LayerId, key: Int) -> LayerId {
+        var pidx = LayerSlot(0)
+        match self.nodeSlot(parent) {
+            None -> { return LayerId(0) }
+            Some(slot) -> { pidx = slot }
+        }
+        let parentNode = self.nodes[pidx.raw]
+        for childId in parentNode.childIds {
+            var cidx = LayerSlot(0)
+            match self.nodeSlot(childId) {
+                None -> { continue }
+                Some(slot) -> { cidx = slot }
+            }
+            let child = self.nodes[cidx.raw]
+            if child.mounted && !child.reused && child.key == key {
+                self.reuse(childId)
+                return childId
+            }
+        }
+        return LayerId(0)
+    }
+
+    function setChildren(parent: LayerId, childIds: [LayerId]) {
+        match self.nodeSlot(parent) {
+            None -> { return }
+            Some(slot) -> {
+                var node = self.nodes[slot.raw]
+                if !caLayerIdsEqual(node.childIds, childIds) {
+                    node.childIds = move childIds
+                    node.damaged = true
+                    self.nodes[slot.raw] = node
+                }
+            }
+        }
+        return
+    }
+
+    function endReconcile() -> Int {
+        var torn = 0
+        for i in 0..self.nodes.count {
+            var node = self.nodes[i]
+            if node.mounted && !node.reused && node.id != self.rootId {
+                node.mounted = false
+                torn += 1
+            }
+            self.nodes[i] = node
+        }
+        self.teardownCount += torn
+        return torn
+    }
+
+    // --- queries (presentation is what is on screen this frame) ------------
+
+    function presentationOpacity(id: LayerId) -> Float {
+        match self.nodeSlot(id) { None -> { return 0.0 } Some(idx) -> { return self.nodes[idx.raw].opacity.presentation } }
+    }
+
+    function presentationX(id: LayerId) -> Float {
+        match self.nodeSlot(id) { None -> { return 0.0 } Some(idx) -> { return self.nodes[idx.raw].posX.presentation } }
+    }
+
+    function presentationBoundsW(id: LayerId) -> Float {
+        match self.nodeSlot(id) { None -> { return 0.0 } Some(idx) -> { return self.nodes[idx.raw].boundsW.presentation } }
+    }
+
+    function presentationCornerRadius(id: LayerId) -> Float {
+        match self.nodeSlot(id) { None -> { return 0.0 } Some(idx) -> { return self.nodes[idx.raw].cornerRadius.presentation } }
+    }
+
+    function presentationFillColor(id: LayerId) -> CAColor {
+        match self.nodeSlot(id) { None -> { return CAColor {} } Some(idx) -> { return caColorChannelPresentation(self.nodes[idx.raw].fillColor) } }
+    }
+
+    function modelOpacity(id: LayerId) -> Float {
+        match self.nodeSlot(id) { None -> { return 0.0 } Some(idx) -> { return self.nodes[idx.raw].opacity.model } }
+    }
+
+    function opacityVelocity(id: LayerId) -> Float {
+        match self.nodeSlot(id) { None -> { return 0.0 } Some(idx) -> { return caChannelVelocity(self.nodes[idx.raw].opacity, self.clock) } }
+    }
+
+    function isAnimating(id: LayerId) -> Bool {
+        match self.nodeSlot(id) {
+            None -> return false
+            Some(idx) -> {
+                let node = self.nodes[idx.raw]
+                return node.posX.animating || node.posY.animating || node.boundsW.animating
+                    || node.boundsH.animating || node.opacity.animating || node.scaleX.animating
+                    || node.scaleY.animating || node.rotation.animating || node.cornerRadius.animating
+                    || node.borderWidth.animating || node.fillColor.progress.animating
+            }
+        }
+    }
+
+    function isDamaged(id: LayerId) -> Bool {
+        match self.nodeSlot(id) { None -> { return false } Some(idx) -> { return self.nodes[idx.raw].damaged } }
+    }
+
+    function childCount(id: LayerId) -> Int {
+        match self.nodeSlot(id) { None -> { return 0 } Some(idx) -> { return self.nodes[idx.raw].childIds.count } }
+    }
+
+    function isMounted(id: LayerId) -> Bool {
+        match self.nodeSlot(id) { None -> { return false } Some(idx) -> { return self.nodes[idx.raw].mounted } }
+    }
+
+}
+
+function caLayerTree() -> CALayerTree {
+    return CALayerTree {}
+}
+
+function caIntArrayContains(values: borrow [LayerId], value: LayerId) -> Bool {
+    for candidate in values {
+        if candidate == value {
+            return true
+        }
+    }
+    return false
+}
+
+function caLayerIdsEqual(a: borrow [LayerId], b: borrow [LayerId]) -> Bool {
+    if a.count != b.count {
+        return false
+    }
+    for i in 0..a.count {
+        if a[i] != b[i] {
+            return false
+        }
+    }
+    return true
+}
+

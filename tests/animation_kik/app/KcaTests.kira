@@ -1,0 +1,348 @@
+import Foundation
+import KCoreAnimation
+
+// Numeric assertions on the retained core: layer tree, model/presentation implicit
+// animation, nested transactions, velocity-preserving spring retarget, keyed
+// reconcile, overlay hoist, transform-aware and clip-respecting hit testing, and
+// absolute-time sampling. Every value is reachable with no window, so the whole
+// file runs on the VM through the pure-source isolation (tools/test-animation.sh);
+// the compositor's FFI submit is proven separately on LLVM.
+
+function caScaled(value: Float, digits: Int) -> Int {
+    var scale = 1.0
+    for i in 0..digits {
+        scale = scale * 10.0
+    }
+    return Int(round(value * scale))
+}
+
+// A card faded 1->0 with the default action (0.25s ease-out), advanced to the
+// half-way point: easeOut(0.5) = 1 - 0.5^3 = 0.875, so 1->0 gives 0.125.
+construct CaEaseOutMidpoint() extends Test {
+    test {
+        var tree = caLayerTree()
+        let card = tree.makeLayer(caNoLayer(), 0, .Empty)
+        tree.setOpacity(card, 0.0)
+        tree.advance(0.125)
+        return caScaled(tree.presentationOpacity(card), 3)
+    }
+    expect {
+        let e: Result<Any, TestFailure> = .Ok(125)
+        return e
+    }
+}
+
+construct CaDefaultActionDuration() extends Test {
+    test {
+        let tree = caLayerTree()
+        return caScaled(tree.currentTiming().duration, 3)
+    }
+    expect {
+        let e: Result<Any, TestFailure> = .Ok(250)
+        return e
+    }
+}
+
+construct CaEaseLandsExact() extends Test {
+    test {
+        var tree = caLayerTree()
+        let card = tree.makeLayer(caNoLayer(), 0, .Empty)
+        tree.setOpacity(card, 0.0)
+        tree.advance(0.5)
+        return caScaled(tree.presentationOpacity(card), 6)
+    }
+    expect {
+        let e: Result<Any, TestFailure> = .Ok(0)
+        return e
+    }
+}
+
+// A spring retargeted mid-flight keeps its velocity: 1 iff velocity is continuous
+// across the retarget AND it was moving.
+construct CaSpringRetargetVelocity() extends Test {
+    test {
+        var tree = caLayerTree()
+        let node = tree.makeLayer(caNoLayer(), 0, .Empty)
+        tree.beginTransaction(caSpringTiming(.Bouncy, false))
+        tree.setOpacity(node, 0.0)
+        tree.advance(0.05)
+        tree.advance(0.05)
+        let vBefore = tree.opacityVelocity(node)
+        tree.setOpacity(node, 1.0)
+        let vAfter = tree.opacityVelocity(node)
+        var moving = false
+        if vBefore > 0.01 || vBefore < 0.0 - 0.01 {
+            moving = true
+        }
+        var diff = vBefore - vAfter
+        if diff < 0.0 {
+            diff = 0.0 - diff
+        }
+        if moving && diff <= 0.0005 {
+            return 1
+        }
+        return 0
+    }
+    expect {
+        let e: Result<Any, TestFailure> = .Ok(1)
+        return e
+    }
+}
+
+// Nested transactions: the innermost open one supplies the timing.
+construct CaNestedInnerTiming() extends Test {
+    test {
+        var tree = caLayerTree()
+        tree.beginTransaction(caEaseTiming(0.5, .Linear))
+        tree.beginTransaction(caEaseTiming(0.1, .EaseIn))
+        let inner = caScaled(tree.currentTiming().duration, 3)
+        tree.commitTransaction()
+        let outer = caScaled(tree.currentTiming().duration, 3)
+        return inner * 1000 + outer
+    }
+    expect {
+        let e: Result<Any, TestFailure> = .Ok(100500)
+        return e
+    }
+}
+
+// Transform-aware hit testing: a 200x100 box at (100,100) rotated 90 degrees
+// about its centre (200,150) spans x[150,250] y[50,250]. (200,240) is inside the
+// rotated shape but outside the un-rotated bounds; (285,150) is the reverse.
+construct CaTransformRotatedHit() extends Test {
+    test {
+        var tree = caLayerTree()
+        let root = tree.makeLayer(caNoLayer(), 0, .Empty)
+        tree.setBounds(root, 800.0, 600.0)
+        let box = tree.makeLayer(root, 5, .Solid(CASolid {}))
+        tree.beginTransaction(caImmediateTiming())
+        tree.setFrame(box, 100.0, 100.0, 200.0, 100.0)
+        tree.setHit(box, true, 7)
+        tree.setRotation(box, 1.5707963267948966)
+        tree.commitTransaction()
+        let inside = caHitTestTree(tree, 200.0, 240.0)
+        let corner = caHitTestTree(tree, 285.0, 150.0)
+        var code = 0
+        if inside.hit {
+            code = code + inside.hitKey * 100
+        }
+        if corner.hit {
+            code = code + 1
+        }
+        return code
+    }
+    expect {
+        let e: Result<Any, TestFailure> = .Ok(700)
+        return e
+    }
+}
+
+// A clipped container hides the part of a child that overflows it. A press inside
+// the clip lands; a press over the child but outside the clip does not.
+construct CaClipHitRespected() extends Test {
+    test {
+        var tree = caLayerTree()
+        let root = tree.makeLayer(caNoLayer(), 0, .Empty)
+        tree.setBounds(root, 800.0, 600.0)
+        let panel = tree.makeLayer(root, 1, .Empty)
+        let child = tree.makeLayer(panel, 2, .Solid(CASolid {}))
+        tree.beginTransaction(caImmediateTiming())
+        tree.setFrame(panel, 100.0, 100.0, 200.0, 200.0)
+        tree.setClip(panel, true)
+        tree.setFrame(child, 50.0, 50.0, 400.0, 400.0)
+        tree.setHit(child, true, 9)
+        tree.commitTransaction()
+        // child world spans (150,150)-(550,550); panel clip is (100,100)-(300,300).
+        let inside = caHitTestTree(tree, 250.0, 250.0)
+        let outside = caHitTestTree(tree, 350.0, 350.0)
+        var code = 0
+        if inside.hit {
+            code = code + inside.hitKey * 10
+        }
+        if outside.hit {
+            code = code + 1
+        }
+        return code
+    }
+    expect {
+        let e: Result<Any, TestFailure> = .Ok(90)
+        return e
+    }
+}
+
+// Keyed reconcile: survivors keep identity, an absent key is torn down once.
+construct CaReconcileTeardown() extends Test {
+    test {
+        var tree = caLayerTree()
+        let root = tree.makeLayer(caNoLayer(), 0, .Empty)
+        let a = tree.makeLayer(root, 11, .Solid(CASolid {}))
+        let b = tree.makeLayer(root, 22, .Solid(CASolid {}))
+        let c = tree.makeLayer(root, 33, .Solid(CASolid {}))
+        tree.beginReconcile()
+        let mA = tree.matchChild(root, 11)
+        let mC = tree.matchChild(root, 33)
+        let torn = tree.endReconcile()
+        var code = torn * 1000
+        if tree.isMounted(a) && mA == a {
+            code = code + 100
+        }
+        if tree.isMounted(b) {
+            code = code + 10
+        }
+        if tree.isMounted(c) && mC == c {
+            code = code + 1
+        }
+        return code
+    }
+    expect {
+        let e: Result<Any, TestFailure> = .Ok(1101)
+        return e
+    }
+}
+
+construct CaReconcileKeepsIdentityAcrossContentChange() extends Test {
+    test {
+        var tree = caLayerTree()
+        let root = tree.makeLayer(caNoLayer(), 0, .Empty)
+        let child = tree.makeLayer(root, 7, .Solid(CASolid {}))
+        tree.beginReconcile()
+        tree.reuse(root)
+        let matched = tree.matchChild(root, 7)
+        tree.setContent(matched, .Glass(CAGlass {}))
+        tree.endReconcile()
+        if matched == child && tree.isMounted(child) {
+            return 1
+        }
+        return 0
+    }
+    expect {
+        let e: Result<Any, TestFailure> = .Ok(1)
+        return e
+    }
+}
+
+construct CaReconcileUpdatesSiblingOrder() extends Test {
+    test {
+        var tree = caLayerTree()
+        let root = tree.makeLayer(caNoLayer(), 0, .Empty)
+        let a = tree.makeLayer(root, 1, .Solid(CASolid {}))
+        let b = tree.makeLayer(root, 2, .Solid(CASolid {}))
+        tree.beginReconcile()
+        tree.reuse(root)
+        let rb = tree.matchChild(root, 2)
+        let ra = tree.matchChild(root, 1)
+        tree.setChildren(root, [rb, ra])
+        tree.endReconcile()
+        let items = caFlatten(tree)
+        if items.count >= 3 && items[1].layer == b && items[2].layer == a {
+            return 1
+        }
+        return 0
+    }
+    expect {
+        let e: Result<Any, TestFailure> = .Ok(1)
+        return e
+    }
+}
+
+// A hoisted overlay flattens last, so it draws over the tree that declared it.
+construct CaOverlayFlattensLast() extends Test {
+    test {
+        var tree = caLayerTree()
+        let root = tree.makeLayer(caNoLayer(), 0, .Empty)
+        tree.setBounds(root, 500.0, 500.0)
+        let content = tree.makeLayer(root, 1, .Solid(CASolid {}))
+        let menu = tree.makeLayer(content, 2, .Solid(CASolid {}))
+        tree.beginTransaction(caImmediateTiming())
+        tree.setFrame(menu, 40.0, 40.0, 120.0, 200.0)
+        tree.commitTransaction()
+        tree.hoist(menu)
+        let items = caFlatten(tree)
+        if items.count > 0 && items[items.count - 1].layer == menu {
+            return 1
+        }
+        return 0
+    }
+    expect {
+        let e: Result<Any, TestFailure> = .Ok(1)
+        return e
+    }
+}
+
+// Absolute-time sampling is drift-free: many small advances and a single sample
+// at the same total clock land on the same value (a linear fade at its midpoint).
+construct CaAbsoluteSampleNoDrift() extends Test {
+    test {
+        var stepped = caLayerTree()
+        let sa = stepped.makeLayer(caNoLayer(), 0, .Empty)
+        stepped.beginTransaction(caEaseTiming(1.0, .Linear))
+        stepped.setOpacity(sa, 0.0)
+        stepped.commitTransaction()
+        for i in 0..10 {
+            stepped.advance(0.05)
+        }
+        var direct = caLayerTree()
+        let da = direct.makeLayer(caNoLayer(), 0, .Empty)
+        direct.beginTransaction(caEaseTiming(1.0, .Linear))
+        direct.setOpacity(da, 0.0)
+        direct.commitTransaction()
+        direct.sampleAt(0.5)
+        return caScaled(stepped.presentationOpacity(sa), 3) * 1000 + caScaled(direct.presentationOpacity(da), 3)
+    }
+    expect {
+        let e: Result<Any, TestFailure> = .Ok(500500)
+        return e
+    }
+}
+
+construct CaDeclarativeLayerImmediateReconcileDoesNotAnimate() extends Test {
+    test {
+        var tree = caLayerTree()
+        let first = CALayerDescription { key: 1, opacity: 0.25 }
+        let root = caReconcileImmediate(tree, first)
+        let second = CALayerDescription { key: 1, opacity: 0.75 }
+        let sameRoot = caReconcileImmediate(tree, second)
+        if sameRoot == root && tree.modelOpacity(root) == 0.75 && tree.presentationOpacity(root) == 0.75 {
+            return 1
+        }
+        return 0
+    }
+    expect {
+        let e: Result<Any, TestFailure> = .Ok(1)
+        return e
+    }
+}
+
+construct CaDeclarativeLayerReconcileKeepsIdentity() extends Test {
+    test {
+        var tree = caLayerTree()
+        let first = CALayerDescription {
+            key: 1,
+            opacity: 0.5,
+            sublayers: [CALayerDescription { key: 7, content: .Solid(CASolid {}) }]
+        }
+        let root = caReconcile(tree, first)
+        tree.beginReconcile()
+        tree.reuse(root)
+        let child = tree.matchChild(root, 7)
+        tree.endReconcile()
+        let second = CALayerDescription {
+            key: 1,
+            opacity: 0.75,
+            sublayers: [CALayerDescription { key: 7, content: .Glass(CAGlass {}) }]
+        }
+        let sameRoot = caReconcile(tree, second)
+        tree.beginReconcile()
+        tree.reuse(sameRoot)
+        let sameChild = tree.matchChild(sameRoot, 7)
+        tree.endReconcile()
+        if sameRoot == root && sameChild == child && tree.isMounted(child) && tree.modelOpacity(root) == 0.75 {
+            return 1
+        }
+        return 0
+    }
+    expect {
+        let e: Result<Any, TestFailure> = .Ok(1)
+        return e
+    }
+}

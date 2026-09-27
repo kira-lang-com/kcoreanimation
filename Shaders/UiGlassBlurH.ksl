@@ -1,0 +1,72 @@
+// Liquid glass blur, the horizontal half.
+//
+// Both levels are produced in one pass: near and far read the same source and
+// write their own target, so the pyramid costs one dispatch per axis rather
+// than one per level.
+//
+// This half also owns the backdrop's crossfade. A blur is linear, so filtering
+// `mix(source, secondSource, blend)` is filtering the blend — and doing it here
+// is what removes the full-resolution pass that used to composite the two
+// photographs into a capture texture whose only reader was this kernel, at a
+// quarter of that resolution. At a settled scheme the second source is not read
+// at all.
+//
+// The target extent and the blend weight arrive in a uniform rather than from a
+// texture query, which KSL cannot express — and the host knows the size it
+// allocated anyway. Floats, including the extent: this kernel's only uses of it
+// are the tail-thread bounds test and the texel step it divides out of it.
+
+import UiGlassBlurCommon
+
+type BlurExtent {
+    let width: Float
+    let height: Float
+    let blend: Float
+}
+
+type Q {
+    @builtin(thread_id)
+    let gid: UInt3
+}
+
+shader UiGlassBlurH {
+    // Declared uniform, sampler, reads, writes — the same order and the same
+    // count as the vertical half, so one slot layout serves both and the
+    // dispatch seam can bind by position rather than knowing which of the two
+    // it is encoding.
+    group Blur {
+        uniform extent: BlurExtent
+        sampler glassSmp: Sampler
+        texture source: Texture2d
+        texture secondSource: Texture2d
+        texture write nearOut: Texture2d
+        texture write farOut: Texture2d
+    }
+
+    compute {
+        input Q
+        // Matches the threadgroup the seam dispatches with. A shader that
+        // declared a different one would be wrong on any backend that takes the
+        // size from the shader rather than from the encoder.
+        threads(16, 16, 1)
+
+        function entry(q: Q) {
+            // A dispatch is rounded up to whole threadgroups, so the tail
+            // threads address texels that do not exist.
+            let size = Float2(extent.width, extent.height)
+            let x = Float(q.gid.x)
+            let y = Float(q.gid.y)
+            if x >= size.x {
+                return
+            }
+            if y >= size.y {
+                return
+            }
+            let uv = Float2((x + 0.5) / size.x, (y + 0.5) / size.y)
+            let step = Float2(1.0 / size.x, 0.0)
+            store(nearOut, q.gid.xy, UiGlassBlurCommon.nearFilter(source, secondSource, glassSmp, uv, step, extent.blend))
+            store(farOut, q.gid.xy, UiGlassBlurCommon.farFilter(source, secondSource, glassSmp, uv, step, extent.blend))
+            return
+        }
+    }
+}

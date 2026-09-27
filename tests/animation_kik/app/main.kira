@@ -1,0 +1,16 @@
+// The retained-core suite: layer tree, model/presentation implicit animation,
+// nested transactions, velocity-preserving spring retarget, group opacity,
+// keyed reconcile, overlay hoist, and transform-aware hit testing — every
+// assertion on a value, so it runs with no window.
+//
+//   kira test --backend llvm tests/animation_kik
+//   kira test --backend vm   tests/animation_kik   (pure core; no FFI touched)
+
+import Foundation
+import KCoreAnimation
+
+@Main
+function main() {
+    print("animation-kik")
+    return
+}

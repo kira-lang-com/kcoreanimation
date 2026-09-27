@@ -1,0 +1,301 @@
+import Foundation
+
+// Press a control and pull it: it comes with you, resists, leans after you, and
+// springs back when you let go.
+//
+// The control is ANCHORED — unlike a scrolling surface it has nowhere to go, so
+// every point of the pull is resisted rather than only the part past an edge.
+// That is the difference between dragging a list and dragging a button: the
+// list travels and stops at its end; the button never really travels at all,
+// and the whole gesture is the material giving.
+//
+// Three things move at once and they are three separate springs, because they
+// settle at different rates and one of them is driven by another's velocity:
+//
+//   position — follows the finger through the resistance curve, springs home
+//   press    — the swell or shrink under the fingertip, on its own short clock
+//   stretch  — squash and stretch, whose TARGET is the position spring's speed
+//
+// Order matters when they are advanced: stretch reads the velocity position
+// produced this frame, so position is advanced first. Advancing stretch against
+// last frame's velocity is a lag that reads as the deformation trailing the
+// movement it is supposed to be part of.
+
+struct MotionPullState {
+    // What the caller applies: the displacement actually shown, after
+    // resistance.
+    var x: Float = 0.0
+    var y: Float = 0.0
+    // The un-resisted pull the finger implies.
+    var rawX: Float = 0.0
+    var rawY: Float = 0.0
+    // Where the pointer was when the press began.
+    var anchorX: Float = 0.0
+    var anchorY: Float = 0.0
+
+    var held: Bool = false
+    // Whether the pointer has travelled far enough to be a drag rather than a
+    // press that has not moved yet.
+    var dragging: Bool = false
+
+    var velocityX: Float = 0.0
+    var velocityY: Float = 0.0
+
+    // Live only while springing home.
+    var springX: MotionSpringState = MotionSpringState {}
+    var springY: MotionSpringState = MotionSpringState {}
+    var returning: Bool = false
+
+    // 0 while up, 1 while held. A value rather than a flag so the swell can be
+    // partway through when the finger lifts.
+    var press: MotionSpringState = MotionSpringState {}
+    // The jiggle: stretch along the direction of travel.
+    var stretch: MotionSpringState = MotionSpringState {}
+    var stretchAmount: Float = 0.0
+
+    // How far the element may be pulled before the resistance has effectively
+    // stopped it. The rubber band's scale — a small control wants a small one
+    // or it will follow the finger across the screen.
+    var reach: Float = 120.0
+}
+
+// What a pulled element should be drawn with.
+//
+// Separate from the state because it is the ANSWER: a host reads one of these
+// per frame and applies it, and nothing it contains is state that survives to
+// the next frame.
+struct MotionDeformation {
+    // Where the element sits, relative to where layout put it.
+    let x: Float = 0.0
+    let y: Float = 0.0
+    // The gel: greater than one along the direction of travel, less than one
+    // across it. Volume-preserving, so the element never looks like it is
+    // simply growing.
+    let scaleX: Float = 1.0
+    let scaleY: Float = 1.0
+    // The swell under the fingertip, applied on top of the stretch.
+    let pressScale: Float = 1.0
+    // How hard it is being deformed, 0…1 — for a host that also drives a
+    // material with it, since glass thickens as it flexes.
+    let intensity: Float = 0.0
+}
+
+// The press goes down.
+function motionPullPress(state: borrow mut MotionPullState, pointerX: Float, pointerY: Float, reducedMotion: Bool) {
+    state.held = true
+    state.dragging = false
+    state.returning = false
+    state.anchorX = pointerX - state.rawX
+    state.anchorY = pointerY - state.rawY
+    // The swell is on its own short clock rather than the position spring's:
+    // a press that has not moved still has to acknowledge itself, and it has
+    // about a tenth of a second to do it.
+    motionPullPressTarget(state, 1.0, reducedMotion)
+    return
+}
+
+function motionPullPressTarget(state: borrow mut MotionPullState, target: Float, reducedMotion: Bool) {
+    // Down and up are different springs. Going down is quick and mostly damped;
+    // coming back up is slower and bouncier, and that asymmetry is most of what
+    // makes the material feel elastic rather than animated.
+    var spring = motionLiftOff(target)
+    if target > 0.0 {
+        spring = motionLiftOn(target)
+    }
+    let shaped = motionCurveShape(move spring, reducedMotion)
+    let now = motionSpringSample(state.press, state.press.elapsed)
+    state.press = motionSpringStart(move shaped, now.value, now.velocity)
+    return
+}
+
+// A spring honouring the viewer's motion preference, for one built by hand
+// rather than picked by name.
+function motionCurveShape(spring: MotionSpring, reducedMotion: Bool) -> MotionSpring {
+    if reducedMotion {
+        return motionCurveReduced(spring)
+    }
+    return spring
+}
+
+// The pointer moves while held.
+function motionPullMove(state: borrow mut MotionPullState, pointerX: Float, pointerY: Float, delta: Float) {
+    if state.held == false {
+        return
+    }
+    let previousX = state.x
+    let previousY = state.y
+    state.rawX = pointerX - state.anchorX
+    state.rawY = pointerY - state.anchorY
+
+    // Not a drag until the finger has cleared the slop. Hands are not steady,
+    // and a control that began deforming at the first pixel of jitter would
+    // wobble under every tap.
+    if state.dragging == false {
+        let travel = hypot(state.rawX, state.rawY)
+        if travel < motionDragSlop() {
+            return
+        }
+        state.dragging = true
+    }
+
+    // Every point of this pull is resisted, against the element's own reach
+    // rather than a viewport: the control is anchored, so there is no distance
+    // at which it stops resisting and starts travelling freely.
+    let constant = motionRubberBandConstant()
+    state.x = motionPullResisted(state.rawX, state.reach, constant)
+    state.y = motionPullResisted(state.rawY, state.reach, constant)
+
+    if delta > 0.0 {
+        let alpha = 1.0 - exp(-delta / motionScrollVelocityTau())
+        let instantX = (state.x - previousX) / delta
+        let instantY = (state.y - previousY) / delta
+        state.velocityX += (instantX - state.velocityX) * alpha
+        state.velocityY += (instantY - state.velocityY) * alpha
+    }
+    return
+}
+
+// The resisted displacement for a signed pull, against an element's own reach.
+//
+// The curve is `motionRubberBandSigned`; what this adds is that a reach may be
+// zero, for a control that must not travel at all while still swelling under
+// the press. The rubber band's scale cannot be zero, so the case is answered
+// here rather than by flooring it to one and moving a point anyway.
+function motionPullResisted(pull: Float, reach: Float, constant: Float) -> Float {
+    if reach <= 0.0 {
+        return 0.0
+    }
+    return motionRubberBandSigned(pull, reach, constant)
+}
+
+// The press lifts. The element springs home from wherever it is, at whatever
+// speed it was moving.
+function motionPullRelease(state: borrow mut MotionPullState, reducedMotion: Bool) {
+    state.held = false
+    state.dragging = false
+    state.returning = true
+    // Loose and quick: this is the material letting go, and it is the one place
+    // an overshoot is wanted — it is what makes the element read as elastic
+    // rather than as merely animated.
+    let homeX = motionCurveShape(motionLiftOff(0.0), reducedMotion)
+    let homeY = motionCurveShape(motionLiftOff(0.0), reducedMotion)
+    state.springX = motionSpringStart(move homeX, state.x, state.velocityX)
+    state.springY = motionSpringStart(move homeY, state.y, state.velocityY)
+    state.rawX = 0.0
+    state.rawY = 0.0
+    motionPullPressTarget(state, 0.0, reducedMotion)
+    return
+}
+
+// Advances the element by one frame and answers what to draw.
+//
+// The second answer — whether anything is still moving — is what a host uses to
+// decide whether to ask for another frame.
+function motionPullAdvance(state: borrow mut MotionPullState, delta: Float, reducedMotion: Bool) -> MotionDeformation {
+    if state.returning {
+        let sampleX = motionSpringAdvance(state.springX, delta)
+        let sampleY = motionSpringAdvance(state.springY, delta)
+        state.x = sampleX.value
+        state.y = sampleY.value
+        state.velocityX = sampleX.velocity
+        state.velocityY = sampleY.velocity
+        let restX = motionSpringSettled(state.springX, sampleX, motionSpringEpsilon())
+        let restY = motionSpringSettled(state.springY, sampleY, motionSpringEpsilon())
+        if restX && restY {
+            state.x = 0.0
+            state.y = 0.0
+            state.velocityX = 0.0
+            state.velocityY = 0.0
+            state.returning = false
+        }
+    }
+
+    let press = motionSpringAdvance(state.press, delta)
+
+    // The stretch's target is the speed the element is moving RIGHT NOW, which
+    // is why this is advanced after the position above. It is a spring rather
+    // than the speed itself so the deformation has its own inertia: it builds
+    // as the element accelerates and is still unwinding after it stops, which
+    // is the wobble.
+    let speed = hypot(state.velocityX, state.velocityY)
+    let wanted = min(speed * motionStretchGain(), motionStretchLimit())
+    motionSpringRetarget(state.stretch, wanted)
+    let stretch = motionSpringAdvance(state.stretch, delta)
+    state.stretchAmount = max(stretch.value, 0.0)
+
+    return motionDeformationFor(state, press.value)
+}
+
+// How much stretch a unit of speed buys, and how much it can ever buy.
+//
+// The limit is what keeps a hard throw from tearing the element into a streak:
+// past about a fifth the deformation stops reading as a material giving and
+// starts reading as a rendering mistake.
+function motionStretchGain() -> Float {
+    return 0.00035
+}
+
+function motionStretchLimit() -> Float {
+    return 0.2
+}
+
+// The scale a press lifts an element to, given how big it is along that axis.
+//
+// It GROWS. A control that shrank under a press reads as a key being pushed
+// into a surface; glass comes up to meet the finger. The rise is a fixed number
+// of points rather than a proportion — see `motionPressLift`.
+function motionPressLiftFor(extent: Float) -> Float {
+    return motionPressLiftScale(extent)
+}
+
+// Builds the frame's answer from the state and the press amount.
+function motionDeformationFor(state: borrow MotionPullState, press: Float) -> MotionDeformation {
+    let stretch = state.stretchAmount
+    let speed = hypot(state.velocityX, state.velocityY)
+    // Along the direction of travel, and across it. With no motion there is no
+    // direction, and the element is simply undeformed.
+    var alongX = 0.0
+    var alongY = 0.0
+    if speed > 0.0001 {
+        alongX = abs(state.velocityX) / speed
+        alongY = abs(state.velocityY) / speed
+    }
+    // Volume preserving: what an axis gains, the other loses, so the element
+    // stays the same size and only changes shape.
+    // What one axis gains, the other loses by the SAME factor rather than by a
+    // weighted share of it: the reciprocal is what keeps the area constant, so
+    // the element only ever changes shape and never appears to grow.
+    let along = 1.0 + stretch * (alongX - alongY)
+    var scaleX = along
+    var scaleY = 1.0 / along
+    if alongY > alongX {
+        let across = 1.0 + stretch * (alongY - alongX)
+        scaleX = 1.0 / across
+        scaleY = across
+    }
+    return MotionDeformation {
+        x: state.x,
+        y: state.y,
+        scaleX: max(scaleX, 0.5),
+        scaleY: max(scaleY, 0.5),
+        pressScale: 1.0 + (motionPressLiftFor(state.reach) - 1.0) * press,
+        intensity: min(stretch / motionStretchLimit() + press * 0.5, 1.0)
+    }
+}
+
+// Whether the pull has gone far enough to mean something.
+//
+// The threshold is on the RAW pull rather than the resisted displacement,
+// because resistance makes the shown distance asymptotic — a threshold set in
+// shown points can become one the user cannot physically reach.
+function motionPullCommitted(state: borrow MotionPullState, threshold: Float) -> Bool {
+    return hypot(state.rawX, state.rawY) >= threshold
+}
+
+// Whether the element still needs frames.
+function motionPullMoving(state: borrow MotionPullState) -> Bool {
+    if state.held || state.returning {
+        return true
+    }
+    return state.stretchAmount > 0.0005
+}

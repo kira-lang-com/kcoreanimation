@@ -1,0 +1,87 @@
+import Foundation
+import KiraGraphics
+
+struct CARegisteredRenderTarget {
+    var id: RenderTargetId = RenderTargetId(0)
+    var texture: GraphicsTexture = GraphicsTexture {}
+}
+
+struct CACachedPassTarget {
+    var owner: LayerId = LayerId(0)
+    var targetId: RenderTargetId = RenderTargetId(0)
+    var texture: GraphicsTexture = GraphicsTexture {}
+    var deviceWidth: Int = 0
+    var deviceHeight: Int = 0
+    var signature: Int = 0
+    var external: Bool = false
+    var valid: Bool = false
+}
+
+class CAPassBatchSlot {
+    var batch: UiBatch
+}
+
+class Compositor {
+    var tree: CALayerTree = CALayerTree {}
+    var registeredTargets: [CARegisteredRenderTarget] = []
+    var cachedTargets: [CACachedPassTarget] = []
+    var passBatches: [CAPassBatchSlot] = []
+
+    function registerRenderTarget(id: RenderTargetId, texture: GraphicsTexture) {
+        for index in 0..self.registeredTargets.count {
+            if self.registeredTargets[index].id == id {
+                self.registeredTargets[index] = CARegisteredRenderTarget {
+                    id: id,
+                    texture: move texture
+                }
+                self.invalidateTarget(id)
+                return
+            }
+        }
+        self.registeredTargets.append(CARegisteredRenderTarget {
+            id: id,
+            texture: move texture
+        })
+        self.invalidateTarget(id)
+        return
+    }
+
+    function invalidateTarget(id: RenderTargetId) {
+        for index in 0..self.cachedTargets.count {
+            if self.cachedTargets[index].targetId == id {
+                self.cachedTargets[index].valid = false
+            }
+        }
+        return
+    }
+
+    function unregisterRenderTarget(id: RenderTargetId) {
+        var kept: [CARegisteredRenderTarget] = []
+        for target in self.registeredTargets {
+            if target.id != id {
+                kept.append(move target)
+            }
+        }
+        self.registeredTargets = move kept
+        self.invalidateTarget(id)
+        return
+    }
+
+    function renderTarget(id: RenderTargetId) -> Option<GraphicsTexture> {
+        for target in self.registeredTargets {
+            if target.id == id {
+                return .Some(target.texture)
+            }
+        }
+        return .None
+    }
+
+    function cachedTargetIndex(owner: LayerId) -> Int {
+        for index in 0..self.cachedTargets.count {
+            if self.cachedTargets[index].owner == owner {
+                return index
+            }
+        }
+        return -1
+    }
+}

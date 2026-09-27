@@ -1,0 +1,36 @@
+import Foundation
+
+// Test declarations and their result vocabulary belong to this test package.
+
+struct TestResult {
+    let name: String
+    let passed: Bool
+}
+
+struct TestReport {
+    let passed: Int
+    let failed: Int
+    let total: Int
+}
+
+enum TestStatus {
+    Passed
+    Failed
+}
+
+enum TestFailure {
+    Runtime(String)
+    Diagnostic(KiraError)
+    Compile(String)
+}
+
+struct TestRuntime {
+    function report(name: borrow String, passed: Bool) -> TestResult {
+        return TestResult(name: name, passed: passed)
+    }
+}
+
+construct Test {
+    @Required function test() -> Any
+    @Required function expect() -> Result<Any, TestFailure>
+}

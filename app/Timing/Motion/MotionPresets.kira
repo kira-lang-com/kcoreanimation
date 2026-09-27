@@ -1,0 +1,202 @@
+import Foundation
+
+// The springs the platform itself uses, by name.
+//
+// These numbers are not invented here. They are the ones Apple's own motion
+// guidance states and the ones reverse-engineering of the shipping system has
+// recovered, and they are written down in one file so a surface that wants to
+// feel like the rest of the system asks for a name rather than guessing a pair
+// of numbers. A widget that picks its own response and damping is how an
+// interface ends up with fifteen slightly different ideas of "quick".
+//
+// Damping is the fraction ζ. Where a source states a "bounce", it is 1 - ζ.
+
+enum MotionCurveName {
+    // No overshoot at all. The default for anything that moves because the
+    // interface changed rather than because the user is dragging it.
+    Smooth
+    // A trace of overshoot — enough to read as responsive, not enough to read
+    // as playful.
+    Snappy
+    // Visibly springy. For elements a gesture threw.
+    Bouncy
+    // What `spring()` gives when asked for nothing in particular.
+    Standard
+    // Moving something from one place to another: a window, a picture in
+    // picture tile. Critically damped, because a panel that overshoots its
+    // destination reads as dropped rather than placed.
+    Reposition
+    // Turning something.
+    Rotation
+    // A drawer or sheet coming up. Faster than a reposition and allowed a
+    // little bounce, because it is a surface arriving rather than settling.
+    Drawer
+    // The glass a finger is on: fast and loose, so it flexes under the touch
+    // and keeps flexing after it. This is the one that makes a control feel
+    // like a material instead of a rectangle.
+    Interactive
+}
+
+// The response and damping one name stands for.
+function motionCurve(name: borrow MotionCurveName, target: Float) -> MotionSpring {
+    return match name {
+        Smooth -> MotionSpring { response: 0.5, damping: 1.0, target: target }
+        Snappy -> MotionSpring { response: 0.5, damping: 0.85, target: target }
+        Bouncy -> MotionSpring { response: 0.5, damping: 0.7, target: target }
+        Standard -> MotionSpring { response: 0.55, damping: 0.825, target: target }
+        Reposition -> MotionSpring { response: 0.4, damping: 1.0, target: target }
+        Rotation -> MotionSpring { response: 0.4, damping: 0.8, target: target }
+        Drawer -> MotionSpring { response: 0.3, damping: 0.8, target: target }
+        Interactive -> MotionSpring { response: 0.3, damping: 0.6, target: target }
+    }
+}
+
+// The two springs a glass control is pressed and released with.
+//
+// They are NOT the same spring, and that is the finding: going down is quick
+// and mostly damped, coming back up is slower and much bouncier. The material
+// takes the press crisply and then, let go, wobbles back — which is what makes
+// it read as elastic rather than as a button with an animation on it. Using one
+// spring for both loses the whole effect in the direction that shows it most.
+//
+// These are a shipping implementation's own mass/stiffness/damping, converted:
+// mass 1.36, stiffness 568, damping 39.7 for the press, and mass 2.0,
+// stiffness 460, damping 21.8 for the release.
+function motionLiftOn(target: Float) -> MotionSpring {
+    return MotionSpring { response: 0.3075, damping: 0.7142, target: target }
+}
+
+function motionLiftOff(target: Float) -> MotionSpring {
+    return MotionSpring { response: 0.4143, damping: 0.3594, target: target }
+}
+
+// How much bigger a glass control gets while it is held, in POINTS.
+//
+// Points rather than a scale factor, because it is the material lifting toward
+// the finger by a fixed amount rather than every control growing by the same
+// proportion: twenty points on a small button is a lot and on a wide panel is
+// barely anything, which is correct — the lift is the same physical rise.
+//
+// And it grows. A control that shrank under a press would read as a key being
+// pushed into a surface; glass comes UP to meet the finger.
+function motionPressLift() -> Float {
+    return 20.0
+}
+
+// The lift as a scale factor for an element of a given size along the axis it
+// is measured on.
+function motionPressLiftScale(extent: Float) -> Float {
+    return 1.0 + motionPressLift() / max(extent, 1.0)
+}
+
+// A spring stated as a duration and a bounce, which is the other way the
+// platform spells one: `bounce: 0` is critically damped and `bounce: 0.3`
+// overshoots noticeably. Negative bounce is the overdamped side.
+function motionSpringFromBounce(duration: Float, bounce: Float, target: Float) -> MotionSpring {
+    return MotionSpring {
+        response: duration,
+        damping: 1.0 - bounce,
+        target: target
+    }
+}
+
+// --- reduced motion --------------------------------------------------------
+
+// What a viewer who has asked for less motion gets.
+//
+// Not a global read here: this package computes, and asking the operating
+// system what the viewer prefers is the hosting layer's job. The preference
+// travels as an argument so the same spring code serves both answers and the
+// decision is made once, where the platform is known.
+//
+// The guidance is specific about what changes: elastic behaviour and overshoot
+// go away entirely, and what remains is a short, plain settle. It is NOT a
+// jump to the final value — motion that vanishes takes the sense of where a
+// thing came from with it — except where the movement itself is the effect.
+function motionCurveReduced(spring: borrow MotionSpring) -> MotionSpring {
+    return MotionSpring {
+        response: min(spring.response, 0.25),
+        // Critical damping: the fastest approach with no overshoot, which is
+        // exactly "disable any elastic properties" said in numbers.
+        damping: max(spring.damping, 1.0),
+        target: spring.target
+    }
+}
+
+// The spring a surface should actually animate with, given the viewer's
+// preference. Every animating surface in this package routes through here, so
+// honouring the preference is not something each one has to remember.
+function motionCurveFor(name: borrow MotionCurveName, target: Float, reducedMotion: Bool) -> MotionSpring {
+    let spring = motionCurve(name, target)
+    if reducedMotion {
+        return motionCurveReduced(spring)
+    }
+    return spring
+}
+
+// --- easing ----------------------------------------------------------------
+
+// The easings, for the cases a spring cannot answer: a value that must arrive
+// at a stated time — a crossfade tied to a page turn, a progress sweep — where
+// a spring's settling time depends on where it started.
+//
+// A spring is the better answer for anything a gesture can interrupt, because
+// an easing has no velocity to inherit and restarting one mid-flight is the
+// hitch springs exist to avoid.
+enum MotionEasing {
+    Linear
+    // Slow to start, so an element entering looks like it is accelerating in.
+    EaseIn
+    // Slow to stop, which is what almost everything leaving wants.
+    EaseOut
+    EaseInOut
+}
+
+// Progress `t` in 0…1 shaped by an easing.
+//
+// The cubics are the standard ones — `t²`, its reflection, and the two joined
+// at the midpoint — rather than a bezier solve, because these three are the
+// bezier the named curves resolve to and a solver would spend Newton
+// iterations arriving at the same numbers.
+function motionEase(easing: borrow MotionEasing, t: Float) -> Float {
+    let p = clamp(t, 0.0, 1.0)
+    return match easing {
+        Linear -> p
+        EaseIn -> p * p * p
+        EaseOut -> {
+            let inverse = 1.0 - p
+            1.0 - inverse * inverse * inverse
+        }
+        EaseInOut -> match p < 0.5 {
+            true -> 4.0 * p * p * p
+            false -> {
+                let inverse = 2.0 - 2.0 * p
+                1.0 - inverse * inverse * inverse / 2.0
+            }
+        }
+    }
+}
+
+// A value eased between two ends.
+function motionEaseBetween(easing: borrow MotionEasing, from: Float, to: Float, t: Float) -> Float {
+    return lerp(from, to, motionEase(easing, t))
+}
+
+// How long a press takes to acknowledge itself.
+//
+// A hundred milliseconds is the platform's own figure for the feedback a
+// pointer-down draws, and it is short for a reason: past about that, the
+// acknowledgement stops reading as a response to the press and starts reading
+// as an animation that happens to follow it.
+function motionPressFeedbackDuration() -> Float {
+    return 0.1
+}
+
+// How far a pointer may wander before a press is understood as a drag.
+//
+// Below this the finger is still pressing — hands are not steady, and a
+// control that started dragging at the first pixel of jitter would be
+// impossible to tap.
+function motionDragSlop() -> Float {
+    return 10.0
+}

@@ -1,0 +1,103 @@
+import Foundation
+
+// The timing an implicit animation runs under: what `beginTransaction` pushes
+// and what a property set reads when it fires.
+//
+// With no transaction open a set still animates — the DEFAULT ACTION, a 0.25s
+// ease-out (`caDefaultTiming`). That is what makes a plain `setOpacity` glide
+// rather than snap, the way a Core Animation property does. A transaction
+// overrides that action for everything set inside it; nested transactions each
+// carry their own, and the innermost open one wins.
+struct CATiming {
+    // Set immediately, no animation. What a mount and an explicit
+    // disable-actions transaction use.
+    var disableActions: Bool = false
+    var mode: CAAnimMode = .Ease
+    var duration: Float = 0.25
+    var easing: MotionEasing = .EaseOut
+    // Used when `mode` is `.Spring`: the named platform curve, resolved to a
+    // response/damping against the property's own target when the set fires.
+    var curve: MotionCurveName = .Smooth
+    var reducedMotion: Bool = false
+}
+
+// The implicit action: 0.25s ease-out.
+function caDefaultTiming() -> CATiming {
+    return CATiming { disableActions: false, mode: .Ease, duration: 0.25, easing: .EaseOut }
+}
+
+function caImmediateTiming() -> CATiming {
+    return CATiming { disableActions: true }
+}
+
+function caEaseTiming(duration: Float, easing: MotionEasing) -> CATiming {
+    return CATiming { disableActions: false, mode: .Ease, duration: duration, easing: move easing }
+}
+
+function caSpringTiming(curve: MotionCurveName, reducedMotion: Bool) -> CATiming {
+    return CATiming { disableActions: false, mode: .Spring, curve: move curve, reducedMotion: reducedMotion }
+}
+
+// A fieldless-enum value is not assumed Copy, so a stored easing is reconstructed
+// rather than aliased when a timing hands it to a channel.
+function caEaseCopy(e: borrow MotionEasing) -> MotionEasing {
+    match e {
+        Linear -> return .Linear
+        EaseIn -> return .EaseIn
+        EaseOut -> return .EaseOut
+        EaseInOut -> return .EaseInOut
+    }
+}
+
+// Drive one scalar channel to `target` under `timing`, at absolute time `now`.
+// The one place the model/presentation split, the transaction, and the two
+// animation forms meet.
+function caApplyTiming(ch: borrow mut CAChannel, timing: borrow CATiming, target: Float, now: Float) -> Bool {
+    let immediate = timing.disableActions || timing.mode == .Immediate
+    if immediate {
+        let changed = ch.model != target || ch.presentation != target || ch.animating
+        if changed {
+            caChannelSetImmediate(ch, target)
+        }
+        return changed
+    }
+    if ch.model == target {
+        return false
+    }
+    match timing.mode {
+        Immediate -> {}
+        Spring -> caChannelStartSpring(ch, motionCurveFor(timing.curve, target, timing.reducedMotion), now)
+        Ease -> {
+            // Reduced motion keeps the arrival but strips the length: a shorter,
+            // plainer settle rather than an abrupt jump.
+            var duration = timing.duration
+            if timing.reducedMotion && duration > 0.2 {
+                duration = 0.2
+            }
+            caChannelStartEase(ch, target, duration, caEaseCopy(timing.easing), now)
+        }
+    }
+    return true
+}
+
+function caColorSame(a: borrow CAColor, b: borrow CAColor) -> Bool {
+    return a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a
+}
+
+// The same, for a perceptually-interpolated colour channel.
+function caColorApplyTiming(ch: borrow mut CAColorChannel, timing: borrow CATiming, target: borrow CAColor, now: Float) -> Bool {
+    let immediate = timing.disableActions || timing.mode == .Immediate
+    if immediate {
+        let presentation = caColorChannelPresentation(ch)
+        let changed = !caColorSame(ch.model, target) || !caColorSame(presentation, target) || ch.progress.animating
+        if changed {
+            caColorChannelSet(ch, target, true, false, timing.curve, timing.duration, caEaseCopy(timing.easing), timing.reducedMotion, now)
+        }
+        return changed
+    }
+    if caColorSame(ch.model, target) {
+        return false
+    }
+    caColorChannelSet(ch, target, false, timing.mode == .Spring, timing.curve, timing.duration, caEaseCopy(timing.easing), timing.reducedMotion, now)
+    return true
+}

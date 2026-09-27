@@ -1,0 +1,139 @@
+import Foundation
+import KiraGraphics
+
+// The compositor's one new batch primitive: an EXACT oriented quad. The batch
+// vertex stream already carries a per-quad rotation (cos/sin about the quad's
+// centre — see `writeQuadRotation`), so a rotated layer needs no shader change
+// and no axis-aligned bounding-box fallback: the covering rectangle is grown to
+// the rotated extent and the SDF is evaluated in the quad's own turned frame.
+//
+// The unrotated case delegates to `pushRect`, the batch's proven surface path,
+// so only genuinely rotated layers take the new branch.
+extend UiBatch {
+    function pushLayerQuad(
+        cx: Float, cy: Float, halfW: Float, halfH: Float,
+        rotCos: Float, rotSin: Float,
+        radius: Float, borderWidth: Float,
+        fill: borrow Color, border: borrow Color,
+        clipMinX: Float, clipMinY: Float, clipMaxX: Float, clipMaxY: Float,
+        shapeMode: Float,
+        gradient: borrow Color, gradientAxis: Float,
+    ) {
+        if halfW <= 0.0 || halfH <= 0.0 {
+            return
+        }
+        if fill.a <= 0.0 && gradient.a <= 0.0 && (border.a <= 0.0 || borderWidth <= 0.0) {
+            return
+        }
+        var absS = rotSin
+        if absS < 0.0 {
+            absS = -absS
+        }
+        if absS < 0.0001 && rotCos > 0.9999 {
+            self.pushRect(
+                cx - halfW, cy - halfH, halfW * 2.0, halfH * 2.0,
+                fill, border, borderWidth, radius,
+                clipMinX, clipMinY, clipMaxX, clipMaxY,
+                shapeMode, gradient, gradientAxis
+            )
+            return
+        }
+        var absC = rotCos
+        if absC < 0.0 {
+            absC = -absC
+        }
+        let pad = 1.0
+        let coverHalfW = halfW * absC + halfH * absS + pad
+        let coverHalfH = halfW * absS + halfH * absC + pad
+        var clampedRadius = radius
+        if clampedRadius > halfW {
+            clampedRadius = halfW
+        }
+        if clampedRadius > halfH {
+            clampedRadius = halfH
+        }
+        self.emitQuad(
+            cx - coverHalfW, cy - coverHalfH, cx + coverHalfW, cy + coverHalfH,
+            -coverHalfW, -coverHalfH, coverHalfW, coverHalfH,
+            halfW, halfH, clampedRadius, borderWidth, shapeMode, 0.0,
+            fill.r, fill.g, fill.b, fill.a,
+            border.r, border.g, border.b, border.a,
+            clipMinX, clipMinY, clipMaxX, clipMaxY,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            gradient.r, gradient.g, gradient.b, gradient.a, gradientAxis,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0,
+            rotCos, rotSin
+        )
+        return
+    }
+
+    function pushLayerTextureQuad(
+        cx: Float, cy: Float, halfW: Float, halfH: Float,
+        rotCos: Float, rotSin: Float,
+        alpha: Float, transition: Float, radius: Float,
+        clipMinX: Float, clipMinY: Float, clipMaxX: Float, clipMaxY: Float,
+    ) {
+        if halfW <= 0.0 || halfH <= 0.0 || alpha <= 0.0 {
+            return
+        }
+        self.emitQuad(
+            cx - halfW, cy - halfH, cx + halfW, cy + halfH,
+            0.0, 0.0, 1.0, 1.0,
+            halfW, halfH, radius, 0.0, 2.0, transition,
+            1.0, 1.0, 1.0, alpha,
+            0.0, 0.0, 0.0, 0.0,
+            clipMinX, clipMinY, clipMaxX, clipMaxY,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0,
+            rotCos, rotSin
+        )
+        return
+    }
+
+    function pushLayerShadowQuad(
+        cx: Float, cy: Float, halfW: Float, halfH: Float,
+        rotCos: Float, rotSin: Float,
+        radius: Float, blurRadius: Float,
+        color: borrow Color,
+        clipMinX: Float, clipMinY: Float, clipMaxX: Float, clipMaxY: Float,
+        shapeKind: Int,
+    ) {
+        if halfW <= 0.0 || halfH <= 0.0 || color.a <= 0.0 {
+            return
+        }
+        var blur = blurRadius
+        if blur < 0.0 { blur = 0.0 }
+        let pad = blur + 1.0
+        let coverHalfW = halfW + pad
+        let coverHalfH = halfH + pad
+        var clampedRadius = radius
+        if clampedRadius < 0.0 { clampedRadius = 0.0 }
+        if clampedRadius > halfW { clampedRadius = halfW }
+        if clampedRadius > halfH { clampedRadius = halfH }
+        var mode = -1.0
+        if shapeKind != 0 { mode = -1.25 }
+        self.emitQuad(
+            cx - coverHalfW, cy - coverHalfH, cx + coverHalfW, cy + coverHalfH,
+            -coverHalfW, -coverHalfH, coverHalfW, coverHalfH,
+            halfW, halfH, clampedRadius, blur, mode, 0.0,
+            color.r, color.g, color.b, color.a,
+            0.0, 0.0, 0.0, 0.0,
+            clipMinX, clipMinY, clipMaxX, clipMaxY,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0,
+            rotCos, rotSin
+        )
+        return
+    }
+}

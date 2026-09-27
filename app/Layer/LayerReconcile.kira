@@ -1,0 +1,60 @@
+import Foundation
+
+function caApplyLayerDescription(tree: borrow mut CALayerTree, id: LayerId, layer: borrow CALayerDescription) {
+    tree.setContent(id, layer.content)
+    tree.setPosition(id, layer.position.x, layer.position.y)
+    tree.setBounds(id, layer.size.width, layer.size.height)
+    tree.setOpacity(id, layer.opacity)
+    tree.setScale(id, layer.scaleX, layer.scaleY)
+    tree.setRotation(id, layer.rotation)
+    tree.setAnchor(id, layer.anchorPoint.x, layer.anchorPoint.y)
+    tree.setCornerRadius(id, layer.cornerRadius)
+    tree.setBorderWidth(id, layer.borderWidth)
+    tree.setFillColor(id, layer.backgroundColor)
+    tree.setBorderColor(id, layer.borderColor)
+    tree.setClip(id, layer.clipsChildren)
+    tree.setRenderTarget(id, layer.renderTarget, RenderTargetId(0))
+    tree.setCapturesBackdrop(id, layer.capturesBackdrop)
+    tree.setHit(id, layer.hittable, layer.hitKey)
+    tree.setLevel(id, layer.level)
+    return
+}
+
+function caReconcileLayer(tree: borrow mut CALayerTree, parent: LayerId, layer: borrow CALayerDescription) -> LayerId {
+    var id = tree.matchChild(parent, layer.key)
+    if id == caNoLayer() {
+        id = tree.makeLayer(parent, layer.key, layer.content)
+    }
+    tree.reuse(id)
+    caApplyLayerDescription(tree, id, layer)
+    var children: [LayerId] = []
+    for child in layer.sublayers {
+        children.append(caReconcileLayer(tree, id, child))
+    }
+    tree.setChildren(id, move children)
+    return id
+}
+
+function caReconcile(tree: borrow mut CALayerTree, root: borrow CALayerDescription) -> LayerId {
+    tree.beginReconcile()
+    var rootId = tree.rootId
+    if rootId == caNoLayer() {
+        rootId = tree.makeLayer(caNoLayer(), root.key, root.content)
+    }
+    tree.reuse(rootId)
+    caApplyLayerDescription(tree, rootId, root)
+    var children: [LayerId] = []
+    for child in root.sublayers {
+        children.append(caReconcileLayer(tree, rootId, child))
+    }
+    tree.setChildren(rootId, move children)
+    tree.endReconcile()
+    return rootId
+}
+
+function caReconcileImmediate(tree: borrow mut CALayerTree, root: borrow CALayerDescription) -> LayerId {
+    tree.beginTransaction(caImmediateTiming())
+    let rootId = caReconcile(tree, root)
+    tree.commitTransaction()
+    return rootId
+}

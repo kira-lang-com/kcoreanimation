@@ -1,0 +1,33 @@
+import Foundation
+import KiraGraphics
+// Pipeline construction for the batched UI compositor's lightweight variants.
+//
+// Each variant is the generic pipeline (`Shaders/UiBatch.ksl`) with every branch
+// a particular primitive cannot take removed — same vertex stream, same 54-float
+// stride, same indexed ranges, so a stream can be drawn by either. The generic
+// pipeline stays the fallback.
+//
+// These were hand-written MSL strings until they became KSL beside the generic
+// shader, so they are no longer Metal-only: `ksl!` compiles each one for every
+// backend at build time. Nothing here splices numbers into source text any more
+// either — a constant the material shades with is a `const` in the `.ksl`, where
+// the shader that reads it can be read beside it.
+
+// Takes the artifact rather than a source string so the entry names come from
+// whatever the backend emitted. A pipeline looks its functions up BY NAME, and
+// a name written here that does not match leaves the descriptor with a nil
+// vertex function, which Metal rejects at validation.
+function createSpecializedPipeline(graphics: borrow Graphics, label: String, artifact: borrow KslArtifact) -> RenderPipeline {
+    let shader = shaderOrReport(graphics.createShaderFromKslArtifact(label, artifact), "shader")
+    return pipelineOrReport(graphics.createRenderPipeline(RenderPipelineDescriptor {
+        label: label,
+        shader: shader,
+        vertexEntry: artifact.vertexEntry,
+        fragmentEntry: artifact.fragmentEntry,
+        vertexLayout: VertexLayout { stride: 0, attributes: [] },
+        colorTargets: [ColorTargetDescriptor { format: .Swapchain, blend: BlendState { enabled: true, preset: .PremultipliedAlpha } }],
+        depthStencil: DepthStencilDescriptor { depthEnabled: false, depthWriteEnabled: false, depthCompare: .Always, format: .None },
+        rasterization: RasterizationDescriptor { cullMode: .None, frontFace: .CounterClockwise },
+        primitive: PrimitiveDescriptor { topology: .TriangleList }
+    }), "create render pipeline")
+}

@@ -1,0 +1,138 @@
+import Foundation
+import KiraGraphics
+// Glyph and icon rasterization for the batched UI compositor: atlas caching,
+// subpixel phase selection, and coverage uploads. Glyph metrics themselves come
+// through the generated typed text bindings.
+//
+// A glyph is cached by (codepoint, size key, phase). The size key quantizes the
+// point size so a slider does not thrash the atlas, and the phase splits a pixel
+// four ways horizontally so a run positioned at a fractional pen stays evenly
+// spaced instead of snapping. Both are what let one atlas serve every run.
+
+function glyphSizeKey(sizePx: Float) -> Int {
+    var s = Int(sizePx)
+    if s < 1 {
+        s = 1
+    }
+    return s
+}
+
+// Text is rasterized at TWICE the device resolution and drawn down through a linear
+// sampler — supersampling, and the reason it is here is worth writing down.
+//
+// A glyph rasterized at exactly device resolution gets one coverage sample per
+// pixel: the best a scan converter can do, and still visibly coarser than macOS on
+// the same display. The system's own text does not look better because Core Text
+// out-rasterizes FreeType; it looks better because on a Retina backing it is drawn
+// at 2x and everything downstream — Core Animation, screen capture, a remote
+// desktop stream — resolves it down with the extra samples still in hand.
+//
+// A window at 1x gets none of that, and the difference is not subtle when the two
+// sit side by side in one screenshot. So the glyphs bring their own: rasterize at
+// 2x, hand the sampler a bitmap with four samples per final pixel, and let it
+// average them. That is supersampled text at any backing scale, and it costs
+// nothing but atlas space.
+//
+// TEXT ONLY. Surfaces, borders and glass are analytic — their edges come from an
+// SDF evaluated per pixel, which is already exact and has nothing to gain.
+function textOversample() -> Float { return 2.0 }
+
+// How many horizontal positions within a pixel a glyph may be rasterized at.
+//
+// Four — the quarter pixel Core Graphics quantizes to.
+//
+// Two was a false economy, and the way it failed is instructive: at half-pixel
+// granularity a stem lands ON a device pixel boundary far too often, and a stem on
+// a boundary renders with no partial coverage at either edge. The result is text
+// that is technically crisper than the platform's and reads as WORSE — hard,
+// stair-stepped letterforms next to Apple's smooth ones. The softness in system
+// text is not blur; it is stems sitting off the grid at quarter-pixel offsets, each
+// edge carrying real coverage.
+//
+// So the atlas pays for it: four phases of a 2x bitmap. That is more than the
+// original scheme held, and it is what the look is made of.
+function glyphSubpixelPhases() -> Int { return 4 }
+
+// The phase a pen position falls in, and the 26.6 outline shift that phase means.
+function glyphPhaseOf(devicePen: Float) -> Int {
+    let whole = Float(Int(devicePen))
+    var frac = devicePen - whole
+    if frac < 0.0 {
+        frac += 1.0
+    }
+    var phase = Int(frac * Float(glyphSubpixelPhases()))
+    if phase < 0 {
+        phase = 0
+    }
+    if phase >= glyphSubpixelPhases() {
+        phase = glyphSubpixelPhases() - 1
+    }
+    return phase
+}
+
+// The outline shift a phase means, in 26.6 fixed point. The shift is applied in the
+// RASTER grid, which oversampling has made finer than the device grid, so the
+// oversample factor is part of the conversion: a half-device-pixel phase is a whole
+// raster pixel at 2x.
+function glyphPhaseOffset(phase: Int) -> Int {
+    return phase * 64 * Int(textOversample()) / glyphSubpixelPhases()
+}
+
+// A weight as a cache bucket: one per hundred, so 400 and 600 are 4 and 6.
+//
+// The variable axis is continuous, but the tokens that reach it are not — a
+// theme names Regular, SemiBold and Bold — and a bucket per hundred is finer
+// than any typography scale asks for.
+function glyphWeightKey(weight: Float) -> Int {
+    var w = Int(weight / 100.0 + 0.5)
+    if w < 1 {
+        w = 1
+    }
+    if w > 9 {
+        w = 9
+    }
+    return w
+}
+
+// A cached glyph is a (character, size, weight, subpixel phase) — the phase is
+// part of the identity because the coverage differs, which is the whole point,
+// and so is the weight: a cached glyph is a rasterized OUTLINE, and a semibold
+// 'a' is not the regular one. Keying on character and size alone serves the
+// first weight rasterized at that size to every run after it, so which weight a
+// label lands in depends on the order the panel was built in.
+function glyphCacheKey(codepoint: Int, sizeKey: Int, weightKey: Int, phase: Int) -> Int {
+    return ((codepoint * 1024 + sizeKey) * 10 + weightKey) * glyphSubpixelPhases() + phase
+}
+
+// Composite one rasterized coverage bitmap into the atlas's CPU side at its
+// packed slot, and mark the atlas for this frame's upload.
+//
+// Straight into the shadow rather than into a `[U8]` handed to a sub-region
+// upload: the coverage becomes RGBA (the shader multiplies the glyph's colour by
+// all four channels), the destination is the row-major atlas image, and the one
+// upload the frame does replaces the whole thing.
+@Native
+function atlasBlitCoverage(state: borrow mut UiBatchState, coverage: RawPtr, pitch: Int, atlasX: Int, atlasY: Int, width: Int, height: Int) {
+    if pointerIsNull(state.atlasPixels) {
+        return
+    }
+    var row = 0
+    while row < height {
+        let sourceRow = row * pitch
+        let destRow = ((atlasY + row) * state.atlasW + atlasX) * 4
+        var col = 0
+        while col < width {
+            let value = rawByteAt(coverage, U64(sourceRow + col))
+            let at = U64(destRow + col * 4)
+            writeByte(state.atlasPixels, at, value)
+            writeByte(state.atlasPixels, at + U64(1), value)
+            writeByte(state.atlasPixels, at + U64(2), value)
+            writeByte(state.atlasPixels, at + U64(3), value)
+            col += 1
+        }
+        row += 1
+    }
+    state.atlasDirty = true
+    return
+}
+

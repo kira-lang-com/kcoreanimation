@@ -1,0 +1,194 @@
+// Glyph and icon coverage from the atlas, without the branches every other mode
+// needs.
+//
+// One of the compositor's fast paths: the generic shader with the SDF surface,
+// the external texture and glass removed. A screen of text is one quad per
+// glyph, so this is the mode the fragment cost is measured on.
+//
+// It reads the same 54-float quad record `Shaders/UiBatch.ksl` does, from the
+// same buffer, so a stream can be drawn by either — the specialization is the
+// branches it does *not* take, not a different vertex format.
+
+type UiQuad {
+    // Clip position and pixel position at the top-left and bottom-right corners.
+    let posX0: Float
+    let posY0: Float
+    let posX1: Float
+    let posY1: Float
+    let pxX0: Float
+    let pxY0: Float
+    let pxX1: Float
+    let pxY1: Float
+    // `local` at the same two corners: the SDF offset from the centre for a
+    // surface, the atlas uv for a glyph.
+    let localX0: Float
+    let localY0: Float
+    let localX1: Float
+    let localY1: Float
+    let halfW: Float
+    let halfH: Float
+    let radius: Float
+    let borderWidth: Float
+    let mode: Float
+    let edgeRefraction: Float
+    let fillR: Float
+    let fillG: Float
+    let fillB: Float
+    let fillA: Float
+    let borderR: Float
+    let borderG: Float
+    let borderB: Float
+    let borderA: Float
+    let clipMinX: Float
+    let clipMinY: Float
+    let clipMaxX: Float
+    let clipMaxY: Float
+    // The material block: what a liquid-glass surface shades itself with. Carried
+    // per vertex so two surfaces in one frame can differ, and so a control can
+    // move one without recompiling the shader. Zero in every other mode.
+    let edgeStrokeStrength: Float
+    let edgeStrokeDarken: Float
+    let edgeStrokePeak: Float
+    let edgeStrokeFade: Float
+    let sheenStrength: Float
+    let lensMaxBend: Float
+    let refractionReach: Float
+    let blurNearSplit: Float
+    // The border block: the ring's spread (already snapped to a whole device
+    // pixel by the host), the offset/spread of the pair that reach past the left
+    // and right extremes, and the grey they are all drawn in.
+    let borderSpread: Float
+    let borderSideOffset: Float
+    let borderSideSpread: Float
+    let borderGrey: Float
+    // The sides are drawn in their own, darker grey — measured off the reference,
+    // where the left and right edges are #C7C7C7 at full coverage while the top and
+    // bottom are a half-covered #DBDBDB.
+    let borderSideGrey: Float
+    // The inner rim: how strongly it tints, and how far in from the edge it runs.
+    let innerRimStrength: Float
+    let innerRimWidth: Float
+    // The wash, as the platform authors it: two fills, each with a colour, an
+    // opacity and a blend mode. The LOWER layer's colour is `fill` and its opacity
+    // is `borderWidth` (mode 3 has no border of its own to describe), so what is
+    // carried here is that layer's blend mode and the upper layer whole.
+    let washBlend: Float
+    let washUpperR: Float
+    let washUpperG: Float
+    let washUpperB: Float
+    let washUpperAlpha: Float
+    let washUpperBlend: Float
+    let materialSpare0: Float
+    let materialSpare1: Float
+    let materialSpare2: Float
+    // The gradient block: the colour the far end of the quad takes and which
+    // way far runs. Declared by every shader that pulls this record, because
+    // the record's STRIDE is what a pull reads by — a shader that stops one
+    // field short reads every quad after the first from the wrong offset.
+    let gradientR: Float
+    let gradientG: Float
+    let gradientB: Float
+    let gradientA: Float
+    let gradientAxis: Float
+    // The morph block: the SECOND shape this surface fuses with, in the quad's
+    // own local space, and the smooth minimum's reach in points. `UiGlassFull`
+    // is the only shader that reads it — every other one declares it because a
+    // storage pull reads by the record's STRIDE, and a shader that stops six
+    // fields short reads the next quad from the wrong offset.
+    let morphX: Float
+    let morphY: Float
+    let morphHalfW: Float
+    let morphHalfH: Float
+    let morphRadius: Float
+    let morphBlend: Float
+    // 0 circular, 1 the continuous superellipse a squircle is.
+    let shapeKind: Float
+    // The quad turned about its own centre, as cosine and sine — see
+    // `writeQuadRotation`. Only `UiBatch` acts on it; every other shader
+    // declares it because a storage pull reads by the record's STRIDE, and a
+    // shader that stops two fields short reads the next quad from the wrong
+    // offset.
+    let rotCos: Float
+    let rotSin: Float
+}
+
+type VertexIn {
+    @builtin(vertex_index)
+    let vid: UInt
+}
+
+type VertexOut {
+    @builtin(position)
+    let clip_position: Float4
+    let local: Float2
+    let px: Float2
+    let fill: Float4
+    let clip: Float4
+}
+
+type FragmentOut {
+    let color: Float4
+}
+
+shader UiGlyph {
+    group Batch {
+        storage read verts: [UiQuad]
+        texture atlas: Texture2d
+        sampler atlasSmp: Sampler
+    }
+
+    vertex {
+        input VertexIn
+        output VertexOut
+
+        function entry(input: VertexIn) -> VertexOut {
+            let v = verts[input.vid / UInt(4)]
+            let corner = input.vid % UInt(4)
+            let right = Float((corner + UInt(1)) % UInt(4) / UInt(2))
+            let bottom = Float(corner / UInt(2))
+            let out: VertexOut
+            out.clip_position = Float4(
+                mix(v.posX0, v.posX1, right),
+                mix(v.posY0, v.posY1, bottom),
+                0.0,
+                1.0,
+            )
+            out.local = Float2(mix(v.localX0, v.localX1, right), mix(v.localY0, v.localY1, bottom))
+            out.px = Float2(mix(v.pxX0, v.pxX1, right), mix(v.pxY0, v.pxY1, bottom))
+            out.fill = Float4(v.fillR, v.fillG, v.fillB, v.fillA)
+            out.clip = Float4(v.clipMinX, v.clipMinY, v.clipMaxX, v.clipMaxY)
+            return out
+        }
+    }
+
+    fragment {
+        input VertexOut
+        output FragmentOut
+
+        function entry(input: VertexOut) -> FragmentOut {
+            let result: FragmentOut
+            if input.px.x < input.clip.x {
+                result.color = Float4(0.0, 0.0, 0.0, 0.0)
+                return result
+            }
+            if input.px.y < input.clip.y {
+                result.color = Float4(0.0, 0.0, 0.0, 0.0)
+                return result
+            }
+            if input.px.x > input.clip.z {
+                result.color = Float4(0.0, 0.0, 0.0, 0.0)
+                return result
+            }
+            if input.px.y > input.clip.w {
+                result.color = Float4(0.0, 0.0, 0.0, 0.0)
+                return result
+            }
+            // Coverage, not colour: the atlas holds one channel and the run's
+            // own fill supplies the ink.
+            let cov = sample(atlas, atlasSmp, input.local).x
+            let a = input.fill.w * cov
+            result.color = Float4(input.fill.x * a, input.fill.y * a, input.fill.z * a, a)
+            return result
+        }
+    }
+}

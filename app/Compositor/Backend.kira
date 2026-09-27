@@ -1,0 +1,137 @@
+import Foundation
+import KiraGraphics
+import KiraLayout
+
+// The compositor's draw backend: the thin translation layer between the render
+// plan the executor walks and the batched-UI primitives that actually put
+// vertices on the GPU. It owns nothing but the frame's Graphics handle and the
+// UiBatch it emits into; every surface, glyph, texture and glass quad is one
+// call through to `batch`, which holds the geometry, the atlas and the liquid-
+// glass pipeline.
+//
+// The executor drives it per pass: `beginFrameExtent` for the root swapchain
+// frame, `beginTargetFrame` for an isolated pass rendering into an offscreen
+// texture, then `caSubmitPass`/`caSubmit` push the plan's commands through
+// `drawRetainedGlass`, `drawTextureFields` and the free `caDrawSurfaceQuad`.
+// `drewVisibleUi` records whether the pass emitted anything the swapchain must
+// present.
+class KiraGraphicsFoundationBackend {
+    let graphics: Graphics
+    let batch: UiBatch
+    // Whether the host window is composited with holes in it. Carried for the
+    // surface-fill path; the page itself is cleared by the runner.
+    var windowTransparent: Bool = false
+    // Set the moment anything visible is emitted this pass, so the executor can
+    // skip presenting a pass that drew nothing.
+    var drewVisibleUi: Bool = false
+
+    // Begin the root swapchain frame: rewind the batch's streams to this frame's
+    // viewport and drawable extent, then claim each stream's ring slot.
+    function beginFrameExtent(viewportW: Float, viewportH: Float, scale: Float, drawableW: Int, drawableH: Int) {
+        self.batch.beginBatch(viewportW, viewportH, scale, drawableW, drawableH)
+        self.batch.beginFrameSlots(self.graphics)
+        return
+    }
+
+    // Begin an isolated pass rendering into an offscreen target of the given
+    // physical extent. Identical batch setup to the root frame — the executor
+    // binds the target texture at encode time; the backend only sizes the frame.
+    function beginTargetFrame(width: Float, height: Float, scale: Float, targetW: Int, targetH: Int) {
+        self.batch.beginBatch(width, height, scale, targetW, targetH)
+        self.batch.beginFrameSlots(self.graphics)
+        return
+    }
+
+    // Open a backdrop capture for the glass surface about to be drawn: park the
+    // active stream so the glass layer refracts everything emitted before it.
+    function beginRetainedBackdrop(bounds: borrow Rect) {
+        self.batch.beginGlassCapture(self.graphics, bounds.x, bounds.y, bounds.width, bounds.height)
+        return
+    }
+
+    // The glass layer closes itself when the next capture opens or the frame
+    // ends — the stream split in `beginGlassCapture`/`pushGlass` carries the
+    // boundary — so nothing is bracketed shut here.
+    function endBackdrop(bounds: borrow Rect) {
+        let ignored = bounds.width
+        return
+    }
+
+    // Emit one liquid-glass quad. `fill` is the already-resolved wash colour;
+    // the surface's own local extent and rotation come from the plan, the
+    // refraction dials and touch/morph state from the glass content.
+    function drawRetainedGlass(
+        quad: borrow CAOrientedQuad,
+        localWidth: Float,
+        localHeight: Float,
+        cornerRadius: Float,
+        fill: borrow Color,
+        glass: borrow CAGlass,
+        clipMinX: Float,
+        clipMinY: Float,
+        clipMaxX: Float,
+        clipMaxY: Float,
+    ) {
+        self.drewVisibleUi = true
+        self.batch.pushGlass(
+            quad.centerX - localWidth * 0.5,
+            quad.centerY - localHeight * 0.5,
+            localWidth,
+            localHeight,
+            cornerRadius,
+            fill,
+            glass.blur,
+            glass.edgeRefraction,
+            clipMinX, clipMinY, clipMaxX, clipMaxY,
+            glass.material,
+            glass.glowX,
+            glass.glowY,
+            glass.glowStrength,
+            glass.morphX,
+            glass.morphY,
+            glass.morphWidth,
+            glass.morphHeight,
+            glass.morphRadius,
+            glass.morphBlend,
+            Float(glass.shapeKind),
+            quad.rotCos,
+            quad.rotSin
+        )
+        return
+    }
+
+    // Composite an isolated pass's texture (or any external texture) over its
+    // bounds — the group-opacity / isolated-pass path.
+    function drawTextureFields(
+        bounds: borrow Rect,
+        texture: TextureHandle,
+        secondaryTexture: TextureHandle,
+        transition: Float,
+        opacity: Float,
+        radius: Float,
+    ) {
+        if opacity <= 0.0 || bounds.width <= 0.0 || bounds.height <= 0.0 {
+            return
+        }
+        self.drewVisibleUi = true
+        self.batch.setExternalTextures(self.graphics, U32(texture.raw), U32(secondaryTexture.raw))
+        let halfW = bounds.width * 0.5
+        let halfH = bounds.height * 0.5
+        self.batch.pushLayerTextureQuad(
+            bounds.x + halfW,
+            bounds.y + halfH,
+            halfW,
+            halfH,
+            1.0,
+            0.0,
+            opacity,
+            transition,
+            radius,
+            bounds.x,
+            bounds.y,
+            bounds.x + bounds.width,
+            bounds.y + bounds.height
+        )
+        return
+    }
+}

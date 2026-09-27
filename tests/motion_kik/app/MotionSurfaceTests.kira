@@ -1,0 +1,366 @@
+import Foundation
+import KCoreAnimation
+
+// The state machines: a scrolling surface, a pulled control, and a thing
+// arriving or leaving. These are the tests that catch a phase that never ends,
+// an edge that is missed by a fraction, and a release that forgets its velocity.
+
+// A list of 1000 points shown through a 400-point window: 600 points of travel.
+function mtBounds() -> MotionScrollBounds {
+    return MotionScrollBounds { contentLength: 1000.0, viewportLength: 400.0 }
+}
+
+// Advances a surface until it stops, or until the frame budget runs out.
+//
+// The budget is the assertion as much as the offset is: a phase that never
+// settles would spin here forever, so a suite that returns at all has already
+// proved that every motion ends.
+function mtSettleScroll(state: borrow mut MotionScrollState, bounds: borrow MotionScrollBounds) -> Int {
+    var frames = 0
+    while frames < 2000 {
+        let moving = motionScrollAdvance(state, 1.0 / 120.0, bounds, false)
+        frames = frames + 1
+        if moving == false {
+            return frames
+        }
+    }
+    return 0 - 1
+}
+
+// --- dragging --------------------------------------------------------------
+
+// The content moves opposite the finger: pushing the pointer up the screen
+// scrolls down the list.
+construct MtDragMovesOppositeThePointer() extends Test {
+    test {
+        var state = MotionScrollState {}
+        let bounds = mtBounds()
+        motionScrollDragBegin(state, 500.0, bounds)
+        motionScrollDragMove(state, 400.0, 1.0 / 120.0, bounds)
+        return Int(round(state.offset))
+    }
+    expect { return .Ok(100) }
+}
+
+// Dragging past the top gives less than was asked for. A hundred points of pull
+// against a 400-point window moves the content by about 48 — the surface
+// answers the whole way, and travels a fraction of it.
+construct MtDragPastTheTopIsResisted() extends Test {
+    test {
+        var state = MotionScrollState {}
+        let bounds = mtBounds()
+        motionScrollDragBegin(state, 100.0, bounds)
+        motionScrollDragMove(state, 200.0, 1.0 / 120.0, bounds)
+        return Int(round(state.offset))
+    }
+    expect { return .Ok(0 - 48) }
+}
+
+// Picking the surface up while it is already held past its edge does not move
+// it. The drag recovers the raw pull the position stands for, so the content
+// stays exactly where the finger grabbed it.
+construct MtRegrabbingAStretchedSurfaceDoesNotJump() extends Test {
+    test {
+        var state = MotionScrollState {}
+        let bounds = mtBounds()
+        motionScrollDragBegin(state, 100.0, bounds)
+        motionScrollDragMove(state, 200.0, 1.0 / 120.0, bounds)
+        let held = state.offset
+        // A second gesture begins without the first having sprung back.
+        motionScrollDragBegin(state, 640.0, bounds)
+        motionScrollDragMove(state, 640.0, 1.0 / 120.0, bounds)
+        return mtScaled(abs(state.offset - held), 3)
+    }
+    expect { return .Ok(0) }
+}
+
+// A surface that does not bounce is clamped rather than resisted: it stops dead
+// at its edge.
+construct MtANonBouncingSurfaceClamps() extends Test {
+    test {
+        var state = MotionScrollState { bounces: false }
+        let bounds = mtBounds()
+        motionScrollDragBegin(state, 100.0, bounds)
+        motionScrollDragMove(state, 300.0, 1.0 / 120.0, bounds)
+        return Int(round(state.offset))
+    }
+    expect { return .Ok(0) }
+}
+
+// --- release ---------------------------------------------------------------
+
+// Let go past an edge and the surface comes back to it EXACTLY. Landing a
+// thousandth of a point out would accumulate into visible drift over a session.
+construct MtReleasePastAnEdgeReturnsToIt() extends Test {
+    test {
+        var state = MotionScrollState {}
+        let bounds = mtBounds()
+        motionScrollDragBegin(state, 100.0, bounds)
+        motionScrollDragMove(state, 250.0, 1.0 / 120.0, bounds)
+        motionScrollDragEnd(state, bounds, false)
+        let frames = mtSettleScroll(state, bounds)
+        if frames < 0 {
+            return 0 - 1
+        }
+        return mtScaled(state.offset, 6)
+    }
+    expect { return .Ok(0) }
+}
+
+// A throw inside the range coasts and stops inside it.
+construct MtAThrowComesToRestInRange() extends Test {
+    test {
+        var state = MotionScrollState { offset: 100.0, velocity: 400.0, phase: .Dragging }
+        let bounds = mtBounds()
+        motionScrollDragEnd(state, bounds, false)
+        let frames = mtSettleScroll(state, bounds)
+        if frames < 0 {
+            return 0 - 1
+        }
+        if state.offset > 100.0 && state.offset < 600.0 {
+            return 1
+        }
+        return 0
+    }
+    expect { return .Ok(1) }
+}
+
+// A throw hard enough to reach the end does not stop at it — it overshoots,
+// stretches, and springs back to exactly the end. The velocity is carried into
+// the spring, which is what makes the bounce one motion rather than two.
+construct MtAHardThrowBouncesOffTheEnd() extends Test {
+    test {
+        var state = MotionScrollState { offset: 300.0, velocity: 4000.0, phase: .Dragging }
+        let bounds = mtBounds()
+        motionScrollDragEnd(state, bounds, false)
+        var frames = 0
+        var stretched = false
+        while frames < 2000 {
+            let moving = motionScrollAdvance(state, 1.0 / 120.0, bounds, false)
+            // Past the end at some point in the flight, which is the overshoot.
+            if state.offset > 600.0 {
+                stretched = true
+            }
+            frames = frames + 1
+            if moving == false {
+                frames = 0 - 1
+                break
+            }
+        }
+        if stretched == false {
+            return 0 - 2
+        }
+        return mtScaled(state.offset, 4)
+    }
+    expect { return .Ok(6000000) }
+}
+
+// A wheel is a displacement, not a gesture: it starts nothing and it clamps.
+construct MtTheWheelClampsAndStartsNothing() extends Test {
+    test {
+        var state = MotionScrollState {}
+        let bounds = mtBounds()
+        motionScrollWheel(state, 5000.0, bounds)
+        let moving = motionScrollAdvance(state, 1.0 / 120.0, bounds, false)
+        if moving {
+            return 0 - 1
+        }
+        return Int(round(state.offset))
+    }
+    expect { return .Ok(600) }
+}
+
+// A snapped surface lands ON an item, not near one.
+construct MtASnappedThrowLandsOnAnItem() extends Test {
+    test {
+        var state = MotionScrollState { offset: 0.0, velocity: 900.0, phase: .Dragging, snapPitch: 120.0 }
+        let bounds = mtBounds()
+        motionScrollDragEnd(state, bounds, false)
+        let frames = mtSettleScroll(state, bounds)
+        if frames < 0 {
+            return 0 - 1
+        }
+        return mtScaled(fmod(state.offset, 120.0), 4)
+    }
+    expect { return .Ok(0) }
+}
+
+// An idle surface asks for no frames. A host that trusted a phase which always
+// answered true would hold the display awake over a list nobody is touching.
+construct MtAnIdleSurfaceNeedsNoFrames() extends Test {
+    test {
+        var state = MotionScrollState {}
+        let bounds = mtBounds()
+        if motionScrollAdvance(state, 1.0 / 120.0, bounds, false) {
+            return 1
+        }
+        return 0
+    }
+    expect { return .Ok(0) }
+}
+
+// --- pulling a control -----------------------------------------------------
+
+// Pulled 60 points against a 120-point reach, the control travels about 26. It
+// answers the whole gesture and goes almost nowhere, which is what an anchored
+// control does.
+construct MtAPulledControlResistsTheWholeWay() extends Test {
+    test {
+        var state = MotionPullState {}
+        motionPullPress(state, 0.0, 0.0, false)
+        motionPullMove(state, 0.0, 60.0, 1.0 / 120.0)
+        return Int(round(state.y))
+    }
+    expect { return .Ok(26) }
+}
+
+// Under the slop the control has not begun to move at all.
+construct MtASteadyHandDoesNotStartADrag() extends Test {
+    test {
+        var state = MotionPullState {}
+        motionPullPress(state, 0.0, 0.0, false)
+        motionPullMove(state, 3.0, 2.0, 1.0 / 120.0)
+        if state.dragging {
+            return 1
+        }
+        return mtScaled(state.y, 4)
+    }
+    expect { return .Ok(0) }
+}
+
+// Let go and it comes home — all the way home, not nearly.
+construct MtAReleasedControlSpringsHome() extends Test {
+    test {
+        var state = MotionPullState {}
+        motionPullPress(state, 0.0, 0.0, false)
+        motionPullMove(state, 0.0, 80.0, 1.0 / 120.0)
+        motionPullRelease(state, false)
+        var frames = 0
+        while frames < 2000 {
+            let ignored = motionPullAdvance(state, 1.0 / 120.0, false)
+            frames = frames + 1
+            if motionPullMoving(state) == false {
+                return mtScaled(abs(state.x) + abs(state.y), 4)
+            }
+        }
+        return 0 - 1
+    }
+    expect { return .Ok(0) }
+}
+
+// The commit threshold is on the pull, not on the travel. Resistance makes the
+// shown distance asymptotic, so a threshold set in shown points could be one
+// the hand can never reach: 200 points of shown travel against a 120-point
+// reach does not exist.
+construct MtCommitmentIsMeasuredOnThePull() extends Test {
+    test {
+        var state = MotionPullState {}
+        motionPullPress(state, 0.0, 0.0, false)
+        motionPullMove(state, 0.0, 150.0, 1.0 / 120.0)
+        if motionPullCommitted(state, 100.0) && state.y < 100.0 {
+            return 1
+        }
+        return 0
+    }
+    expect { return .Ok(1) }
+}
+
+// The gel: moving fast along one axis stretches that axis and pinches the
+// other. An element that grew on both would read as zooming, not as flexing.
+construct MtSpeedStretchesAlongTheDirectionOfTravel() extends Test {
+    test {
+        var state = MotionPullState { reach: 4000.0 }
+        motionPullPress(state, 0.0, 0.0, false)
+        var frames = 0
+        var pointer = 0.0
+        var shape = MotionDeformation {}
+        // Dragged hard along x for a few frames, so there is real speed to
+        // deform from.
+        while frames < 12 {
+            pointer = pointer + 60.0
+            motionPullMove(state, pointer, 0.0, 1.0 / 120.0)
+            shape = motionPullAdvance(state, 1.0 / 120.0, false)
+            frames = frames + 1
+        }
+        if shape.scaleX > 1.0 && shape.scaleY < 1.0 {
+            return 1
+        }
+        return 0
+    }
+    expect { return .Ok(1) }
+}
+
+// --- arriving and leaving --------------------------------------------------
+
+construct MtAnEnteringElementArrives() extends Test {
+    test {
+        var state = MotionPresence {}
+        motionPresenceEnter(state, false)
+        var frames = 0
+        while frames < 2000 {
+            let ignored = motionPresenceAdvance(state, 1.0 / 120.0)
+            frames = frames + 1
+            if motionPresenceSettled(state) {
+                return mtScaled(state.amount, 3)
+            }
+        }
+        return 0 - 1
+    }
+    expect { return .Ok(1000) }
+}
+
+// Told to leave halfway in, it leaves FROM halfway — the value the frame after
+// the reversal is the value the frame before it. This is the case a transition
+// driven by a clock cannot answer, because a clock knows how long it has been
+// going and not where it is.
+construct MtAReversedTransitionIsContinuous() extends Test {
+    test {
+        var state = MotionPresence {}
+        motionPresenceEnter(state, false)
+        var frames = 0
+        while frames < 20 {
+            let ignored = motionPresenceAdvance(state, 1.0 / 120.0)
+            frames = frames + 1
+        }
+        let before = state.amount
+        motionPresenceExit(state, false)
+        let after = motionPresenceAdvance(state, 0.0)
+        if before <= 0.02 || before >= 0.98 {
+            return 0 - 1
+        }
+        return mtScaled(abs(after.opacity - motionAppearanceFor(before).opacity), 3)
+    }
+    expect { return .Ok(0) }
+}
+
+// Glass materializes rather than fades: the lensing comes up behind the
+// opacity, so the shape is legible before the material has finished condensing.
+construct MtGlassLensingLagsItsOpacity() extends Test {
+    test {
+        let midway = motionAppearanceFor(0.5)
+        if midway.lensing < midway.opacity {
+            return 1
+        }
+        return 0
+    }
+    expect { return .Ok(1) }
+}
+
+// An element sent somewhere arrives exactly there.
+construct MtAMovedElementLandsOnItsDestination() extends Test {
+    test {
+        var state = MotionMove {}
+        motionMovePlace(state, 0.0, 0.0)
+        motionMoveTo(state, 250.0, 80.0, .Reposition, false)
+        var frames = 0
+        while frames < 2000 {
+            let moving = motionMoveAdvance(state, 1.0 / 120.0)
+            frames = frames + 1
+            if moving == false {
+                return mtScaled(state.currentX, 3) * 1000 + mtScaled(state.currentY, 3)
+            }
+        }
+        return 0 - 1
+    }
+    expect { return .Ok(250080000) }
+}

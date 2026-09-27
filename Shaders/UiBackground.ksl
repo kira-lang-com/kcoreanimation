@@ -1,0 +1,100 @@
+// The fullscreen background: one photo, or a cross-fade between two.
+//
+// A dedicated pipeline because the generic shader's 54-float vertex pull,
+// material branches and blending are all wasted on the frame's single largest
+// draw. The transition rides in a uniform rather than per vertex: it is one
+// number for the whole screen.
+
+type VertexIn {
+    @builtin(vertex_index)
+    let vid: UInt
+}
+
+type VertexOut {
+    @builtin(position)
+    let clip_position: Float4
+    let uv: Float2
+    let transition: Float
+}
+
+type FragmentOut {
+    let color: Float4
+}
+
+// One member, not four. `std140` rounds a block up to 16 bytes on its own, and
+// the host uploads that many — writing the pad out as three named members
+// instead declares three uniforms no stage reads, which GL eliminates and then
+// reports missing at every link.
+type BackgroundParams {
+    // 0 shows the primary alone, 1 the secondary alone.
+    let transition: Float
+}
+
+// Near enough to an endpoint that the cross-fade is invisible — and skipping it
+// saves the second texture tap for every pixel of a 4K photo.
+const settled: Float = 0.001
+
+shader UiBackground {
+    // The two photos arrive in the bind groups the generic compositor already
+    // fills — `uiSlotExternal*` and `uiSlotBackdrop*` in `app/Backend/UiBatch.kira`
+    // — so this shader writes those slots rather than taking whatever its own
+    // declaration order would hand out. Reading the same groups is the point: a
+    // background drawn from a second copy of the photo is a second thing to keep
+    // in step.
+    group Frame {
+        uniform params: BackgroundParams
+        @binding(3) texture primary: Texture2d
+        @binding(4) sampler primarySmp: Sampler
+        @binding(5) texture secondary: Texture2d
+        @binding(6) sampler secondarySmp: Sampler
+    }
+
+    vertex {
+        input VertexIn
+        output VertexOut
+
+        function entry(input: VertexIn) -> VertexOut {
+            // One oversized triangle rather than a quad: three vertices cover
+            // the screen with no diagonal seam.
+            let far = 3.0
+            let near = 0.0 - 1.0
+            let x = near
+            if input.vid == UInt(1) {
+                x = far
+            }
+            let y = near
+            if input.vid == UInt(2) {
+                y = far
+            }
+            let out: VertexOut
+            out.clip_position = Float4(x, y, 0.0, 1.0)
+            out.uv = Float2((x + 1.0) * 0.5, (1.0 - y) * 0.5)
+            out.transition = params.transition
+            return out
+        }
+    }
+
+    fragment {
+        input VertexOut
+        output FragmentOut
+
+        function entry(input: VertexOut) -> FragmentOut {
+            let result: FragmentOut
+            let t = clamp(input.transition, 0.0, 1.0)
+            if t <= settled {
+                result.color = sample(primary, primarySmp, input.uv)
+                return result
+            }
+            if t >= 1.0 - settled {
+                result.color = sample(secondary, secondarySmp, input.uv)
+                return result
+            }
+            result.color = mix(
+                sample(primary, primarySmp, input.uv),
+                sample(secondary, secondarySmp, input.uv),
+                t
+            )
+            return result
+        }
+    }
+}

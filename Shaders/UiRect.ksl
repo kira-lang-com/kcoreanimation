@@ -1,0 +1,284 @@
+// Rounded-rect and border surfaces, without the branches every other mode needs.
+//
+// One of the compositor's fast paths: the generic shader with glyph, external-texture and glass removed, which is
+// most of its fragment cost for the mode a screen has most of.
+//
+// It reads the same 54-float quad record `Shaders/UiBatch.ksl` does, from the
+// same buffer, so a stream can be drawn by either — the specialization is the
+// branches it does *not* take, not a different vertex format.
+
+type UiQuad {
+    // Clip position and pixel position at the top-left and bottom-right corners.
+    let posX0: Float
+    let posY0: Float
+    let posX1: Float
+    let posY1: Float
+    let pxX0: Float
+    let pxY0: Float
+    let pxX1: Float
+    let pxY1: Float
+    // `local` at the same two corners: the SDF offset from the centre for a
+    // surface, the atlas uv for a glyph.
+    let localX0: Float
+    let localY0: Float
+    let localX1: Float
+    let localY1: Float
+    let halfW: Float
+    let halfH: Float
+    let radius: Float
+    let borderWidth: Float
+    let mode: Float
+    let edgeRefraction: Float
+    let fillR: Float
+    let fillG: Float
+    let fillB: Float
+    let fillA: Float
+    let borderR: Float
+    let borderG: Float
+    let borderB: Float
+    let borderA: Float
+    let clipMinX: Float
+    let clipMinY: Float
+    let clipMaxX: Float
+    let clipMaxY: Float
+    // The material block: what a liquid-glass surface shades itself with. Carried
+    // per vertex so two surfaces in one frame can differ, and so a control can
+    // move one without recompiling the shader. Zero in every other mode.
+    let edgeStrokeStrength: Float
+    let edgeStrokeDarken: Float
+    let edgeStrokePeak: Float
+    let edgeStrokeFade: Float
+    let sheenStrength: Float
+    let lensMaxBend: Float
+    let refractionReach: Float
+    let blurNearSplit: Float
+    // The border block: the ring's spread (already snapped to a whole device
+    // pixel by the host), the offset/spread of the pair that reach past the left
+    // and right extremes, and the grey they are all drawn in.
+    let borderSpread: Float
+    let borderSideOffset: Float
+    let borderSideSpread: Float
+    let borderGrey: Float
+    // The sides are drawn in their own, darker grey — measured off the reference,
+    // where the left and right edges are #C7C7C7 at full coverage while the top and
+    // bottom are a half-covered #DBDBDB.
+    let borderSideGrey: Float
+    // The inner rim: how strongly it tints, and how far in from the edge it runs.
+    let innerRimStrength: Float
+    let innerRimWidth: Float
+    // The wash, as the platform authors it: two fills, each with a colour, an
+    // opacity and a blend mode. The LOWER layer's colour is `fill` and its opacity
+    // is `borderWidth` (mode 3 has no border of its own to describe), so what is
+    // carried here is that layer's blend mode and the upper layer whole.
+    let washBlend: Float
+    let washUpperR: Float
+    let washUpperG: Float
+    let washUpperB: Float
+    let washUpperAlpha: Float
+    let washUpperBlend: Float
+    let materialSpare0: Float
+    let materialSpare1: Float
+    let materialSpare2: Float
+    // The gradient block: the colour the far end of the quad takes and which
+    // way far runs. Declared by every shader that pulls this record, because
+    // the record's STRIDE is what a pull reads by — a shader that stops one
+    // field short reads every quad after the first from the wrong offset.
+    let gradientR: Float
+    let gradientG: Float
+    let gradientB: Float
+    let gradientA: Float
+    let gradientAxis: Float
+    // The morph block: the SECOND shape this surface fuses with, in the quad's
+    // own local space, and the smooth minimum's reach in points. `UiGlassFull`
+    // is the only shader that reads it — every other one declares it because a
+    // storage pull reads by the record's STRIDE, and a shader that stops six
+    // fields short reads the next quad from the wrong offset.
+    let morphX: Float
+    let morphY: Float
+    let morphHalfW: Float
+    let morphHalfH: Float
+    let morphRadius: Float
+    let morphBlend: Float
+    // 0 circular, 1 the continuous superellipse a squircle is.
+    let shapeKind: Float
+    // The quad turned about its own centre, as cosine and sine — see
+    // `writeQuadRotation`. Only `UiBatch` acts on it; every other shader
+    // declares it because a storage pull reads by the record's STRIDE, and a
+    // shader that stops two fields short reads the next quad from the wrong
+    // offset.
+    let rotCos: Float
+    let rotSin: Float
+}
+
+type VertexIn {
+    @builtin(vertex_index)
+    let vid: UInt
+}
+
+type VertexOut {
+    @builtin(position)
+    let clip_position: Float4
+    let local: Float2
+    let px: Float2
+    let hsize: Float2
+    let radius: Float
+    let borderWidth: Float
+    let fill: Float4
+    let border: Float4
+    let clip: Float4
+    // The touch highlight: where it is centred in this quad's own space, and
+    // how strongly it burns. Zero strength is no highlight and costs the
+    // fragment one comparison.
+    let glow: Float3
+}
+
+type FragmentOut {
+    let color: Float4
+}
+
+function sdRound(point: Float2, halfSize: Float2, radius: Float) -> Float {
+    let q = Float2(
+        abs(point.x) - halfSize.x + radius,
+        abs(point.y) - halfSize.y + radius
+    )
+    let outside = Float2(max(q.x, 0.0), max(q.y, 0.0))
+    return min(max(q.x, q.y), 0.0) + length(outside)
+}
+
+// How strongly the touch highlight lights a point `distance` from its centre.
+//
+// Two halves, matching `motionGlowFalloff` on the Kira side exactly. The inner
+// half runs straight from full strength down to half; the outer half eases the
+// remaining half away to nothing, so the light meets the material on a curve
+// and leaves no ring where the two touch.
+//
+// The radius is fixed here rather than carried per quad because the highlight
+// is the size of a fingertip's influence and not of what was touched. It is
+// pinned to `motionGlowDiameter()` by `MotionGlowRadiusMatchesTheShader`; the
+// two must move together.
+function glowFalloff(distance: Float) -> Float {
+    let r = distance / 150.0
+    if r >= 1.0 {
+        return 0.0
+    }
+    if r <= 0.5 {
+        return 1.0 - r
+    }
+    let t = (r - 0.5) * 2.0
+    if t < 0.5 {
+        return 0.5 * (1.0 - 4.0 * t * t * t)
+    }
+    let inv = 2.0 - 2.0 * t
+    return 0.5 * (inv * inv * inv * 0.5)
+}
+
+// The highlight's contribution at this fragment, already masked by the
+// surface's own coverage so it cannot spill past a rounded corner.
+function glowAt(input: VertexOut, coverage: Float) -> Float {
+    if input.glow.z <= 0.0 {
+        return 0.0
+    }
+    let offset = Float2(input.local.x - input.glow.x, input.local.y - input.glow.y)
+    return input.glow.z * glowFalloff(length(offset)) * coverage
+}
+
+shader UiRect {
+    group Batch {
+        storage read verts: [UiQuad]
+    }
+
+    vertex {
+        input VertexIn
+        output VertexOut
+
+        function entry(input: VertexIn) -> VertexOut {
+            let v = verts[input.vid / UInt(4)]
+            let corner = input.vid % UInt(4)
+            let right = Float((corner + UInt(1)) % UInt(4) / UInt(2))
+            let bottom = Float(corner / UInt(2))
+            let out: VertexOut
+            out.clip_position = Float4(
+                mix(v.posX0, v.posX1, right),
+                mix(v.posY0, v.posY1, bottom),
+                0.0,
+                1.0,
+            )
+            out.local = Float2(mix(v.localX0, v.localX1, right), mix(v.localY0, v.localY1, bottom))
+            out.px = Float2(mix(v.pxX0, v.pxX1, right), mix(v.pxY0, v.pxY1, bottom))
+            out.hsize = Float2(v.halfW, v.halfH)
+            out.radius = v.radius
+            out.borderWidth = v.borderWidth
+            // The corner's own fill: the near colour, or its mix with the far
+            // one at this corner's position along the gradient's axis. The
+            // rasterizer interpolates between the corners, so a gradient is one
+            // quad and costs a surface nothing when its axis is none.
+            let mixT = 0.0
+            if v.gradientAxis > 2.5 {
+                mixT = (right + bottom) * 0.5
+            } else if v.gradientAxis > 1.5 {
+                mixT = right
+            } else if v.gradientAxis > 0.5 {
+                mixT = bottom
+            }
+            out.fill = mix(
+                Float4(v.fillR, v.fillG, v.fillB, v.fillA),
+                Float4(v.gradientR, v.gradientG, v.gradientB, v.gradientA),
+                mixT,
+            )
+            out.border = Float4(v.borderR, v.borderG, v.borderB, v.borderA)
+            out.clip = Float4(v.clipMinX, v.clipMinY, v.clipMaxX, v.clipMaxY)
+            out.glow = Float3(v.materialSpare0, v.materialSpare1, v.materialSpare2)
+            return out
+        }
+    }
+
+    fragment {
+        input VertexOut
+        output FragmentOut
+
+        function entry(input: VertexOut) -> FragmentOut {
+            let result: FragmentOut
+            if input.px.x < input.clip.x {
+                result.color = Float4(0.0, 0.0, 0.0, 0.0)
+                return result
+            }
+            if input.px.y < input.clip.y {
+                result.color = Float4(0.0, 0.0, 0.0, 0.0)
+                return result
+            }
+            if input.px.x > input.clip.z {
+                result.color = Float4(0.0, 0.0, 0.0, 0.0)
+                return result
+            }
+            if input.px.y > input.clip.w {
+                result.color = Float4(0.0, 0.0, 0.0, 0.0)
+                return result
+            }
+            let d = sdRound(input.local, input.hsize, input.radius)
+            let fillCov = clamp(0.5 - d, 0.0, 1.0)
+            if input.borderWidth > 0.0 {
+                if input.border.w > 0.0 {
+                    let ih = Float2(
+                        input.hsize.x - input.borderWidth,
+                        input.hsize.y - input.borderWidth
+                    )
+                    let di = sdRound(input.local, ih, max(input.radius - input.borderWidth, 0.0))
+                    let inner = clamp(0.5 - di, 0.0, 1.0)
+                    let rgb = mix(input.border.xyz, input.fill.xyz, inner)
+                    let a = mix(input.border.w, input.fill.w, inner) * fillCov
+                    let litB = glowAt(input, fillCov)
+                    result.color = Float4(rgb.x * a + litB, rgb.y * a + litB, rgb.z * a + litB, min(a + litB, 1.0))
+                    return result
+                }
+            }
+            let a = input.fill.w * fillCov
+            let lit = glowAt(input, fillCov)
+            // Added rather than blended: this is the material lighting from
+            // within, not a white layer laid over it. The coverage mask is what
+            // keeps the light inside the rounded corners instead of showing the
+            // quad it is carried on.
+            result.color = Float4(input.fill.x * a + lit, input.fill.y * a + lit, input.fill.z * a + lit, min(a + lit, 1.0))
+            return result
+        }
+    }
+}

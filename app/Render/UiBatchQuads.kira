@@ -1,0 +1,451 @@
+import Foundation
+import KiraGraphics
+// Appending a quad to the current stream.
+//
+// One record per quad rather than per vertex: the twelve corner-varying values are
+// written as their two extremes and the vertex stage picks the one its corner
+// wants, which is what keeps a screen of glyphs at 54 floats each instead of 192.
+// Everything a caller can draw that is not a glyph, an icon or glass ends up here.
+
+// Append one quad (4 vertices) to the stream. (px0,py0)-(px1,py1) is the pixel-space
+// rectangle; (lx0,ly0)-(lx1,ly1) is the per-corner local value (SDF offset, or uv for
+// glyphs). The other attributes are constant across the quad's vertices.
+extend UiBatch {
+    function emitQuad(
+        px0: Float, py0: Float, px1: Float, py1: Float,
+        lx0: Float, ly0: Float, lx1: Float, ly1: Float,
+        halfW: Float, halfH: Float, radius: Float, borderWidth: Float, mode: Float,
+        edgeRefraction: Float,
+        fr: Float, fg: Float, fb: Float, fa: Float,
+        br: Float, bg: Float, bb: Float, ba: Float,
+        clipMinX: Float, clipMinY: Float, clipMaxX: Float, clipMaxY: Float,
+        m0: Float = 0.0, m1: Float = 0.0, m2: Float = 0.0, m3: Float = 0.0,
+        m4: Float = 0.0, m5: Float = 0.0, m6: Float = 0.0, m7: Float = 0.0,
+        m8: Float = 0.0, m9: Float = 0.0, m10: Float = 0.0, m11: Float = 0.0,
+        m12: Float = 0.0, m13: Float = 0.0, m14: Float = 0.0, m15: Float = 0.0,
+        m16: Float = 0.0, m17: Float = 0.0, m18: Float = 0.0, m19: Float = 0.0,
+        m20: Float = 0.0, m21: Float = 0.0, m22: Float = 0.0, m23: Float = 0.0,
+        // The gradient's far colour and its axis (0 none, 1 down, 2 across,
+        // 3 corner to corner). A flat quad leaves them at zero.
+        gradR: Float = 0.0, gradG: Float = 0.0, gradB: Float = 0.0, gradA: Float = 0.0,
+        gradAxis: Float = 0.0,
+        // The second shape a liquid-glass surface is fusing with, in this
+        // quad's own space, and the smooth minimum's reach. A reach of zero is
+        // a surface that is one shape, which is every quad but the ones in a
+        // morph — and the only value any other mode ever passes.
+        morphX: Float = 0.0, morphY: Float = 0.0,
+        morphHalfW: Float = 0.0, morphHalfH: Float = 0.0,
+        morphRadius: Float = 0.0, morphBlend: Float = 0.0,
+        // 0 for a circular rounded rectangle, 1 for a squircle's continuous
+        // superellipse corner.
+        shapeKind: Float = 0.0,
+        // The quad turned about its own centre, as cosine and sine. See
+        // `writeQuadRotation`; (1, 0) is a quad that is not turned, which is
+        // almost all of them.
+        rotCos: Float = 1.0,
+        rotSin: Float = 0.0,
+    ) {
+        var state = nativeRecover<UiBatchState>(self.storage)
+        if state.quadCount >= maxQuadsPerBatch() {
+            return
+        }
+        let modeCode = Int(mode * 10.0)
+        let requiresGeneric = rotSin != 0.0 || rotCos != 1.0
+        if state.quadCount < state.streams[state.streamIndex.raw].quadModes.count {
+            state.streams[state.streamIndex.raw].quadModes[state.quadCount] = modeCode
+            state.streams[state.streamIndex.raw].quadRequiresGeneric[state.quadCount] = requiresGeneric
+        } else {
+            state.streams[state.streamIndex.raw].quadModes.append(modeCode)
+            state.streams[state.streamIndex.raw].quadRequiresGeneric.append(requiresGeneric)
+        }
+        // Which texture this quad samples, recorded beside its mode. Only a
+        // mode-2 quad samples one; every other quad records nothing, so a run
+        // of them never breaks a draw call in two.
+        var externalId = TextureHandle(0)
+        if modeCode == 20 {
+            externalId = state.externalPending
+        }
+        var secondaryId = TextureHandle(0)
+        if modeCode == 20 {
+            secondaryId = state.secondaryPending
+        }
+        if state.quadCount < state.streams[state.streamIndex.raw].quadExternals.count {
+            state.streams[state.streamIndex.raw].quadExternals[state.quadCount] = externalId
+            state.streams[state.streamIndex.raw].quadSecondaries[state.quadCount] = secondaryId
+        } else {
+            state.streams[state.streamIndex.raw].quadExternals.append(externalId)
+            state.streams[state.streamIndex.raw].quadSecondaries.append(secondaryId)
+        }
+        if state.streamIndex.raw == 0 && state.probeQuads {
+            print(636363)
+            print(Int(mode * 10.0))
+            print(Int(px0))
+            print(Int(py0))
+            print(Int(px1))
+            print(Int(py1))
+            print(Int(fr * 1000.0))
+            print(Int(fg * 1000.0))
+            print(Int(fb * 1000.0))
+            print(Int(fa * 1000.0))
+            print(Int(edgeRefraction * 1000.0))
+        }
+        if state.probeCost && (mode < 0.5 || mode > 1.5) {
+            print(656565)
+            print(state.streamIndex.raw)
+            print(Int(mode * 10.0))
+            print(Int(px0))
+            print(Int(py0))
+            print(Int(px1 - px0))
+            print(Int(py1 - py0))
+        }
+        let contents = state.contentsPtr
+        if pointerIsNull(contents) {
+            return
+        }
+        // Mode 3 — liquid glass — is the only mode whose shader reads the material
+        // block; its region patches (3.0 full, 3.25 band, 3.45 core — see
+        // pushGlass) all carry it. Mode 4 is above them numerically and
+        // reads none of it.
+        let writesMaterial = modeCode == 30 || modeCode == 31 || modeCode == 32 || modeCode == 33 || modeCode == 34
+        let vw = state.viewportW
+        let vh = state.viewportH
+        // Base float index of this quad's record, inside this frame's ring slot.
+        let base = state.frameBase + state.quadCount * quadFloatCount()
+        writeQuadRecord(
+            contents, U64(base),
+            px0, py0, px1, py1,
+            lx0, ly0, lx1, ly1,
+            vw, vh,
+            halfW, halfH, radius, borderWidth, mode, edgeRefraction,
+            fr, fg, fb, fa,
+            br, bg, bb, ba,
+            clipMinX, clipMinY, clipMaxX, clipMaxY,
+        )
+        // The material block belongs to liquid glass and is read by no other mode, in
+        // any backend's compiled shader, so only mode 3 writes it. The slot keeps
+        // whatever the last quad to occupy it wrote (a fresh Metal buffer arrives
+        // zeroed), which the modes that skip it never look at.
+        // Written for every quad, flat ones included: the slot is reused, and an
+        // unwritten block carries whatever gradient last occupied it.
+        writeQuadGradient(contents, U64(base), gradR, gradG, gradB, gradA, gradAxis)
+        // Unconditional for the same reason the gradient is: the slot is reused
+        // and an unwritten morph block is a second shape left over from
+        // whatever quad held this slot last.
+        writeQuadMorph(contents, U64(base), morphX, morphY, morphHalfW, morphHalfH, morphRadius, morphBlend)
+        writeQuadShapeKind(contents, U64(base), shapeKind)
+        writeQuadRotation(contents, U64(base), rotCos, rotSin)
+        if writesMaterial {
+            writeQuadMaterial(
+                contents, U64(base),
+                m0, m1, m2, m3, m4, m5, m6, m7, m8, m9, m10, m11,
+                m12, m13, m14, m15, m16, m17, m18, m19, m20, m21, m22, m23,
+            )
+        }
+        // With a glass layer open, remember the (clipped) footprint this quad covers:
+        // the next glass surface reads the grid to decide whether it is stacked over
+        // this layer and therefore needs a capture of its own. The HUD's stream is
+        // exempt: it is drawn after every glass decision of the frame has been taken,
+        // so no glass surface can ever read what it would record.
+        if state.streamIndex.raw > 0 && state.streamIndex != hudStreamIndex() {
+            var mx0 = px0
+            if mx0 < clipMinX {
+                mx0 = clipMinX
+            }
+            var my0 = py0
+            if my0 < clipMinY {
+                my0 = clipMinY
+            }
+            var mx1 = px1
+            if mx1 > clipMaxX {
+                mx1 = clipMaxX
+            }
+            var my1 = py1
+            if my1 > clipMaxY {
+                my1 = clipMaxY
+            }
+            if mx1 > mx0 && my1 > my0 {
+                glassMarkRect(state, mx0, my0, mx1, my1)
+            }
+        }
+        state.quadCount += 1
+        return
+    }
+}
+
+
+// Push a rounded-rect / squircle surface with an optional border. The quad is padded
+// by 1px so the SDF anti-aliasing band at the edge is not clipped. `shapeMode` is
+// 0.0 for a circular rounded rectangle and 0.25 for a superellipse corner.
+extend UiBatch {
+    function pushRect(
+        x: Float, y: Float, w: Float, h: Float,
+        fill: borrow Color, border: borrow Color, borderWidth: Float, radius: Float,
+        clipMinX: Float, clipMinY: Float, clipMaxX: Float, clipMaxY: Float,
+        shapeMode: Float = 0.0,
+        // A gradient fill: `fill` is the near end, this is the far one, and the
+        // axis says which way far runs (0 none, 1 down, 2 across, 3 corner to
+        // corner). One quad either way — the blend is per corner.
+        gradient: borrow Color = Color { a: 0.0 },
+        gradientAxis: Float = 0.0,
+        // The touch highlight, in the same coordinates as `x`/`y`. Strength
+        // zero is no highlight, which is every quad but the one under a finger.
+        glowX: Float = 0.0,
+        glowY: Float = 0.0,
+        glowStrength: Float = 0.0,
+    ) {
+        if w <= 0.0 || h <= 0.0 {
+            return
+        }
+        // A gradient can start transparent and end opaque, so what decides
+        // whether there is anything to draw is BOTH ends of the fill.
+        // A quad that paints no fill, no gradient and no border still has
+        // something to draw if it is carrying a touch highlight: the light is
+        // ADDED to what is already there, so it needs no fill of its own. This
+        // is how the highlight reaches a glass surface, whose fill the glass
+        // shader owns and whose fill quad is therefore suppressed.
+        if fill.a <= 0.0 && gradient.a <= 0.0 && (border.a <= 0.0 || borderWidth <= 0.0) && glowStrength <= 0.0 {
+            return
+        }
+        let pad = 1.0
+        let halfW = w / 2.0
+        let halfH = h / 2.0
+        let cx = x + halfW
+        let cy = y + halfH
+        let lhx = halfW + pad
+        let lhy = halfH + pad
+        var clampedRadius = radius
+        if clampedRadius > halfW {
+            clampedRadius = halfW
+        }
+        if clampedRadius > halfH {
+            clampedRadius = halfH
+        }
+        self.emitQuad(
+            cx - lhx, cy - lhy, cx + lhx, cy + lhy,
+            -lhx, -lhy, lhx, lhy,
+            halfW, halfH, clampedRadius, borderWidth, shapeMode, 0.0,
+            fill.r, fill.g, fill.b, fill.a,
+            border.r, border.g, border.b, border.a,
+            clipMinX, clipMinY, clipMaxX, clipMaxY,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0,
+            // The last three material slots are the spares, and in this mode
+            // they carry the highlight. Handed over in the quad's OWN space,
+            // which is what the fragment measures distance in.
+            glowX - cx, glowY - cy, glowStrength,
+            gradient.r, gradient.g, gradient.b, gradient.a, gradientAxis
+        )
+        return
+    }
+}
+
+
+// The bind group a TextureView quad samples ITS OWN texture through.
+//
+// One per texture id, created on first sight and kept. A window compositing
+// several components draws a TextureView per component in the same stream, and
+// the single backdrop group cannot serve them: whichever texture was registered
+// last would be the one all of them showed.
+//
+// Kept rather than rebuilt because an id here names a shared surface, which
+// outlives the frame -- so a window holding three components pays three
+// creations for the run of the process, not three per frame.
+function externalCacheEnsure(state: borrow mut UiBatchState, graphics: borrow Graphics, textureId: TextureHandle) {
+    if textureId.raw <= 0 {
+        return
+    }
+        for index in 0..state.externalCacheIds.count {
+        if state.externalCacheIds[index] == textureId {
+            return
+        }
+            }
+    let texture = sampledTextureFromViewId(U32(textureId.raw))
+    let group = bindGroupOrReport(graphics.beginBindGroup("kira-ui-batch-external-cached"), "external cache group")
+    glassAddSharpBackdrop(graphics, group, texture, texture, state.sampler, state.backdropBlend)
+    state.externalCacheIds.append(textureId)
+    state.externalCacheGroups.append(group)
+    return
+}
+
+function externalCacheGroup(state: borrow UiBatchState, textureId: TextureHandle) -> BindGroup {
+        for index in 0..state.externalCacheIds.count {
+        if state.externalCacheIds[index] == textureId {
+            return shareBindGroup(state.externalCacheGroups[index])
+        }
+            }
+    // The miss case is read only through `.id != 0`, so it carries no box.
+    return unboundBindGroup()
+}
+
+// The group a crossfading quad reads its TARGET through.
+//
+// Bound at the near group rather than beside the primary, because that is where
+// the generic shader's `backdrop` tap lives. Binding it beside the primary put
+// the texture in a slot mode 2 never reads, and the tap fell back to the group
+// underneath it -- which is the glyph atlas, so a sidebar mid-swipe crossfaded
+// into a page of packed glyphs.
+function secondaryCacheEnsure(state: borrow mut UiBatchState, graphics: borrow Graphics, textureId: TextureHandle) {
+    if textureId.raw <= 0 {
+        return
+    }
+        for index in 0..state.secondaryCacheIds.count {
+        if state.secondaryCacheIds[index] == textureId {
+            return
+        }
+            }
+    let texture = sampledTextureFromViewId(U32(textureId.raw))
+    let group = bindGroupOrReport(graphics.beginBindGroup("kira-ui-batch-secondary-cached"), "secondary cache group")
+    graphics.bindGroupAddTexture(group, backdropTextureSlot(), texture)
+    graphics.bindGroupAddSampler(group, backdropSamplerSlot(), state.sampler)
+    graphics.bindGroupAddTexture(group, nearTextureSlot(), texture)
+    graphics.bindGroupAddSampler(group, nearSamplerSlot(), state.sampler)
+    state.secondaryCacheIds.append(textureId)
+    state.secondaryCacheGroups.append(group)
+    return
+}
+
+function secondaryCacheGroup(state: borrow UiBatchState, textureId: TextureHandle) -> BindGroup {
+        for index in 0..state.secondaryCacheIds.count {
+        if state.secondaryCacheIds[index] == textureId {
+            return shareBindGroup(state.secondaryCacheGroups[index])
+        }
+            }
+    // The miss case is read only through `.id != 0`, so it carries no box.
+    return unboundBindGroup()
+}
+
+// The texture a given quad crossfades towards, or 0 for one that does not.
+function quadSecondaryAt(state: borrow UiBatchState, modeStream: DrawStreamId, quad: Int) -> TextureHandle {
+    if quad < 0 || quad >= state.streams[modeStream.raw].quadSecondaries.count {
+        return TextureHandle(0)
+    }
+    return state.streams[modeStream.raw].quadSecondaries[quad]
+}
+
+// The external texture a given quad samples, or 0 for one that samples none.
+function quadExternalAt(state: borrow UiBatchState, modeStream: DrawStreamId, quad: Int) -> TextureHandle {
+    if quad < 0 || quad >= state.streams[modeStream.raw].quadExternals.count {
+        return TextureHandle(0)
+    }
+    return state.streams[modeStream.raw].quadExternals[quad]
+}
+
+// Register the external texture the frame's BACKDROP reads: what glass blurs and
+// what the background pass draws. There is one of those per frame. The slot-1
+// bind group is cached per texture id, so a stable render-target id costs one
+// creation total.
+extend UiBatch {
+    function setExternalTextures(graphics: borrow Graphics, textureId: U32, secondaryTextureId: U32) {
+        var state = nativeRecover<UiBatchState>(self.storage)
+        // Settled before the early-out below: the quads that follow sample THIS
+        // texture whether or not the backdrop slot already held it.
+        let primaryHandle = TextureHandle(Int(textureId))
+        let secondaryHandle = TextureHandle(Int(secondaryTextureId))
+        state.externalPending = primaryHandle
+        state.secondaryPending = secondaryHandle
+        externalCacheEnsure(state, graphics, primaryHandle)
+        secondaryCacheEnsure(state, graphics, secondaryHandle)
+        let primaryMatches = state.externalBindReady && state.externalTextureId == primaryHandle
+        let secondaryMatches =
+            (secondaryTextureId == 0 && !state.secondaryExternalBindReady) ||
+            (state.secondaryExternalBindReady && state.secondaryExternalTextureId == secondaryHandle)
+        if primaryMatches && secondaryMatches {
+            return
+        }
+        let sampler = state.sampler
+        if !primaryMatches {
+            if state.externalBindReady {
+                graphics.destroyBindGroup(state.externalGroup)
+            }
+            let texture = sampledTextureFromViewId(textureId)
+            let bindGroup = bindGroupOrReport(graphics.beginBindGroup("kira-ui-batch-external"), "bind group")
+            glassAddSharpBackdrop(graphics, bindGroup, texture, texture, sampler, state.backdropBlend)
+            state.externalTextureId = primaryHandle
+            state.externalGroup = bindGroup
+            state.externalBindReady = true
+        }
+        if !secondaryMatches && state.secondaryExternalBindReady {
+            graphics.destroyBindGroup(state.secondaryExternalGroup)
+            state.secondaryExternalTextureId = TextureHandle(0)
+            // Unbound, not empty: nothing rebinds through this slot until a
+            // real group replaces it, and an empty group's state box would be
+            // orphaned by that replacement.
+            state.secondaryExternalGroup = unboundBindGroup()
+            state.secondaryExternalBindReady = false
+        }
+        if secondaryTextureId > 0 && !secondaryMatches {
+            let secondary = sampledTextureFromViewId(secondaryTextureId)
+            let secondaryGroup = bindGroupOrReport(graphics.beginBindGroup("kira-ui-batch-external-secondary"), "secondary group")
+            graphics.bindGroupAddTexture(secondaryGroup, backdropTextureSlot(), secondary)
+            graphics.bindGroupAddSampler(secondaryGroup, backdropSamplerSlot(), sampler)
+            graphics.bindGroupAddTexture(secondaryGroup, nearTextureSlot(), secondary)
+            graphics.bindGroupAddSampler(secondaryGroup, nearSamplerSlot(), sampler)
+            state.secondaryExternalTextureId = secondaryHandle
+            state.secondaryExternalGroup = secondaryGroup
+            state.secondaryExternalBindReady = true
+        }
+        // The sharp tap the composite reads a DIRECT backdrop through: both
+        // photographs at once, so a glass surface over a scheme change shades
+        // against the crossfade without the compositor ever rendering that
+        // crossfade into a full-resolution capture for it to read back.
+        if state.backdropSharpGroup.id != 0 {
+            graphics.destroyBindGroup(state.backdropSharpGroup)
+        }
+        let primary = sampledTextureFromViewId(U32(state.externalTextureId.raw))
+        var second = primary
+        if state.secondaryExternalBindReady {
+            second = sampledTextureFromViewId(U32(state.secondaryExternalTextureId.raw))
+        }
+        let sharp = bindGroupOrReport(graphics.beginBindGroup("kira-ui-batch-backdrop-sharp"), "backdrop sharp")
+        glassAddSharpBackdrop(graphics, sharp, primary, second, sampler, state.backdropBlend)
+        state.backdropSharpGroup = sharp
+        return
+    }
+}
+
+
+extend UiBatch {
+    function setExternalTexture(graphics: borrow Graphics, textureId: U32) {
+        self.setExternalTextures(graphics, textureId, U32(0))
+        return
+    }
+}
+
+
+// Emit an external-texture quad (mode 2): `local` spans uv 0..1 across the rect.
+extend UiBatch {
+    function pushExternalRect(
+        x: Float, y: Float, w: Float, h: Float,
+        alpha: Float,
+        transition: Float,
+        radius: Float,
+        clipMinX: Float, clipMinY: Float, clipMaxX: Float, clipMaxY: Float,
+    ) {
+        if w <= 0.0 || h <= 0.0 || alpha <= 0.0 {
+            return
+        }
+        var state = nativeRecover<UiBatchState>(self.storage)
+        let coversViewport =
+            x >= -0.01 && y >= -0.01 &&
+            x <= 0.01 && y <= 0.01 &&
+            w >= state.viewportW - 0.01 && h >= state.viewportH - 0.01 &&
+            radius <= 0.0 &&
+            clipMinX <= 0.01 && clipMinY <= 0.01 &&
+            clipMaxX >= state.viewportW - 0.01 && clipMaxY >= state.viewportH - 0.01
+        if state.backgroundPromotable && state.backgroundPipeline.id != 0 && state.streamIndex.raw == 0 && state.quadCount == 0 && alpha >= 0.999 && coversViewport {
+            state.backgroundActive = true
+            state.backgroundTransition = transition
+            return
+        }
+        self.emitQuad(
+            x, y, x + w, y + h,
+            0.0, 0.0, 1.0, 1.0,
+            w / 2.0, h / 2.0, radius, 0.0, 2.0, transition,
+            1.0, 1.0, 1.0, alpha,
+            0.0, 0.0, 0.0, 0.0,
+            clipMinX, clipMinY, clipMaxX, clipMaxY
+        )
+        return
+    }
+}

@@ -1,0 +1,350 @@
+import KiraGraphics
+import Foundation
+
+// A collision-free spelling for hosts that also expose their own design-token
+// `Color`. Package imports are flat in Kira, so the distinct name is the type
+// boundary rather than a module qualifier.
+type FoundationColor = Color
+
+function foundationRgba(r: Float, g: Float, b: Float, a: Float) -> FoundationColor {
+    return Color { r: r, g: g, b: b, a: a }
+}
+
+struct Glow {
+    let color: Color = Color {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 1.0
+    }
+    let radius: Float = 0.0
+    let intensity: Float = 0.0
+}
+
+enum FoundationShape {
+    RegularRoundedRect
+    Squircle
+}
+
+enum FoundationMaterial {
+    Flat
+    Frosted
+    // REAL liquid glass (Metal path): the content rendered behind the surface is
+    // captured into an offscreen texture, gaussian-blurred at half resolution, and
+    // composited back through the surface's rounded shape with an edge-refraction
+    // curve and a rim glow — the same pass structure as the Kira Graphics
+    // liquid_glass example, driven by the batched UI compositor. On the legacy
+    // Sokol path it falls back to a translucent tint like the other materials.
+    LiquidGlass
+    // The WINDOW's backdrop: what is behind the window itself, blurred and
+    // tinted by the desktop compositor — the material a platform sidebar is
+    // made of.
+    //
+    // It is not a blur this compositor performs. Frosted and LiquidGlass blur
+    // what the APPLICATION drew underneath them, which is the wrong thing for a
+    // sidebar: what should show through a sidebar is the desktop, and an
+    // application cannot see the desktop. So the surface is cleared to the
+    // window's key colour and the compositor fills it, which is also why it
+    // only means anything in a transparent window (see
+    // KiraGraphics' Public/WindowComposition.kira) — anywhere else it is a
+    // hole in a window that has none, and draws as an ordinary flat surface.
+    WindowBackdrop
+}
+
+// How much a LiquidGlass surface washes over what it refracts. The steps ramp the
+// WASH only: blur, refraction, lens and rims stay whatever the surface asked for,
+// so the scale never trades away the see-through-ness that makes the material
+// glass.
+//
+// A step is a NAME for one of the platform's materials, not a position on a dial of
+// our own — foundationFrostStack looks each one up in app/Core/Materials.kira and
+// hands back the fills the platform authors, blend modes and all. What used to be
+// here (an evenly spaced 0..1 amount times a 0.3 ceiling) was a guess at the shape
+// of that table, and a guess and the table cannot both be the answer.
+enum FoundationFrost {
+    // Untinted: the refracted backdrop shows through as it is. The one step with no
+    // entry in the table — no platform material is fully clear.
+    Translucent
+    // Ultrathin.
+    Light
+    // Thin.
+    Medium
+    // Regular — the platform's default material.
+    High
+    // Thick.
+    XHigh
+    // Chrome: shapes and colour survive, detail does not.
+    Max
+}
+
+// How much of the blurred backdrop pyramid a LiquidGlass surface shows instead of
+// the sharp capture.
+//
+// Blur is NOT a design dial here, and a surface does not normally pick one. The
+// backdrop is captured at half resolution to keep the frame cheap, and a little
+// blur is what stops that showing: it is a cost being hidden, not a look being
+// composed. So the default is Step — whatever the frost step implies — and the
+// ramp is deliberately shallow, ending where the near level of the pyramid does.
+// Reaching further would blur past the point of hiding anything and start burying
+// what the glass is supposed to refract.
+//
+// The named steps stay for a surface that genuinely wants one (and for the kitchen
+// editor, whose job is to show the range).
+enum FoundationBlur {
+    // Follow the frost step. What a surface gets when it says nothing.
+    Step
+    // The backdrop arrives sharp: refraction, rims and wash only, and whatever is
+    // behind stays readable through the glass (the macOS dock look).
+    None
+    Light
+    Medium
+    High
+    XHigh
+    // Fully soft — nothing of the sharp capture survives (the iOS pill look).
+    Max
+}
+
+// The blur dial (0..1) a NAMED step means. The pyramid itself is fixed (half-res,
+// eight gaussian iterations); this is how far the glass reads across it.
+function foundationBlurMix(blur: borrow FoundationBlur) -> Float {
+    match blur {
+        // A raw Surface has no frost step to follow, so Step means the blur of the
+        // platform's default material — Regular, which FoundationFrost calls High.
+        Step -> return foundationFrostBlur(.High)
+        None -> return 0.0
+        Light -> return 0.2
+        Medium -> return 0.4
+        High -> return 0.6
+        XHigh -> return 0.8
+        Max -> return 1.0
+    }
+}
+
+// The blur a frost step carries on its own: nothing at Translucent, then a straight
+// linear ramp that tops out at 0.25 — exactly the near level of the pyramid, the
+// point at which a half-resolution capture stops reading as a half-resolution
+// capture. The dial's own split (CAGlassMaterial.blurNearSplit, 0.25) is
+// what puts the near level there, so the whole ramp is spent crossing sharp ->
+// near and never touches the far level at all.
+function foundationFrostBlur(frost: borrow FoundationFrost) -> Float {
+    match frost {
+        Translucent -> return 0.0
+        Light -> return 0.05
+        Medium -> return 0.10
+        High -> return 0.15
+        XHigh -> return 0.20
+        Max -> return 0.25
+    }
+}
+
+// The dial a surface ends up with: the frost step's own blur unless it named one.
+function foundationBlurAmount(
+    blur: borrow FoundationBlur,
+    frost: borrow FoundationFrost,
+) -> Float {
+    match blur {
+        Step -> return foundationFrostBlur(frost)
+        None -> return 0.0
+        Light -> return foundationBlurMix(blur)
+        Medium -> return foundationBlurMix(blur)
+        High -> return foundationBlurMix(blur)
+        XHigh -> return foundationBlurMix(blur)
+        Max -> return foundationBlurMix(blur)
+    }
+}
+
+// The rim-highlight scale a surface ends up shading with: the requested strength
+// when edge lighting is on, and zero when it is off, which removes the hairline and
+// the inner bloom without touching the lens, wash or shadow.
+function foundationEdgeLightingScale(enabled: Bool, strength: Float) -> Float {
+    if enabled {
+        return strength
+    }
+    return 0.0
+}
+
+// The same material, carrying `stack`'s upper layer and lower blend mode. The lower
+// layer's colour and opacity are the surface fill, which the caller sets from
+// `stack.lower` — see foundationTintFill.
+function foundationGlassMaterialWithTint(
+    base: borrow CAGlassMaterial,
+    stack: borrow FoundationTintStack,
+) -> CAGlassMaterial {
+    return CAGlassMaterial {
+        edgeStrokeStrength: base.edgeStrokeStrength,
+        edgeStrokeDarken: base.edgeStrokeDarken,
+        edgeStrokePeak: base.edgeStrokePeak,
+        edgeStrokeFade: base.edgeStrokeFade,
+        sheenStrength: base.sheenStrength,
+        lensMaxBend: base.lensMaxBend,
+        refractionReach: base.refractionReach,
+        blurNearSplit: base.blurNearSplit,
+        borderSpread: base.borderSpread,
+        borderSideOffset: base.borderSideOffset,
+        borderSideSpread: base.borderSideSpread,
+        borderGrey: base.borderGrey,
+        borderSideGrey: base.borderSideGrey,
+        innerRimStrength: base.innerRimStrength,
+        innerRimWidth: base.innerRimWidth,
+        washBlend: foundationBlendId(stack.lower.blend),
+        washUpperR: stack.upper.color.r,
+        washUpperG: stack.upper.color.g,
+        washUpperB: stack.upper.color.b,
+        washUpperAlpha: stack.upper.alpha,
+        washUpperBlend: foundationBlendId(stack.upper.blend)
+    }
+}
+
+// A material with its rim taken OFF, for a surface that asked for no edge
+// lighting.
+//
+// The rim now lives in `CAGlassMaterial`'s defaults, which is where it
+// belongs: a surface that names no material still has an edge. `edgeRefraction`
+// scales the stroke and the sheen in the shader but never touched the inner rim,
+// so `edgeLighting: false` could not remove it — this is what does.
+function foundationGlassMaterialEdgeLit(
+    base: borrow CAGlassMaterial,
+    enabled: Bool,
+) -> CAGlassMaterial {
+    if enabled {
+        return CAGlassMaterial {
+            edgeStrokeStrength: base.edgeStrokeStrength,
+            edgeStrokeDarken: base.edgeStrokeDarken,
+            edgeStrokePeak: base.edgeStrokePeak,
+            edgeStrokeFade: base.edgeStrokeFade,
+            sheenStrength: base.sheenStrength,
+            lensMaxBend: base.lensMaxBend,
+            refractionReach: base.refractionReach,
+            blurNearSplit: base.blurNearSplit,
+            borderSpread: base.borderSpread,
+            borderSideOffset: base.borderSideOffset,
+            borderSideSpread: base.borderSideSpread,
+            borderGrey: base.borderGrey,
+            borderSideGrey: base.borderSideGrey,
+            innerRimStrength: base.innerRimStrength,
+            innerRimWidth: base.innerRimWidth,
+            washBlend: base.washBlend,
+            washUpperR: base.washUpperR,
+            washUpperG: base.washUpperG,
+            washUpperB: base.washUpperB,
+            washUpperAlpha: base.washUpperAlpha,
+            washUpperBlend: base.washUpperBlend
+        }
+    }
+    return CAGlassMaterial {
+        edgeStrokeStrength: base.edgeStrokeStrength,
+        edgeStrokeDarken: base.edgeStrokeDarken,
+        edgeStrokePeak: base.edgeStrokePeak,
+        edgeStrokeFade: base.edgeStrokeFade,
+        sheenStrength: 0.0,
+        lensMaxBend: base.lensMaxBend,
+        refractionReach: base.refractionReach,
+        blurNearSplit: base.blurNearSplit,
+        borderSpread: base.borderSpread,
+        borderSideOffset: base.borderSideOffset,
+        borderSideSpread: base.borderSideSpread,
+        borderGrey: base.borderGrey,
+        borderSideGrey: base.borderSideGrey,
+        innerRimStrength: 0.0,
+        innerRimWidth: base.innerRimWidth,
+        washBlend: base.washBlend,
+        washUpperR: base.washUpperR,
+        washUpperG: base.washUpperG,
+        washUpperB: base.washUpperB,
+        washUpperAlpha: base.washUpperAlpha,
+        washUpperBlend: base.washUpperBlend
+    }
+}
+
+// The surface fill a tint stack's LOWER layer is: its colour, with the layer's
+// opacity as the alpha the compositor reads the wash strength from.
+function foundationTintFill(stack: borrow FoundationTintStack) -> Color {
+    return Color {
+        r: stack.lower.color.r,
+        g: stack.lower.color.g,
+        b: stack.lower.color.b,
+        a: stack.lower.alpha
+    }
+}
+
+// Which of the platform's materials a frost step names. The step scale predates the
+// table and is one longer than it, so Translucent keeps its own meaning — no tint
+// at all, which no platform material is — and the five that do tint are the five
+// the platform ships, in order.
+function foundationFrostStyle(frost: borrow FoundationFrost) -> FoundationMaterialStyle {
+    match frost {
+        Translucent -> return .Ultrathin
+        Light -> return .Ultrathin
+        Medium -> return .Thin
+        High -> return .Regular
+        XHigh -> return .Thick
+        Max -> return .Chrome
+    }
+}
+
+// The fills a frost step means, straight out of the platform table. Translucent is
+// the one step with no entry: it is clear glass, so it gets an empty stack rather
+// than the thinnest material.
+function foundationFrostStack(
+    frost: borrow FoundationFrost,
+    scheme: borrow FoundationScheme,
+) -> FoundationTintStack {
+    match frost {
+        Translucent -> return FoundationTintStack {}
+        Light -> return foundationMaterialTint(.Ultrathin, scheme)
+        Medium -> return foundationMaterialTint(.Thin, scheme)
+        High -> return foundationMaterialTint(.Regular, scheme)
+        XHigh -> return foundationMaterialTint(.Thick, scheme)
+        Max -> return foundationMaterialTint(.Chrome, scheme)
+    }
+}
+
+enum FoundationEffect {
+    BackdropGlow(Glow)
+    LayerGlow(Glow)
+}
+
+struct FoundationTextPaint {
+    let content: String
+    let color: Color = Color {
+        r: 0.08,
+        g: 0.08,
+        b: 0.10,
+        a: 1.0
+    }
+    let size: Float = 15.0
+    let weight: Float = 400.0
+}
+
+struct FoundationSurfacePaint {
+    let fill: Color = Color {
+        r: 1.0,
+        g: 1.0,
+        b: 1.0,
+        a: 1.0
+    }
+    let border: Color = Color {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 0.0
+    }
+    let borderWidth: Float = 0.0
+    let radius: Float = 0.0
+    let material: FoundationMaterial = .Flat
+    let effects: [FoundationEffect] = []
+    let clipContent: Bool = false
+    let shape: FoundationShape = .RegularRoundedRect
+}
+
+struct FoundationHitRegionPaint {
+    let disabled: Bool = false
+    let onPress: () -> Void
+}
+
+enum FoundationPaint {
+    None
+    Text(FoundationTextPaint)
+    Surface(FoundationSurfacePaint)
+    HitRegion(FoundationHitRegionPaint)
+}

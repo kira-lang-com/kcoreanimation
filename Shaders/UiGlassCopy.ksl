@@ -1,0 +1,189 @@
+// Liquid glass, INTERIOR COPY pipeline: presents cached interior pixels. A
+// glass interior's shading depends only on the surface's geometry, its dial
+// and material, and the backdrop textures — when none of those changed since
+// the cache pass rendered it, the interior is a static image, and this
+// pipeline re-presents it as an opaque texel-aligned copy. The cache holds
+// the exact quantized bytes the live pipelines produced, and a nearest-texel
+// fetch at pixel centres returns them unchanged, so a cached frame is
+// byte-identical to a live one at a fraction of the shading cost.
+//
+// The cache texture rides the ATLAS bind slot: the draw loop swaps the
+// atlas group for the cache group around copy runs, so this shader's first
+// three bindings are the batch family's first three and no new slot exists
+// anywhere else. It declares only those three — a copy reads one texture, and a
+// declared binding no stage uses is a `sampler2D` GL then eliminates and
+// reports missing at every link. `materialSpare0/1` carry 1/drawable-size; the
+// fragment turns its own device position into the cache texel through them.
+
+type UiQuad {
+    let posX0: Float
+    let posY0: Float
+    let posX1: Float
+    let posY1: Float
+    let pxX0: Float
+    let pxY0: Float
+    let pxX1: Float
+    let pxY1: Float
+    let localX0: Float
+    let localY0: Float
+    let localX1: Float
+    let localY1: Float
+    let halfW: Float
+    let halfH: Float
+    let radius: Float
+    let borderWidth: Float
+    let mode: Float
+    let edgeRefraction: Float
+    let fillR: Float
+    let fillG: Float
+    let fillB: Float
+    let fillA: Float
+    let borderR: Float
+    let borderG: Float
+    let borderB: Float
+    let borderA: Float
+    let clipMinX: Float
+    let clipMinY: Float
+    let clipMaxX: Float
+    let clipMaxY: Float
+    let edgeStrokeStrength: Float
+    let edgeStrokeDarken: Float
+    let edgeStrokePeak: Float
+    let edgeStrokeFade: Float
+    let sheenStrength: Float
+    let lensMaxBend: Float
+    let refractionReach: Float
+    let blurNearSplit: Float
+    let borderSpread: Float
+    let borderSideOffset: Float
+    let borderSideSpread: Float
+    let borderGrey: Float
+    let borderSideGrey: Float
+    let innerRimStrength: Float
+    let innerRimWidth: Float
+    let washBlend: Float
+    let washUpperR: Float
+    let washUpperG: Float
+    let washUpperB: Float
+    let washUpperAlpha: Float
+    let washUpperBlend: Float
+    let materialSpare0: Float
+    let materialSpare1: Float
+    let materialSpare2: Float
+    // The gradient block: the colour the far end of the quad takes and which
+    // way far runs. Declared by every shader that pulls this record, because
+    // the record's STRIDE is what a pull reads by — a shader that stops one
+    // field short reads every quad after the first from the wrong offset.
+    let gradientR: Float
+    let gradientG: Float
+    let gradientB: Float
+    let gradientA: Float
+    let gradientAxis: Float
+    // The morph block: the SECOND shape this surface fuses with, in the quad's
+    // own local space, and the smooth minimum's reach in points. `UiGlassFull`
+    // is the only shader that reads it — every other one declares it because a
+    // storage pull reads by the record's STRIDE, and a shader that stops six
+    // fields short reads the next quad from the wrong offset.
+    let morphX: Float
+    let morphY: Float
+    let morphHalfW: Float
+    let morphHalfH: Float
+    let morphRadius: Float
+    let morphBlend: Float
+    // 0 circular, 1 the continuous superellipse a squircle is.
+    let shapeKind: Float
+    // The quad turned about its own centre, as cosine and sine — see
+    // `writeQuadRotation`. Only `UiBatch` acts on it; every other shader
+    // declares it because a storage pull reads by the record's STRIDE, and a
+    // shader that stops two fields short reads the next quad from the wrong
+    // offset.
+    let rotCos: Float
+    let rotSin: Float
+}
+
+type VertexIn {
+    @builtin(vertex_index)
+    let vid: UInt
+}
+
+type VertexOut {
+    @builtin(position)
+    let clip_position: Float4
+
+    let px: Float2
+    let clip: Float4
+    // 1 / drawable width and height: device position times this is cache uv.
+    let invSize: Float2
+}
+
+type FragmentOut {
+    let color: Float4
+}
+
+shader UiGlassCopy {
+    group Batch {
+        storage read verts: [UiQuad]
+        texture atlas: Texture2d
+        sampler atlasSmp: Sampler
+    }
+
+    vertex {
+        input VertexIn
+        output VertexOut
+
+        function entry(input: VertexIn) -> VertexOut {
+            let v = verts[input.vid / UInt(4)]
+            let corner = input.vid % UInt(4)
+            let right = Float((corner + UInt(1)) % UInt(4) / UInt(2))
+            let bottom = Float(corner / UInt(2))
+            let out: VertexOut
+            out.clip_position = Float4(
+                mix(v.posX0, v.posX1, right),
+                mix(v.posY0, v.posY1, bottom),
+                0.0,
+                1.0,
+            )
+            out.px = Float2(mix(v.pxX0, v.pxX1, right), mix(v.pxY0, v.pxY1, bottom))
+            out.clip = Float4(v.clipMinX, v.clipMinY, v.clipMaxX, v.clipMaxY)
+            out.invSize = Float2(v.materialSpare0, v.materialSpare1)
+            return out
+        }
+    }
+
+    fragment {
+        input VertexOut
+        output FragmentOut
+
+        function entry(input: VertexOut) -> FragmentOut {
+            let out: FragmentOut
+
+            if input.px.x < input.clip.x {
+                out.color = Float4(0.0, 0.0, 0.0, 0.0)
+                return out
+            }
+            if input.px.y < input.clip.y {
+                out.color = Float4(0.0, 0.0, 0.0, 0.0)
+                return out
+            }
+            if input.px.x > input.clip.z {
+                out.color = Float4(0.0, 0.0, 0.0, 0.0)
+                return out
+            }
+            if input.px.y > input.clip.w {
+                out.color = Float4(0.0, 0.0, 0.0, 0.0)
+                return out
+            }
+
+            // The cache pass rendered this pixel at this same device
+            // position; position times 1/size is its texel centre. The atlas
+            // slot holds the cache texture around copy runs.
+            let uv = Float2(
+                input.clip_position.x * input.invSize.x,
+                input.clip_position.y * input.invSize.y
+            )
+            let cached = sample(atlas, atlasSmp, uv)
+            out.color = Float4(cached.x, cached.y, cached.z, 1.0)
+            return out
+        }
+    }
+}

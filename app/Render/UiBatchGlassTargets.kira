@@ -1,0 +1,348 @@
+import Foundation
+import KiraGraphics
+// Liquid glass, the resources side: the occupancy grid that decides whether a
+// surface has anything under it worth capturing, and the per-layer render targets
+// the capture and its blur pyramid live in.
+//
+// Glass is layered because one glass surface can sit over another. Each layer owns
+// a scene texture, a near and a far blur level, and the bind groups that read them,
+// and a layer is only built when something actually asks for it — a UI with no
+// glass allocates none of this.
+
+// Which grid column/row a pixel coordinate falls in, clamped to the grid.
+function glassCellIndex(value: Float, extent: Float, cells: Int) -> Int {
+    if extent <= 0.0 {
+        return 0
+    }
+    var idx = Int(value / extent * Float(cells))
+    if idx < 0 {
+        idx = 0
+    }
+    if idx >= cells {
+        idx = cells - 1
+    }
+    return idx
+}
+
+// Record exact content bounds for the active glass layer.
+function glassMarkRect(state: borrow mut UiBatchState, x0: Float, y0: Float, x1: Float, y1: Float) {
+    let base = state.glassRectCount * 4
+    if base + 3 < state.glassRects.count {
+        state.glassRects[base] = x0
+        state.glassRects[base + 1] = y0
+        state.glassRects[base + 2] = x1
+        state.glassRects[base + 3] = y1
+    } else {
+        state.glassRects.append(x0)
+        state.glassRects.append(y0)
+        state.glassRects.append(x1)
+        state.glassRects.append(y1)
+    }
+    state.glassRectCount += 1
+    return
+}
+
+// Does this rect sit over anything the current glass layer has already drawn? A
+// glass surface that does must start its own layer to refract it.
+function glassLayerOccupied(state: borrow mut UiBatchState, x0: Float, y0: Float, x1: Float, y1: Float) -> Bool {
+    var i = 0
+    while i < state.glassRectCount {
+        let base = i * 4
+        let rx0 = state.glassRects[base]
+        let ry0 = state.glassRects[base + 1]
+        let rx1 = state.glassRects[base + 2]
+        let ry1 = state.glassRects[base + 3]
+        if x0 < rx1 && x1 > rx0 && y0 < ry1 && y1 > ry0 {
+            return true
+        }
+        i += 1
+    }
+    return false
+}
+
+// A render pass targeting one of the glass offscreen textures.
+function glassTexturePass(label: String, texture: borrow GraphicsTexture, r: Float, g: Float, b: Float, a: Float) -> RenderPassDescriptor {
+    let target = RenderTarget {
+        kind: .Texture,
+        texture: texture,
+        mipLevel: 0,
+        arrayLayer: 0
+    }
+    let attachment = ColorAttachment {
+        target: target,
+        loadAction: .Clear,
+        storeAction: .Store,
+        clearColor: Color {
+            r: r,
+            g: g,
+            b: b,
+            a: a
+        },
+        resolveTarget: emptyRenderTarget(),
+        hasResolveTarget: false
+    }
+    return RenderPassDescriptor {
+        label: label,
+        colorAttachments: [attachment],
+        primaryColorAttachment: attachment,
+        hasPrimaryColorAttachment: true,
+        depthAttachment: emptyDepthAttachment(),
+        hasDepthAttachment: false,
+        stencilAttachment: emptyStencilAttachment(),
+        hasStencilAttachment: false
+    }
+}
+
+function glassDestroyTexture(graphics: borrow Graphics, texture: borrow GraphicsTexture) {
+    if texture.id == 0 {
+        return
+    }
+    graphics.destroyTexture(texture)
+    return
+}
+
+function glassDestroyBindGroup(graphics: borrow Graphics, group: borrow BindGroup) {
+    if group.id == 0 {
+        return
+    }
+    graphics.destroyBindGroup(group)
+    return
+}
+
+// Release the application-owned references to a superseded glass target set.
+// Metal command buffers retain every resource they encode until completion, so
+// prior in-flight frames remain valid while the registry can stop retaining the
+// old resize bucket immediately.
+function glassDestroyTargets(state: borrow mut UiBatchState, graphics: borrow Graphics) {
+    glassDestroyTexture(graphics, state.blurTextureA)
+    glassDestroyTexture(graphics, state.blurTextureB)
+    for layer in 0..state.glassLayers.count {
+        glassDestroyBindGroup(graphics, state.glassLayers[layer].sceneSharpGroup)
+        glassDestroyBindGroup(graphics, state.glassLayers[layer].softNearGroup)
+        glassDestroyTexture(graphics, state.glassLayers[layer].sceneTexture)
+        glassDestroyTexture(graphics, state.glassLayers[layer].nearTexture)
+        glassDestroyTexture(graphics, state.glassLayers[layer].blurTexture)
+    }
+    state.blurTextureA = emptyGraphicsTexture()
+    state.blurTextureB = emptyGraphicsTexture()
+    state.glassBlurW = 0
+    state.glassBlurH = 0
+    state.glassBlurSourceId = TextureHandle(0)
+    // The interior cache is drawable-sized and its keys describe the old
+    // viewport; both die with the glass targets. (The texture itself is
+    // re-created lazily by glassEnsureInteriorCache at the new size.)
+    state.glassCacheW = 0
+    state.glassCacheH = 0
+    state.glassCacheCleared = false
+    state.glassCacheEpochValue += 1
+    state.glassLayers = []
+    state.glassReady = false
+    return
+}
+
+// Attach all targets used by glass layer `layer`. Layer 0 is built with the first
+// glass frame; deeper layers are built only when a frame actually stacks that far,
+// so an ordinary one- or two-layer UI does not reserve the maximum chain.
+function glassEnsureLayerScene(state: borrow mut UiBatchState, graphics: borrow Graphics, layer: GlassLayerId) {
+    if layer.raw < 0 || layer.raw >= state.glassLayers.count {
+        return
+    }
+    if state.glassLayers[layer.raw].sceneTexture.id != 0 {
+        return
+    }
+    // Keep the refracted SHARP tap at logical resolution. On a Retina 4K window
+    // this is already a 2x reduction per axis from the drawable and is confined to
+    // the Liquid Glass effect; reducing it again visibly changed photo detail under
+    // clear glass. Only the blurred levels use the more aggressive pyramid below.
+    var sceneDiv = 1
+    let blurDiv = glassBlurDivisor()
+    var sceneW = state.glassTexW / sceneDiv
+    if sceneW < 1 {
+        sceneW = 1
+    }
+    var sceneH = state.glassTexH / sceneDiv
+    if sceneH < 1 {
+        sceneH = 1
+    }
+    var blurW = state.glassTexW / blurDiv
+    if blurW < 1 {
+        blurW = 1
+    }
+    var blurH = state.glassTexH / blurDiv
+    if blurH < 1 {
+        blurH = 1
+    }
+    // The capture is drawn by the SAME pipelines that draw the swapchain — the
+    // background, the batch, every glass region — so it carries the swapchain's
+    // format. A colour target whose format differs from the pipeline that writes
+    // it is an attachment-state mismatch, which a validating backend rejects: on
+    // Dawn it invalidates the whole frame's command buffer, and the window then
+    // presents whatever the surface texture happened to hold.
+    let scene = textureOrReport(graphics.createTexture(TextureDescriptor {
+        label: "kira-ui-glass-scene",
+        width: sceneW,
+        height: sceneH,
+        format: .Swapchain,
+        usage: .RenderTargetSampled,
+        sampleCount: 1,
+        storage: .Transient
+    }), "glass scene target")
+    let sampler = state.sampler
+    let nearOut = textureOrReport(graphics.createTexture(TextureDescriptor {
+        label: "kira-ui-glass-blur-near",
+        width: blurW,
+        height: blurH,
+        format: .Rgba8Unorm,
+        usage: .SampledStorage,
+        sampleCount: 1,
+        storage: .Transient
+    }), "glass near-blur target")
+    let blurOut = textureOrReport(graphics.createTexture(TextureDescriptor {
+        label: "kira-ui-glass-blur-out",
+        width: blurW,
+        height: blurH,
+        format: .Rgba8Unorm,
+        usage: .SampledStorage,
+        sampleCount: 1,
+        storage: .Transient
+    }), "glass blur target")
+    state.glassLayers[layer.raw].sceneTexture = scene
+    // The capture rides the shader's EXTERNAL slot — mode 3 reads its sharp tap
+    // from the same place a TextureView reads its texture. It has to be that slot
+    // and not the atlas's: two groups binding the same texture index means
+    // whichever is applied last wins, and the glyphs lose their atlas.
+    //
+    // A capture holds ONE image — whatever crossfade it contains was rasterized
+    // into it — so it stands at both of the sharp tap's two slots, and the
+    // weight is 0 on every frame this group is the one bound.
+    let sharp = bindGroupOrReport(graphics.beginBindGroup("kira-ui-glass-scene-sharp"), "sharp")
+    glassAddSharpBackdrop(graphics, sharp, scene, scene, sampler, state.backdropBlend)
+    state.glassLayers[layer.raw].sceneSharpGroup = sharp
+    let softNear = bindGroupOrReport(graphics.beginBindGroup("kira-ui-glass-soft-near"), "soft near")
+    graphics.bindGroupAddTexture(softNear, backdropTextureSlot(), blurOut)
+    graphics.bindGroupAddSampler(softNear, backdropSamplerSlot(), sampler)
+    graphics.bindGroupAddTexture(softNear, nearTextureSlot(), nearOut)
+    graphics.bindGroupAddSampler(softNear, nearSamplerSlot(), sampler)
+    state.glassLayers[layer.raw].nearTexture = nearOut
+    state.glassLayers[layer.raw].blurTexture = blurOut
+    state.glassLayers[layer.raw].softNearGroup = softNear
+    return
+}
+
+// Ensure the glass pipelines/param buffers exist (once) and the offscreen targets
+// cover the current physical viewport. Targets grow in buckets: the capture is
+// sampled through uv 0..1, so a larger-than-viewport target still composites 1:1,
+// shrinking does not churn resources, and a superseded growth bucket is retired
+// before its replacement is installed.
+extend UiBatch {
+    function ensureGlassResources(graphics: borrow Graphics) {
+        var state = nativeRecover<UiBatchState>(self.storage)
+        if state.blurComputeHPipelineId.raw == 0 {
+            // One `.ksl` holds one compute stage, so the two halves are two files
+            // sharing `Shaders/UiGlassBlurCommon.ksl` — the filters they both run
+            // are written once there.
+            //
+            // Compute is a requirement of the material, not a preference: a device
+            // that cannot dispatch cannot show Liquid Glass, and saying so is the
+            // whole of the handling. There is no second encoding of this blur to
+            // fall back onto, because a second encoding is a second image nobody
+            // looks at until it is already wrong.
+            if !graphics.supportsCompute() {
+                graphicsDiagnostic("Kira UI Foundation requires a render backend that can dispatch compute; Liquid Glass cannot be drawn on this device")
+                return
+            }
+            let hArtifact = ksl!("Shaders/UiGlassBlurH.ksl")
+            let hShader = shaderOrReport(graphics.createShaderFromKslArtifact("kira-ui-glass-blur-h", hArtifact), "h shader")
+            state.blurComputeHPipelineId = ComputePipelineId(graphics.createComputePipeline("kira-ui-glass-blur-h", hShader, hArtifact.computeEntry))
+
+            let vArtifact = ksl!("Shaders/UiGlassBlurV.ksl")
+            let vShader = shaderOrReport(graphics.createShaderFromKslArtifact("kira-ui-glass-blur-v", vArtifact), "v shader")
+            state.blurComputeVPipelineId = ComputePipelineId(graphics.createComputePipeline("kira-ui-glass-blur-v", vShader, vArtifact.computeEntry))
+            if state.blurComputeHPipelineId.raw == 0 || state.blurComputeVPipelineId.raw == 0 {
+                graphicsDiagnostic("Kira UI Foundation could not build the Liquid Glass blur kernels")
+                return
+            }
+        }
+
+        // Targets sized in LOGICAL points, exactly like the Kira Graphics example
+        // (its scene target is the 1600x900 window size regardless of backing scale,
+        // its blur chain half that). On Retina the capture is therefore half the
+        // drawable and the blurred backdrop a quarter — that resolution pyramid,
+        // upscaled at composite, is most of the example's visible blur, so matching
+        // it point-for-point matches the look.
+        let wantW = Int(state.viewportW)
+        let wantH = Int(state.viewportH)
+        if wantW <= state.glassTexW && wantH <= state.glassTexH {
+            return
+        }
+        // Quantized grow-only targets keep resize drags from recreating resources at
+        // every pixel without the old 1.5x-per-axis headroom, which reserved 2.25x
+        // the visible area. Width grows in 256-point buckets and height in 128-point
+        // buckets; the floor covers compact windows without penalizing normal ones.
+        var texW = ((wantW + 255) / 256) * 256
+        if texW < 1024 {
+            texW = 1024
+        }
+        var texH = ((wantH + 127) / 128) * 128
+        if texH < 640 {
+            texH = 640
+        }
+        if state.glassTexW > texW {
+            texW = state.glassTexW
+        }
+        if state.glassTexH > texH {
+            texH = state.glassTexH
+        }
+        // Logical capture -> quarter-logical blur. The kernel steps in level
+        // texels, so the divisor sets the physical blur radius and not just its
+        // quality: a finer level is a *narrower* blur.
+        let blurDiv = glassBlurDivisor()
+        var blurW = texW / blurDiv
+        if blurW < 1 {
+            blurW = 1
+        }
+        var blurH = texH / blurDiv
+        if blurH < 1 {
+            blurH = 1
+        }
+        glassDestroyTargets(state, graphics)
+        let blurA = textureOrReport(graphics.createTexture(TextureDescriptor {
+            label: "kira-ui-glass-blur-a",
+            width: blurW,
+            height: blurH,
+            format: .Rgba8Unorm,
+            usage: .SampledStorage,
+            sampleCount: 1,
+            storage: .Transient
+        }), "glass blur ping target")
+        let blurB = textureOrReport(graphics.createTexture(TextureDescriptor {
+            label: "kira-ui-glass-blur-b",
+            width: blurW,
+            height: blurH,
+            format: .Rgba8Unorm,
+            usage: .SampledStorage,
+            sampleCount: 1,
+            storage: .Transient
+        }), "glass blur pong target")
+        state.blurTextureA = blurA
+        state.blurTextureB = blurB
+        state.glassTexW = texW
+        state.glassTexH = texH
+        state.glassBlurW = blurW
+        state.glassBlurH = blurH
+
+        // Reserve only the lightweight layer records. Their scene, far-blur and
+        // near-blur textures are allocated together on first use by
+        // glassEnsureLayerScene, rather than eagerly reserving the maximum stack.
+        var layer = 0
+        while layer < maxDrawStreams() - 1 {
+            state.glassLayers.append(UiGlassLayer {})
+            layer += 1
+        }
+        glassEnsureLayerScene(state, graphics, GlassLayerId(0))
+        state.glassReady = true
+        return
+    }
+}
+
+

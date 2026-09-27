@@ -1,0 +1,98 @@
+import Foundation
+
+// Per-node channel sampling, kept beside the tree rather than in it so the tree
+// file stays under the size ceiling. One node's geometry, opacity, transform and
+// appearance channels are all sampled at the frame's absolute clock here.
+
+// A fresh layer's appearance channels take their initial values from its
+// content, so a `.Solid` built with a fill and a radius draws with them and a
+// later `setFillColor`/`setCornerRadius` animates from there.
+function caInitAppearanceFromContent(node: borrow mut CALayerNode) {
+    match node.content {
+        Empty -> {
+            return
+        }
+        Solid(s) -> {
+            node.fillColor = caColorChannel(s.fill)
+            node.borderColor = caColorChannel(s.border)
+            node.cornerRadius = caChannel(s.cornerRadius)
+            node.borderWidth = caChannel(s.borderWidth)
+            return
+        }
+        Text(t) -> {
+            node.fillColor = caColorChannel(t.color)
+            return
+        }
+        Texture(x) -> {
+            return
+        }
+        Icon(i) -> {
+            node.fillColor = caColorChannel(i.tint)
+            return
+        }
+        Glass(g) -> {
+            node.fillColor = caColorChannel(g.tint)
+            return
+        }
+        Gradient(r) -> {
+            node.fillColor = caColorChannel(r.start)
+            return
+        }
+    }
+}
+
+function caSampleNode(node: borrow mut CALayerNode, now: Float) -> Bool {
+    var moving = false
+    if caChannelSampleAt(node.posX, now) {
+        moving = true
+    }
+    if caChannelSampleAt(node.posY, now) {
+        moving = true
+    }
+    if caChannelSampleAt(node.boundsW, now) {
+        moving = true
+    }
+    if caChannelSampleAt(node.boundsH, now) {
+        moving = true
+    }
+    if caChannelSampleAt(node.opacity, now) {
+        moving = true
+    }
+    if caChannelSampleAt(node.scaleX, now) {
+        moving = true
+    }
+    if caChannelSampleAt(node.scaleY, now) {
+        moving = true
+    }
+    if caChannelSampleAt(node.rotation, now) {
+        moving = true
+    }
+    if caChannelSampleAt(node.cornerRadius, now) {
+        moving = true
+    }
+    if caChannelSampleAt(node.borderWidth, now) {
+        moving = true
+    }
+    if caChannelSampleAt(node.shadowRadius, now) {
+        moving = true
+    }
+    if caChannelSampleAt(node.shadowOpacity, now) {
+        moving = true
+    }
+    if caChannelSampleAt(node.shadowX, now) {
+        moving = true
+    }
+    if caChannelSampleAt(node.shadowY, now) {
+        moving = true
+    }
+    if caColorChannelSampleAt(node.fillColor, now) {
+        moving = true
+    }
+    if caColorChannelSampleAt(node.borderColor, now) {
+        moving = true
+    }
+    if caColorChannelSampleAt(node.shadowColor, now) {
+        moving = true
+    }
+    return moving
+}

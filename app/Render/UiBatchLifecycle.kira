@@ -1,0 +1,283 @@
+import Foundation
+import KiraGraphics
+import KiraLayout
+extend UiBatch {
+    // Whether this batch may promote a full-bleed quad into the background pass.
+    //
+    // A component rendering for another process says no, once, when it makes the
+    // batch: it has no external texture bound, and the background pass does not
+    // run without one.
+    function setBackgroundPromotable(allowed: Bool) {
+        var state = nativeRecover<UiBatchState>(self.storage)
+        state.backgroundPromotable = allowed
+        return
+    }
+
+    function beginFrameSlots(graphics: borrow Graphics) {
+        var state = nativeRecover<UiBatchState>(self.storage)
+        for i in 0..state.streams.count {
+            // A slot with no buffer yet claims nothing, and the HUD claims its own in
+            // beginHud: its stream is rewritten on the HUD's cadence, not this
+            // frame's, and advancing its ring twice in one frame would hand a running
+            // frame's slot back out.
+            if state.streams[i].buffer.id != 0 && i != hudStreamIndex().raw {
+                // Byte offset to float index: a slot stride is a multiple of the 256-byte
+                // binding alignment, so this division is exact.
+                state.streams[i].frameBase = graphics.dynamicBufferFrameStart(state.streams[i].buffer) / 4
+            }
+        }
+        if state.streams.count > 0 {
+            state.frameBase = state.streams[state.streamIndex.raw].frameBase
+        }
+        return
+    }
+}
+
+
+// Start a frame: rewind to stream 0 (the layer boundaries are re-discovered as this
+// frame's glass surfaces arrive) and record the viewport size in points, the
+// backing scale, and the drawable's extent in physical pixels.
+extend UiBatch {
+    function beginBatch(viewportW: Float, viewportH: Float, scale: Float, drawableW: Int, drawableH: Int) {
+        var state = nativeRecover<UiBatchState>(self.storage)
+        var i = 0
+        // Everything but the HUD: its stream is rewritten only when the HUD itself
+        // refreshes, so a frame that rebuilds the UI without touching the HUD keeps
+        // showing the HUD it last wrote instead of blinking it away for a frame.
+        while i < hudStreamIndex().raw && i < state.streams.count {
+            state.streams[i].quadCount = 0
+            state.streams[i].glassBoundCount = 0
+            i += 1
+        }
+        state.streamIndex = DrawStreamId(0)
+        state.hudReturnStream = DrawStreamId(0)
+        if state.streams.count > 0 {
+            state.contentsPtr = state.streams[0].contentsPtr
+            state.frameBase = state.streams[0].frameBase
+        }
+        state.quadCount = 0
+        state.backgroundActive = false
+        state.viewportW = viewportW
+        if viewportW <= 0.0 {
+            state.viewportW = 1.0
+        }
+        state.viewportH = viewportH
+        if viewportH <= 0.0 {
+            state.viewportH = 1.0
+        }
+        state.scale = scale
+        if scale <= 0.0 {
+            state.scale = 1.0
+        }
+        state.drawableW = drawableW
+        if drawableW <= 0 {
+            state.drawableW = 1
+        }
+        state.drawableH = drawableH
+        if drawableH <= 0 {
+            state.drawableH = 1
+        }
+        // Interior cache: entries are matched by content and claimed at most
+        // once each, so the claims are what restarts with the frame. Ranges list
+        // this frame's dirty interiors only.
+        state.glassSurfaceCursor = 0
+        for claimSlot in 0..state.glassCacheClaimed.count {
+            state.glassCacheClaimed[claimSlot] = 0
+        }
+        state.glassCacheRangeCount = 0
+        uiGlassStatsResetEmission(state)
+        return
+    }
+}
+
+
+// Hand one stream's written prefix to the GPU.
+//
+// Nothing on Metal, where emission wrote into the buffer itself. On sokol it is
+// the upload — and the ONE upload that buffer is allowed this frame, which is
+// why every stream is committed together, once, before the frame's first pass
+// rather than at each draw that reads one.
+extend UiBatch {
+    function commitStream(graphics: borrow Graphics, index: DrawStreamId) {
+        var state = nativeRecover<UiBatchState>(self.storage)
+        if index.raw < 0 || index.raw >= state.streams.count {
+            return
+        }
+        if state.streams[index.raw].buffer.id == 0 {
+            return
+        }
+        // The active stream's live count is mirrored on the state, not yet on
+        // its entry, so read it from wherever it currently is.
+        var quads = state.streams[index.raw].quadCount
+        if index == state.streamIndex {
+            quads = state.quadCount
+        }
+        if quads <= 0 {
+            return
+        }
+        graphics.commitDynamicBuffer(
+            state.streams[index.raw].buffer,
+            state.streams[index.raw].contentsPtr,
+            state.streams[index.raw].frameBase + quads * quadFloatCount()
+        )
+        return
+    }
+}
+
+
+// Upload the glyph atlas if anything was packed into it since the last frame.
+//
+// Once per frame and only when dirty: the upload replaces the whole image, which
+// is the only shape sokol has, and sokol refuses a second one in the same frame.
+// A steady screen packs no new glyphs and pays nothing.
+extend UiBatch {
+    function commitAtlas(graphics: borrow Graphics) {
+        var state = nativeRecover<UiBatchState>(self.storage)
+        if !state.atlasDirty || state.atlasTexture.id == 0 || pointerIsNull(state.atlasPixels) {
+            return
+        }
+        graphics.updateTextureBytes(state.atlasTexture, state.atlasPixels, state.atlasW * state.atlasH * 4)
+        state.atlasDirty = false
+        return
+    }
+}
+
+
+extend UiBatch {
+    function batchScale() -> Float {
+        var state = nativeRecover<UiBatchState>(self.storage)
+        return state.scale
+    }
+
+    function layoutDebugEnabled() -> Bool {
+        var state = nativeRecover<UiBatchState>(self.storage)
+        return state.layoutDebug
+    }
+}
+
+
+
+
+
+
+
+
+
+
+// ---------------------------------------------------------------------------
+// Liquid glass (mode 3): capture-the-backdrop → separable blur → refracted
+// composite, the batched-compositor port of the Kira Graphics liquid_glass
+// example. See UiBatchState's stream fields for the split mechanics.
+// ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+// Park the active stream and open the next one — a new glass layer. The stream just
+// parked is drawn TWICE: once into the (points-sized) scene capture that feeds this
+// layer's blur chain, and again at full resolution in the swapchain pass — so the
+// visible content stays crisp on Retina while the glass refracts the
+// example-matching blur pyramid. Streams past the two allocated up front are created
+// here, on the first frame that actually stacks glass.
+function openStream(state: borrow mut UiBatchState, graphics: borrow Graphics) {
+    state.streams[state.streamIndex.raw].quadCount = state.quadCount
+    let nextStream = DrawStreamId(state.streamIndex.raw + 1)
+    createDrawStream(state, graphics, nextStream)
+    state.streamIndex = nextStream
+    state.contentsPtr = state.streams[state.streamIndex.raw].contentsPtr
+    state.frameBase = state.streams[state.streamIndex.raw].frameBase
+    state.quadCount = 0
+    state.streams[state.streamIndex.raw].glassBoundCount = 0
+    // The stream just opened refracts the capture of everything before it.
+    glassEnsureLayerScene(state, graphics, GlassLayerId(state.streamIndex.raw - 1))
+    // A fresh layer starts on empty ground: bumping the stamp retires every cell the
+    // previous layer marked without walking the grid.
+    state.gridStamp += 1
+    state.glassRectCount = 0
+    return
+}
+
+// Aim emission at the HUD's own stream and claim its next ring slot. Everything the
+// caller emits until endHud lands there; the UI streams keep their vertices,
+// their quad counts and the ring slots the last full frame bound. Safe both mid-walk
+// (a full frame writing its HUD after the application tree) and on a frame that does
+// nothing else at all — nothing here reads or resets the UI's per-frame state.
+extend UiBatch {
+    function beginHud(graphics: borrow Graphics) {
+        var state = nativeRecover<UiBatchState>(self.storage)
+        let hud = hudStreamIndex()
+        createDrawStream(state, graphics, hud)
+        // Hand the live count back to the stream the caller was emitting into. Only the
+        // mirrored hot fields move; the entry itself is left as the walk left it.
+        state.streams[state.streamIndex.raw].quadCount = state.quadCount
+        state.hudReturnStream = state.streamIndex
+        state.streams[hud.raw].frameBase = graphics.dynamicBufferFrameStart(state.streams[hud.raw].buffer) / 4
+        state.streamIndex = hud
+        state.contentsPtr = state.streams[hud.raw].contentsPtr
+        state.frameBase = state.streams[hud.raw].frameBase
+        state.quadCount = 0
+        return
+    }
+}
+
+
+// Close the HUD stream and put emission back where beginHud found it.
+extend UiBatch {
+    function endHud() {
+        var state = nativeRecover<UiBatchState>(self.storage)
+        state.streams[hudStreamIndex().raw].quadCount = state.quadCount
+        let back = state.hudReturnStream
+        state.streamIndex = back
+        state.contentsPtr = state.streams[back.raw].contentsPtr
+        state.frameBase = state.streams[back.raw].frameBase
+        state.quadCount = state.streams[back.raw].quadCount
+        return
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+extend UiBatch {
+    // Release resources whose ownership cannot be expressed by RawPtr fields.
+    // GPU resources remain typed values and are released by UiBatchState drop glue.
+    function releaseOwnedCpuMemory() {
+        var state = nativeRecover<UiBatchState>(self.storage)
+        if state.face != RawPtr.null {
+            kira_text_face_destroy(state.face)
+            state.face = nullPointer()
+        }
+        if state.engine != RawPtr.null {
+            kira_text_engine_destroy(state.engine)
+            state.engine = nullPointer()
+        }
+        if !pointerIsNull(state.atlasPixels) {
+            freeBytes(state.atlasPixels)
+            state.atlasPixels = nullPointer()
+        }
+        state.fontReady = false
+        return
+    }
+}

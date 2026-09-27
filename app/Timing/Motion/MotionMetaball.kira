@@ -1,0 +1,179 @@
+import Foundation
+
+// One glass shape going into another.
+//
+// A menu dismissing into the button that opened it does not fade and does not
+// slide: it FLOWS. Watch it a frame at a time and there is a moment where the
+// two are one mass joined by a neck — the panel has not finished collapsing and
+// the button has not finished forming, and what is on screen is neither shape.
+// That is the whole effect, and a crossfade cannot produce it because a
+// crossfade only ever shows two shapes at different opacities.
+//
+// What produces it is a smooth minimum over the two shapes' distance fields.
+// A plain `min` is the union of two shapes and has a crease where they meet; the
+// smooth minimum rounds that crease over a reach `k`, and a reach comparable to
+// the gap is what grows the bridge. Two shapes a long way apart with a small `k`
+// are simply two shapes; as they approach, the field between them dips below the
+// surface and the neck appears on its own. Nothing has to draw the neck.
+//
+// This file owns WHERE the two shapes are and how hard they are fused over the
+// course of a morph. The fusion itself is one line of arithmetic — see
+// `motionSmoothUnion` — which the renderer's shader evaluates per pixel.
+
+// A rounded rectangle, which is every glass shape: a circle is one whose radius
+// is half its shorter side, and a capsule is one whose radius is half its
+// height.
+@Derive(Lerp)
+struct MotionShape {
+    let x: Float = 0.0
+    let y: Float = 0.0
+    let width: Float = 0.0
+    let height: Float = 0.0
+    let radius: Float = 0.0
+}
+
+// The two shapes a morph is between, and how hard they are fused right now.
+struct MotionMetaballState {
+    // Where the morph is: 0 is entirely the source, 1 entirely the destination.
+    var progress: MotionSpringState = MotionSpringState {}
+    var amount: Float = 0.0
+    var from: MotionShape = MotionShape {}
+    var to: MotionShape = MotionShape {}
+}
+
+// What a frame draws: two shapes and the reach that fuses them.
+struct MotionMetaballFrame {
+    let source: MotionShape = MotionShape {}
+    let target: MotionShape = MotionShape {}
+    // The smooth minimum's reach, in points. Zero is a plain union.
+    let blend: Float = 0.0
+}
+
+// The smooth minimum of two distance fields.
+//
+// The quadratic form: cheap, and its derivative is continuous, which is what
+// keeps the lighting from creasing along the join. `k` is the reach — the
+// distance over which the two fields are allowed to influence each other, and
+// therefore how thick the neck grows.
+//
+// This is the same arithmetic the renderer runs per pixel; it lives here too so
+// the shape of the merge can be asserted without a GPU.
+function motionSmoothUnion(first: Float, second: Float, k: Float) -> Float {
+    if k <= 0.0 {
+        return min(first, second)
+    }
+    let e = max(k - abs(first - second), 0.0)
+    return min(first, second) - e * e * 0.25 / k
+}
+
+// The signed distance from a point to a rounded rectangle: negative inside,
+// zero on the surface, positive outside.
+function motionShapeDistance(shape: borrow MotionShape, x: Float, y: Float) -> Float {
+    let halfW = shape.width * 0.5
+    let halfH = shape.height * 0.5
+    let radius = min(shape.radius, min(halfW, halfH))
+    let px = abs(x - (shape.x + halfW)) - halfW + radius
+    let py = abs(y - (shape.y + halfH)) - halfH + radius
+    let outsideX = max(px, 0.0)
+    let outsideY = max(py, 0.0)
+    return min(max(px, py), 0.0) + hypot(outsideX, outsideY) - radius
+}
+
+// The merged surface at a point: negative inside the fused mass.
+function motionMetaballDistance(frame: borrow MotionMetaballFrame, x: Float, y: Float) -> Float {
+    let a = motionShapeDistance(frame.source, x, y)
+    let b = motionShapeDistance(frame.target, x, y)
+    return motionSmoothUnion(a, b, frame.blend)
+}
+
+// How far the two shapes fuse at the peak of a morph.
+//
+// Twenty points is the reference implementation's own figure for shapes that
+// should read as one liquid body. Below about ten the join is visibly a crease;
+// far above it the two swell into each other before they are near enough to
+// touch, and the effect reads as inflation rather than flow.
+function motionMetaballBlend() -> Float {
+    return 20.0
+}
+
+// Starts a morph from one shape to another.
+function motionMetaballStart(
+    state: borrow mut MotionMetaballState,
+    from: MotionShape,
+    to: MotionShape,
+    reducedMotion: Bool,
+) {
+    let sample = motionSpringSample(state.progress, state.progress.elapsed)
+    // The interactive curve, because a morph is the material behaving like a
+    // material — it is the one transition allowed to look alive.
+    let spring = motionCurveFor(.Interactive, 1.0, reducedMotion)
+    state.progress = motionSpringStart(move spring, sample.value, sample.velocity)
+    state.from = move from
+    state.to = move to
+    state.amount = sample.value
+    return
+}
+
+// Advances the morph and answers what to draw.
+function motionMetaballAdvance(state: borrow mut MotionMetaballState, delta: Float) -> MotionMetaballFrame {
+    let sample = motionSpringAdvance(state.progress, delta)
+    state.amount = clamp(sample.value, 0.0, 1.0)
+    return motionMetaballFrameAt(state.from, state.to, state.amount)
+}
+
+// The pair of shapes at a point in the morph.
+//
+// The SOURCE shrinks toward the destination and the DESTINATION grows from it,
+// so at every instant there are two real shapes with a gap between them — which
+// is what the smooth minimum needs in order to have a neck to build. Morphing
+// one shape into the other directly would leave nothing to fuse.
+function motionMetaballFrameAt(from: borrow MotionShape, to: borrow MotionShape, amount: Float) -> MotionMetaballFrame {
+    let t = clamp(amount, 0.0, 1.0)
+    return MotionMetaballFrame {
+        // The source travels to the destination's centre while collapsing to
+        // nothing, so it is gone exactly when the morph completes.
+        source: motionShapeBetween(from, motionShapeCollapsed(to, from), t),
+        // The destination grows from the source's centre to its own full size.
+        target: motionShapeBetween(motionShapeCollapsed(from, to), to, t),
+        blend: motionMetaballReach(t)
+    }
+}
+
+// A shape reduced to a point at another shape's centre — what the destination
+// has grown from, and what the source collapses to.
+function motionShapeCollapsed(at: borrow MotionShape, like: borrow MotionShape) -> MotionShape {
+    let cx = at.x + at.width * 0.5
+    let cy = at.y + at.height * 0.5
+    // Not literally zero: a shape with no extent has a degenerate distance
+    // field, and the neck it is supposed to anchor would snap rather than
+    // thin out. A few points across is below what a display resolves and keeps
+    // the field well behaved.
+    let seed = 2.0
+    return MotionShape {
+        x: cx - seed * 0.5,
+        y: cy - seed * 0.5,
+        width: seed,
+        height: seed,
+        radius: seed * 0.5
+    }
+}
+
+function motionShapeBetween(from: borrow MotionShape, to: borrow MotionShape, t: Float) -> MotionShape {
+    return lerp(from, to, t)
+}
+
+// How hard the two are fused at a point in the morph.
+//
+// Nothing at the ends and most in the middle. At the start the destination has
+// not appeared and at the end the source has gone, so a reach at either end
+// would fuse a shape to a speck and bulge it; the neck belongs to the middle,
+// where there are two real shapes to bridge.
+function motionMetaballReach(amount: Float) -> Float {
+    let t = clamp(amount, 0.0, 1.0)
+    return motionMetaballBlend() * motionEase(.EaseInOut, 1.0 - abs(t * 2.0 - 1.0))
+}
+
+function motionMetaballSettled(state: borrow MotionMetaballState) -> Bool {
+    let sample = motionSpringSample(state.progress, state.progress.elapsed)
+    return motionSpringSettled(state.progress, sample, motionSpringEpsilon())
+}

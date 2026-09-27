@@ -1,0 +1,61 @@
+import Foundation
+
+// Transform-aware hit testing over the presentation draw list.
+//
+// The list is in paint order, so the last item that covers a point is the one on
+// top; the walk runs back to front and stops at the first hit. "Covers a point"
+// is asked in the layer's OWN coordinates: the world transform is inverted and
+// the screen point carried back through it, then tested against the layer's
+// untransformed bounds. That is what makes a rotated or scaled layer pressable
+// exactly where it is drawn — an axis-aligned bounds check against the projected
+// box would accept the corners of the bounding rectangle a rotation leaves empty.
+
+struct CAHitResult {
+    var hit: Bool = false
+    var layer: LayerId = LayerId(0)
+    var hitKey: Int = 0
+    // Where the point landed in the layer's own coordinates, for a handler that
+    // wants the local position (a slider thumb, a canvas).
+    var localX: Float = 0.0
+    var localY: Float = 0.0
+}
+
+function caDrawItemContainsPoint(item: borrow CADrawItem, x: Float, y: Float) -> Bool {
+    if item.opacity <= 0.0 {
+        return false
+    }
+    if x < item.clipMinX || x > item.clipMaxX || y < item.clipMinY || y > item.clipMaxY {
+        return false
+    }
+    let inv = caInvert(item.transform)
+    return caLocalContains(
+        item.localWidth,
+        item.localHeight,
+        caApplyX(inv, x, y),
+        caApplyY(inv, x, y)
+    )
+}
+
+function caHitTest(items: borrow [CADrawItem], x: Float, y: Float) -> CAHitResult {
+    // Back to front: the last item that covers the point is the one on top.
+    for k in 0..items.count {
+        let item = items[items.count - 1 - k]
+        if !item.hit || !caDrawItemContainsPoint(item, x, y) {
+            continue
+        }
+        let inv = caInvert(item.transform)
+        return CAHitResult {
+            hit: true,
+            layer: item.layer,
+            hitKey: item.hitKey,
+            localX: caApplyX(inv, x, y),
+            localY: caApplyY(inv, x, y)
+        }
+    }
+    return CAHitResult {}
+}
+
+// Hit test straight from the tree: flatten this frame's presentation and pick.
+function caHitTestTree(tree: borrow CALayerTree, x: Float, y: Float) -> CAHitResult {
+    return caHitTest(caFlatten(tree), x, y)
+}

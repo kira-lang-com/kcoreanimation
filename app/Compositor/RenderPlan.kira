@@ -1,0 +1,163 @@
+import Foundation
+
+// The render plan: the layer tree lowered into an ordered list of GPU passes,
+// each an ordered list of draw commands with EXACT geometry. This is the shape
+// the four hard cases live in and the shape a test can assert without a GPU.
+//
+//   * A rotated/scaled layer is an oriented quad (centre, half extents, cos/sin),
+//     never an axis-aligned box.
+//   * A clipped subtree's commands each carry the intersected clip rectangle.
+//   * A group-opacity subtree becomes its OWN pass, composited into its parent
+//     by a SINGLE command at the group's alpha — child alphas are never folded.
+//   * A render-target subtree becomes a pass targeting a texture; a glass layer
+//     is a command the executor draws through the backdrop-capture path, which
+//     stacks in the batch.
+//   * A pass whose subtree took no damage this frame is `dirty = false`, so the
+//     executor reuses its cached texture instead of re-rendering it.
+
+enum CAPassKind {
+    // The swapchain / window pass. Executed last.
+    Root
+    // An isolated offscreen for real group opacity.
+    GroupOpacity
+    // A subtree rendered into its own (possibly external) texture.
+    RenderTarget
+}
+
+// kind 0..6 mirror caContentKind; 100 is a composite of another pass's texture.
+function caCompositeKind() -> Int {
+    return 100
+}
+
+function caShadowKind() -> Int {
+    return 101
+}
+
+struct CADrawCmd {
+    var layer: LayerId = LayerId(0)
+    var kind: Int = 0
+    var content: CAContent = .Empty
+    var quad: CAOrientedQuad = CAOrientedQuad {}
+    var worldBounds: Rect = Rect {}
+    var localWidth: Float = 0.0
+    var localHeight: Float = 0.0
+    var opacity: Float = 1.0
+    var fill: CAColor = CAColor {}
+    var border: CAColor = CAColor {}
+    var cornerRadius: Float = 0.0
+    var borderWidth: Float = 0.0
+    var shadowRadius: Float = 0.0
+    var shapeKind: Int = 0
+    var lengthScale: Float = 1.0
+    var textScale: Float = 1.0
+    var glassWash: Float = 0.0
+    var glassWashLuma: Float = 1.0
+    var capturesBackdrop: Bool = false
+    var clipMinX: Float = 0.0
+    var clipMinY: Float = 0.0
+    var clipMaxX: Float = 1000000.0
+    var clipMaxY: Float = 1000000.0
+    var clipRadius: Float = 0.0
+    // For a composite command: the pass whose texture is drawn. -1 otherwise.
+    var sourcePass: Option<RenderPassId> = .None
+    var hit: Bool = false
+    var hitKey: Int = 0
+}
+
+struct CAPass {
+    var kind: CAPassKind = .Root
+    var passId: RenderPassId = RenderPassId(0)
+    var owner: LayerId = LayerId(0)
+    // >0 names an externally registered render target; 0 asks the compositor
+    // for its cached transient target. The retained tree never owns GPU objects.
+    var targetId: RenderTargetId = RenderTargetId(0)
+    // The alpha the isolated subtree composites at.
+    var groupOpacity: Float = 1.0
+    // World-space extent of every command this pass draws. Offscreen execution
+    // translates this origin to (0,0), so the texture is exactly the subtree's
+    // painted extent rather than a full-window scratch image.
+    var bounds: Rect = Rect {}
+    var hasBounds: Bool = false
+    // Model/presentation damage controls whether the retained batch must be
+    // re-encoded. Live sampled content can still require the already-encoded
+    // pass to be presented again even with no structural damage.
+    var dirty: Bool = false
+    var requiresRefresh: Bool = false
+    var signature: Int = 0
+    var cmds: [CADrawCmd] = []
+}
+
+struct CARenderPlan {
+    var passes: [CAPass] = []
+    var rootPass: RenderPassId = RenderPassId(0)
+}
+
+// Append a command to a pass, folding the command's damage into the pass. Pass
+// records are read/written whole (the retained-tree discipline).
+function caRectUnion(a: borrow Rect, b: borrow Rect) -> Rect {
+    let minX = min(a.x, b.x)
+    let minY = min(a.y, b.y)
+    let maxX = max(a.x + a.width, b.x + b.width)
+    let maxY = max(a.y + a.height, b.y + b.height)
+    return Rect {
+        x: minX,
+        y: minY,
+        width: maxX - minX,
+        height: maxY - minY
+    }
+}
+
+function caCommandRequiresRefresh(cmd: borrow CADrawCmd) -> Bool {
+    if cmd.capturesBackdrop {
+        return true
+    }
+    return match cmd.content {
+        Texture(t) -> true
+        Glass(g) -> true
+        Text(t) -> t.adaptiveInk
+        Empty -> false
+        Solid(s) -> false
+        Icon(i) -> false
+        Gradient(g) -> false
+    }
+}
+
+function caPlanEmit(plan: borrow mut CARenderPlan, passIndex: RenderPassId, cmd: CADrawCmd, damaged: Bool) {
+    var pass = plan.passes[passIndex.raw]
+    // Wrapping arithmetic: the signature accumulates one factor of 31 per command,
+    // so a plain checked multiply overflows `Int` after a dozen or so commands.
+    // A change-detection hash only needs to differ when the input differs, which
+    // wrapping preserves — the same reason Foundation's `fnvStep` wraps.
+    pass.signature = wrappingAdd(
+        wrappingAdd(wrappingMul(pass.signature, 31), cmd.kind),
+        wrappingMul(cmd.layer.raw, 7)
+    )
+    if damaged {
+        pass.dirty = true
+    }
+    if caCommandRequiresRefresh(cmd) {
+        pass.requiresRefresh = true
+    }
+    if pass.hasBounds {
+        pass.bounds = caRectUnion(pass.bounds, cmd.worldBounds)
+    } else {
+        pass.bounds = cmd.worldBounds
+        pass.hasBounds = true
+    }
+    pass.cmds.append(move cmd)
+    plan.passes[passIndex.raw] = pass
+    return
+}
+
+// How many passes the plan runs, and how many draws in a given pass — the
+// numbers a pass-planning test asserts.
+function caPlanPassCount(plan: borrow CARenderPlan) -> Int {
+    return plan.passes.count
+}
+
+function caPlanDrawCount(plan: borrow CARenderPlan, passIndex: RenderPassId) -> Int {
+    if passIndex.raw < 0 || passIndex.raw >= plan.passes.count {
+        return 0
+    }
+    return plan.passes[passIndex.raw].cmds.count
+}

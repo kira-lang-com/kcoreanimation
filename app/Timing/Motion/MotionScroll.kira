@@ -1,0 +1,325 @@
+import Foundation
+
+// A scrolling surface's motion: the finger, the throw, the edge, and the snap.
+//
+// This owns an OFFSET and nothing else. It does not know what is being
+// scrolled, how tall the content came out, or how any of it is drawn — the
+// hosting layer measures, calls in with the numbers, and applies the offset it
+// gets back. That is what lets the whole model be tested without a window: a
+// fling is a function of a velocity and a clock.
+//
+// The offset is positive DOWN the content: increasing it moves the content up,
+// which is what pushing a list away from you does.
+
+enum MotionScrollPhase {
+    // Nothing moving. No frames needed.
+    Idle
+    // A finger is down and the offset is following it.
+    Dragging
+    // Thrown, and coasting to a stop under exponential decay.
+    Decelerating
+    // Springing to a definite place: back inside an edge it was pulled past,
+    // or onto the snap position a throw picked out.
+    Settling
+}
+
+// What the surface currently measures. Passed in per call rather than stored,
+// because it is the layout's answer and it changes underneath this: a list that
+// grows while it is being flung must not be flinging against last frame's
+// length.
+struct MotionScrollBounds {
+    let contentLength: Float = 0.0
+    let viewportLength: Float = 0.0
+}
+
+struct MotionScrollState {
+    var offset: Float = 0.0
+    var phase: MotionScrollPhase = .Idle
+    // Points per second, signed like the offset. Carried across every phase
+    // change, which is what makes a release continue a gesture instead of
+    // starting a new motion.
+    var velocity: Float = 0.0
+
+    // Where the offset and the pointer both were when the drag began, and the
+    // un-resisted offset the finger currently implies.
+    var dragOrigin: Float = 0.0
+    var dragPointer: Float = 0.0
+    var rawOffset: Float = 0.0
+
+    var flingOrigin: Float = 0.0
+    var flingVelocity: Float = 0.0
+    var flingElapsed: Float = 0.0
+
+    var spring: MotionSpringState = MotionSpringState {}
+
+    // How fast a throw gives up. `motionDecayRateNormal` unless the surface
+    // asked for the short one.
+    var rate: Float = 0.998
+    // Zero for a free-scrolling surface; the item pitch for one that snaps.
+    var snapPitch: Float = 0.0
+    // Whether the surface may be pulled past its ends at all. A surface that
+    // cannot is CLAMPED, not resisted.
+    var bounces: Bool = true
+}
+
+// The largest offset that still shows only content.
+//
+// Zero when the content is shorter than the window: there is nowhere to scroll
+// to, and the range collapses to the single point both ends share.
+function motionScrollMaxOffset(bounds: borrow MotionScrollBounds) -> Float {
+    return max(bounds.contentLength - bounds.viewportLength, 0.0)
+}
+
+// How far outside its own range an offset is: negative before the start,
+// positive past the end, zero anywhere inside.
+function motionScrollOvershoot(offset: Float, bounds: borrow MotionScrollBounds) -> Float {
+    let limit = motionScrollMaxOffset(bounds)
+    if offset < 0.0 {
+        return offset
+    }
+    if offset > limit {
+        return offset - limit
+    }
+    return 0.0
+}
+
+function motionScrollClamp(offset: Float, bounds: borrow MotionScrollBounds) -> Float {
+    return clamp(offset, 0.0, motionScrollMaxOffset(bounds))
+}
+
+// The offset a raw, un-resisted one actually shows: inside the range it is
+// itself, and outside it the edge plus the resisted remainder.
+function motionScrollResisted(raw: Float, bounds: borrow MotionScrollBounds) -> Float {
+    let overshoot = motionScrollOvershoot(raw, bounds)
+    if overshoot == 0.0 {
+        return raw
+    }
+    let resisted = motionRubberBandSigned(overshoot, bounds.viewportLength, motionRubberBandConstant())
+    return raw - overshoot + resisted
+}
+
+// The raw offset a shown one stands for — used when a drag PICKS UP a surface
+// that is already held past its edge, so the finger keeps the exact point of
+// content it grabbed.
+function motionScrollRaw(shown: Float, bounds: borrow MotionScrollBounds) -> Float {
+    let overshoot = motionScrollOvershoot(shown, bounds)
+    if overshoot == 0.0 {
+        return shown
+    }
+    let pull = motionRubberBandInverseSigned(overshoot, bounds.viewportLength, motionRubberBandConstant())
+    return shown - overshoot + pull
+}
+
+// --- the gesture -----------------------------------------------------------
+
+// A finger goes down.
+//
+// Any animation in flight is CUT rather than allowed to finish, and its
+// velocity is kept: catching a moving list stops it under your finger, which is
+// the behaviour that makes a long list feel like an object rather than a
+// playback.
+function motionScrollDragBegin(state: borrow mut MotionScrollState, pointer: Float, bounds: borrow MotionScrollBounds) {
+    state.phase = .Dragging
+    state.dragPointer = pointer
+    state.rawOffset = motionScrollRaw(state.offset, bounds)
+    state.dragOrigin = state.rawOffset
+    state.velocity = 0.0
+    return
+}
+
+// The finger moves. `delta` is the frame's duration, for the velocity estimate.
+function motionScrollDragMove(
+    state: borrow mut MotionScrollState,
+    pointer: Float,
+    delta: Float,
+    bounds: borrow MotionScrollBounds,
+) {
+    let previous = state.rawOffset
+    // Moving the pointer toward the top of the screen scrolls the content up,
+    // so the offset moves opposite the pointer.
+    let raw = state.dragOrigin + (state.dragPointer - pointer)
+    state.rawOffset = raw
+    if state.bounces {
+        state.offset = motionScrollResisted(raw, bounds)
+    } else {
+        state.offset = motionScrollClamp(raw, bounds)
+    }
+
+    // The release velocity decides where a throw lands, and the difference
+    // between two consecutive positions is far too noisy to decide it: a finger
+    // that paused for one frame before lifting would register as a throw of
+    // nothing. This is a low pass over the last few frames, with a time
+    // constant short enough to still feel like the moment of release.
+    if delta > 0.0 {
+        let instant = (raw - previous) / delta
+        let alpha = 1.0 - exp(-delta / motionScrollVelocityTau())
+        state.velocity += (instant - state.velocity) * alpha
+    }
+    return
+}
+
+// How much of the recent past the release velocity is taken from.
+function motionScrollVelocityTau() -> Float {
+    return 0.04
+}
+
+// The finger lifts. What happens next is decided here, once, from where the
+// surface is and how fast it is going.
+function motionScrollDragEnd(state: borrow mut MotionScrollState, bounds: borrow MotionScrollBounds, reducedMotion: Bool) {
+    let overshoot = motionScrollOvershoot(state.offset, bounds)
+    if overshoot != 0.0 {
+        // Released past an edge: nothing coasts, it just comes back. The spring
+        // is critically damped, because an edge that bounced twice would read
+        // as elastic rather than as a limit.
+        motionScrollSettle(state, motionScrollClamp(state.offset, bounds), .Smooth, reducedMotion)
+        return
+    }
+
+    if state.snapPitch > 0.0 {
+        // Snapped surfaces never decelerate freely. Where the throw WOULD have
+        // stopped picks the item, and the surface springs to that item instead
+        // — which is why a hard throw travels further than a flick rather than
+        // both landing one item along.
+        let projected = state.offset + motionDecayProjection(state.velocity, state.rate)
+        let snapped = motionSnapNearest(projected, state.snapPitch, 0.0)
+        motionScrollSettle(state, motionScrollClamp(snapped, bounds), .Snappy, reducedMotion)
+        return
+    }
+
+    if motionDecayIsSpent(state.velocity) {
+        state.phase = .Idle
+        state.velocity = 0.0
+        return
+    }
+
+    state.phase = .Decelerating
+    state.flingOrigin = state.offset
+    state.flingVelocity = state.velocity
+    state.flingElapsed = 0.0
+    return
+}
+
+// Starts a spring toward a definite offset, carrying the velocity the surface
+// already has.
+function motionScrollSettle(
+    state: borrow mut MotionScrollState,
+    destination: Float,
+    curve: borrow MotionCurveName,
+    reducedMotion: Bool,
+) {
+    let spring = motionCurveFor(curve, destination, reducedMotion)
+    state.spring = motionSpringStart(move spring, state.offset, state.velocity)
+    state.phase = .Settling
+    return
+}
+
+// A wheel or trackpad notch, which is a displacement and not a gesture.
+//
+// It cannot be released, so it starts nothing: there is no velocity to inherit
+// and no finger to spring back from. It clamps — a wheel that rubber-banded
+// would leave the surface held past its edge with no lift coming to release it.
+function motionScrollWheel(state: borrow mut MotionScrollState, delta: Float, bounds: borrow MotionScrollBounds) {
+    state.phase = .Idle
+    state.velocity = 0.0
+    state.offset = motionScrollClamp(state.offset + delta, bounds)
+    state.rawOffset = state.offset
+    return
+}
+
+// --- the frame -------------------------------------------------------------
+
+// Advances whatever the surface is doing by one frame.
+//
+// Answers whether it is still moving, which is the signal a host needs to keep
+// asking for frames. A surface that always answered true would hold the display
+// awake for a list nobody is touching.
+function motionScrollAdvance(
+    state: borrow mut MotionScrollState,
+    delta: Float,
+    bounds: borrow MotionScrollBounds,
+    reducedMotion: Bool,
+) -> Bool {
+    if state.phase == .Idle {
+        return false
+    }
+    if state.phase == .Dragging {
+        // The finger drives the offset; the frame has nothing to add.
+        return true
+    }
+    if state.phase == .Decelerating {
+        return motionScrollAdvanceFling(state, delta, bounds, reducedMotion)
+    }
+    return motionScrollAdvanceSettle(state, delta, bounds)
+}
+
+function motionScrollAdvanceFling(
+    state: borrow mut MotionScrollState,
+    delta: Float,
+    bounds: borrow MotionScrollBounds,
+    reducedMotion: Bool,
+) -> Bool {
+    state.flingElapsed += max(delta, 0.0)
+    let travelled = motionDecayOffset(state.flingVelocity, state.rate, state.flingElapsed)
+    let offset = state.flingOrigin + travelled
+    state.velocity = motionDecayVelocity(state.flingVelocity, state.rate, state.flingElapsed)
+
+    let overshoot = motionScrollOvershoot(offset, bounds)
+    if overshoot != 0.0 {
+        if state.bounces == false {
+            state.offset = motionScrollClamp(offset, bounds)
+            state.phase = .Idle
+            state.velocity = 0.0
+            return false
+        }
+        // It reached the end still moving. The spring takes over AT the edge
+        // carrying the speed the fling had, so the surface overshoots, stretches
+        // and comes back as one motion — rather than stopping dead at the edge
+        // and then starting a separate little animation.
+        state.offset = motionScrollClamp(offset, bounds)
+        motionScrollSettle(state, state.offset, .Smooth, reducedMotion)
+        return true
+    }
+
+    state.offset = offset
+    state.rawOffset = offset
+    if motionDecayIsSpent(state.velocity) {
+        state.phase = .Idle
+        state.velocity = 0.0
+        return false
+    }
+    return true
+}
+
+function motionScrollAdvanceSettle(
+    state: borrow mut MotionScrollState,
+    delta: Float,
+    bounds: borrow MotionScrollBounds,
+) -> Bool {
+    let sample = motionSpringAdvance(state.spring, delta)
+    state.offset = sample.value
+    state.rawOffset = sample.value
+    state.velocity = sample.velocity
+    if motionSpringSettled(state.spring, sample, motionSpringEpsilon()) {
+        // Landed exactly, rather than a thousandth of a point away: a snapped
+        // list that stopped near its item would drift by that much every time
+        // it was scrolled.
+        state.offset = state.spring.spring.target
+        state.rawOffset = state.offset
+        state.velocity = 0.0
+        state.phase = .Idle
+        return false
+    }
+    return true
+}
+
+// Scrolls to a definite offset under a spring — what a keyboard shortcut, a
+// "scroll to top", or a focus change asks for.
+function motionScrollTo(
+    state: borrow mut MotionScrollState,
+    destination: Float,
+    bounds: borrow MotionScrollBounds,
+    reducedMotion: Bool,
+) {
+    motionScrollSettle(state, motionScrollClamp(destination, bounds), .Reposition, reducedMotion)
+    return
+}

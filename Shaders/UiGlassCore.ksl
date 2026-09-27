@@ -1,0 +1,274 @@
+// Liquid glass, DEEP-CORE pipeline: pixels past every effect band — at least
+// 72pt inside the shape (the lens's own limiting threshold), past the blur edge
+// fade (22pt), sheen (5pt), edge stroke and inner rim reach. Over that region
+// `UiBatch.ksl`'s glass branch provably reduces to: coverage exactly 1, no
+// shadow, no lens bend (`coord = uvFrag`), no edge-fade on the dial, stroke,
+// sheen and rim all exactly 0 — leaving the backdrop taps and the two wash
+// layers. This shader is those expressions verbatim and nothing else, so every
+// pixel matches the full pipeline bit for bit while the fragment carries a
+// fraction of its registers — the full glass branch's static allocation is
+// what throttles occupancy, measured, not the work its pixels execute.
+//
+// The host guarantees the region: core quads are emitted inset from the shape
+// edge by the per-surface maximum of every band above, plus the corner radius
+// (the SDF's interior distance at a rectangular inset t is at least t - radius)
+// plus margin. The shared arithmetic is imported from `GlassCommon.ksl`; the
+// quad record and the vertex stage are still duplicated from `UiBatch.ksl`,
+// which an import does not yet carry.
+
+import GlassCommon
+
+type UiQuad {
+    let posX0: Float
+    let posY0: Float
+    let posX1: Float
+    let posY1: Float
+    let pxX0: Float
+    let pxY0: Float
+    let pxX1: Float
+    let pxY1: Float
+    let localX0: Float
+    let localY0: Float
+    let localX1: Float
+    let localY1: Float
+    let halfW: Float
+    let halfH: Float
+    let radius: Float
+    let borderWidth: Float
+    let mode: Float
+    let edgeRefraction: Float
+    let fillR: Float
+    let fillG: Float
+    let fillB: Float
+    let fillA: Float
+    let borderR: Float
+    let borderG: Float
+    let borderB: Float
+    let borderA: Float
+    let clipMinX: Float
+    let clipMinY: Float
+    let clipMaxX: Float
+    let clipMaxY: Float
+    let edgeStrokeStrength: Float
+    let edgeStrokeDarken: Float
+    let edgeStrokePeak: Float
+    let edgeStrokeFade: Float
+    let sheenStrength: Float
+    let lensMaxBend: Float
+    let refractionReach: Float
+    let blurNearSplit: Float
+    let borderSpread: Float
+    let borderSideOffset: Float
+    let borderSideSpread: Float
+    let borderGrey: Float
+    let borderSideGrey: Float
+    let innerRimStrength: Float
+    let innerRimWidth: Float
+    let washBlend: Float
+    let washUpperR: Float
+    let washUpperG: Float
+    let washUpperB: Float
+    let washUpperAlpha: Float
+    let washUpperBlend: Float
+    let materialSpare0: Float
+    let materialSpare1: Float
+    let materialSpare2: Float
+    // The gradient block: the colour the far end of the quad takes and which
+    // way far runs. Declared by every shader that pulls this record, because
+    // the record's STRIDE is what a pull reads by — a shader that stops one
+    // field short reads every quad after the first from the wrong offset.
+    let gradientR: Float
+    let gradientG: Float
+    let gradientB: Float
+    let gradientA: Float
+    let gradientAxis: Float
+    // The morph block: the SECOND shape this surface fuses with, in the quad's
+    // own local space, and the smooth minimum's reach in points. `UiGlassFull`
+    // is the only shader that reads it — every other one declares it because a
+    // storage pull reads by the record's STRIDE, and a shader that stops six
+    // fields short reads the next quad from the wrong offset.
+    let morphX: Float
+    let morphY: Float
+    let morphHalfW: Float
+    let morphHalfH: Float
+    let morphRadius: Float
+    let morphBlend: Float
+    // 0 circular, 1 the continuous superellipse a squircle is.
+    let shapeKind: Float
+    // The quad turned about its own centre, as cosine and sine — see
+    // `writeQuadRotation`. Only `UiBatch` acts on it; every other shader
+    // declares it because a storage pull reads by the record's STRIDE, and a
+    // shader that stops two fields short reads the next quad from the wrong
+    // offset.
+    let rotCos: Float
+    let rotSin: Float
+}
+
+type VertexIn {
+    @builtin(vertex_index)
+    let vid: UInt
+}
+
+// The deep core reads seven of the seventeen varyings the generic shader
+// carries, and interpolant storage itself costs occupancy — so the vertex
+// stage folds what it can and drops the rest. `uv` is the backdrop coordinate
+// computed per corner (linear in position, so interpolation reproduces the
+// fragment-side expression), `dials` packs the four per-quad scalars.
+type VertexOut {
+    @builtin(position)
+    let clip_position: Float4
+
+    let uv: Float2
+    let px: Float2
+    let clip: Float4
+    // x: blur dial, y: near/far split, z: lower wash alpha, w: upper wash alpha
+    let dials: Float4
+    // Lower wash colour, and its blend mode in w.
+    let fillWash: Float4
+    // Upper wash colour, and its blend mode in w.
+    let upperWash: Float4
+    // The quad's own coordinates, and the touch highlight: centre in xy of that
+    // same space, strength in z.
+    let local: Float2
+    // The touch highlight (xyz) and the surface's corner kind (w). A `Float3`
+    // varying already costs a whole four-component slot, so the fourth rides
+    // free — and this record has no slot to spare.
+    let glow: Float4
+}
+
+type FragmentOut {
+    let color: Float4
+}
+
+// How far the frame stands between the two backdrop photographs. One number for
+// the whole screen, so it rides a uniform rather than every vertex.
+type BackdropBlend {
+    let blend: Float
+}
+
+shader UiGlassCore {
+    group Batch {
+        storage read verts: [UiQuad]
+        texture atlas: Texture2d
+        sampler atlasSmp: Sampler
+        texture external: Texture2d
+        sampler externalSmp: Sampler
+        texture backdrop: Texture2d
+        sampler backdropSmp: Sampler
+        texture nearBlur: Texture2d
+        sampler nearSmp: Sampler
+        texture externalSecond: Texture2d
+        sampler externalSecondSmp: Sampler
+        uniform backdropBlend: BackdropBlend
+    }
+
+    vertex {
+        input VertexIn
+        output VertexOut
+
+        function entry(input: VertexIn) -> VertexOut {
+            let v = verts[input.vid / UInt(4)]
+            let corner = input.vid % UInt(4)
+            let right = Float((corner + UInt(1)) % UInt(4) / UInt(2))
+            let bottom = Float(corner / UInt(2))
+            let out: VertexOut
+            out.clip_position = Float4(
+                mix(v.posX0, v.posX1, right),
+                mix(v.posY0, v.posY1, bottom),
+                0.0,
+                1.0,
+            )
+            // The fragment expression `border.xy + (local / hsize) * border.zw`
+            // is linear in `local`, so evaluating it at the corners and letting
+            // the rasterizer interpolate reproduces it.
+            let localX = mix(v.localX0, v.localX1, right)
+            let localY = mix(v.localY0, v.localY1, bottom)
+            out.uv = Float2(
+                v.borderR + localX / v.halfW * v.borderB,
+                v.borderG + localY / v.halfH * v.borderA,
+            )
+            out.px = Float2(mix(v.pxX0, v.pxX1, right), mix(v.pxY0, v.pxY1, bottom))
+            out.clip = Float4(v.clipMinX, v.clipMinY, v.clipMaxX, v.clipMaxY)
+            out.local = Float2(mix(v.localX0, v.localX1, right), mix(v.localY0, v.localY1, bottom))
+            out.glow = Float4(v.gradientR, v.gradientG, v.gradientB, v.shapeKind)
+            out.dials = Float4(
+                clamp(v.fillA, 0.0, 1.0),
+                clamp(v.blurNearSplit, 0.01, 0.99),
+                clamp(v.borderWidth, 0.0, GlassCommon.washCeiling),
+                clamp(v.washUpperAlpha, 0.0, 1.0),
+            )
+            out.fillWash = Float4(v.fillR, v.fillG, v.fillB, v.washBlend)
+            out.upperWash = Float4(v.washUpperR, v.washUpperG, v.washUpperB, v.washUpperBlend)
+            return out
+        }
+    }
+
+    fragment {
+        input VertexOut
+        output FragmentOut
+
+        function entry(input: VertexOut) -> FragmentOut {
+            let out: FragmentOut
+
+            if input.px.x < input.clip.x {
+                out.color = Float4(0.0, 0.0, 0.0, 0.0)
+                return out
+            }
+            if input.px.y < input.clip.y {
+                out.color = Float4(0.0, 0.0, 0.0, 0.0)
+                return out
+            }
+            if input.px.x > input.clip.z {
+                out.color = Float4(0.0, 0.0, 0.0, 0.0)
+                return out
+            }
+            if input.px.y > input.clip.w {
+                out.color = Float4(0.0, 0.0, 0.0, 0.0)
+                return out
+            }
+
+
+            // Deep interior: coverage is exactly 1, the lens is at its limiting
+            // value, and the dial has no edge fade — the vertex stage already
+            // folded the uv map and clamped every per-quad scalar.
+            let coord = input.uv
+            let dial = input.dials.x
+            let split = input.dials.y
+            // Taps hoisted out of the dial branches: sampling inside
+            // non-uniform control flow costs far more than the extra fetch,
+            // and the selection arithmetic below reproduces each branch's
+            // expression exactly for that branch's dial range.
+            let sharpTap = GlassCommon.backdropTap(external, externalSmp, externalSecond, externalSecondSmp, coord, backdropBlend.blend)
+            let nearTap = sample(nearBlur, nearSmp, coord)
+            let softTap = sample(backdrop, backdropSmp, coord)
+            let rgb = Float3(0.0, 0.0, 0.0)
+            if dial <= 0.0 {
+                rgb = Float3(sharpTap.x, sharpTap.y, sharpTap.z)
+            } else if dial >= 1.0 {
+                rgb = Float3(softTap.x, softTap.y, softTap.z)
+            } else if dial < split {
+                rgb = mix(
+                    Float3(sharpTap.x, sharpTap.y, sharpTap.z),
+                    Float3(nearTap.x, nearTap.y, nearTap.z),
+                    dial / split
+                )
+            } else {
+                rgb = mix(
+                    Float3(nearTap.x, nearTap.y, nearTap.z),
+                    Float3(softTap.x, softTap.y, softTap.z),
+                    (dial - split) / (1.0 - split)
+                )
+            }
+
+            rgb = GlassCommon.blendLayer(rgb, Float3(input.fillWash.x, input.fillWash.y, input.fillWash.z), input.dials.z, input.fillWash.w)
+            rgb = GlassCommon.blendLayer(rgb, Float3(input.upperWash.x, input.upperWash.y, input.upperWash.z), input.dials.w, input.upperWash.w)
+
+            let glassRgb = clamp(rgb, Float3(0.0, 0.0, 0.0), Float3(1.0, 1.0, 1.0))
+            // The touch light, added on top of the finished material. The core
+            // covers the interior fully, so its coverage is one.
+            let lit = GlassCommon.touchGlow(input.local, Float3(input.glow.x, input.glow.y, input.glow.z), 1.0)
+            out.color = Float4(min(glassRgb.x + lit, 1.0), min(glassRgb.y + lit, 1.0), min(glassRgb.z + lit, 1.0), 1.0)
+            return out
+        }
+    }
+}

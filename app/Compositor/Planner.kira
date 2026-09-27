@@ -1,0 +1,267 @@
+import Foundation
+
+// Lowering the retained tree into a render plan.
+//
+// A recursive walk over (node, target-pass) frames, carrying the growing plan as
+// a `borrow mut` accumulator. A node normally emits one draw command into its
+// current pass and hands its own effective opacity to its children (ordinary
+// opacity inheritance). A GROUP-OPACITY node instead opens its own pass, draws
+// its whole subtree into it at full alpha, and emits a single COMPOSITE command
+// into the parent pass at the group alpha — so overlapping children blend once,
+// inside the group, and the group fades as one. Folding the alpha into each child
+// (the wrong thing) is exactly what this avoids. A render-target node opens a
+// pass targeting a texture the same way.
+//
+// Overlays are walked from the canvas root, unclipped, after the root subtree —
+// a hoisted menu escapes its ancestors' clips.
+
+@Derive(Copy)
+struct CAPlanFrame {
+    var id: LayerId = LayerId(0)
+    var pass: RenderPassId = RenderPassId(0)
+    var world: CAAffineTransform = CAAffineTransform {}
+    var opacity: Float = 1.0
+    var clipMinX: Float = 0.0
+    var clipMinY: Float = 0.0
+    var clipMaxX: Float = 1000000.0
+    var clipMaxY: Float = 1000000.0
+    var clipRadius: Float = 0.0
+    var glassWash: Float = 0.0
+    var glassWashLuma: Float = 1.0
+}
+
+function caPlanUnclipped(id: LayerId, pass: RenderPassId) -> CAPlanFrame {
+    return CAPlanFrame { id: id, pass: pass }
+}
+
+function caNodeDrawCmd(node: borrow CALayerNode, world: borrow CAAffineTransform, opacity: Float, frame: borrow CAPlanFrame) -> CADrawCmd {
+    let w = node.boundsW.presentation
+    let h = node.boundsH.presentation
+    let lengthScale = caLengthScale(world)
+    return CADrawCmd {
+        layer: node.id,
+        kind: caContentKind(node.content),
+        content: node.content,
+        quad: caOrientedQuad(world, w, h),
+        worldBounds: caApplyRect(world, Rect { x: 0.0, y: 0.0, width: w, height: h }),
+        localWidth: w,
+        localHeight: h,
+        opacity: opacity,
+        fill: caColorChannelPresentation(node.fillColor),
+        border: caColorChannelPresentation(node.borderColor),
+        cornerRadius: node.cornerRadius.presentation * lengthScale,
+        borderWidth: node.borderWidth.presentation * lengthScale,
+        lengthScale: lengthScale,
+        textScale: caTextScale(world),
+        glassWash: frame.glassWash,
+        glassWashLuma: frame.glassWashLuma,
+        capturesBackdrop: node.capturesBackdrop,
+        clipMinX: frame.clipMinX,
+        clipMinY: frame.clipMinY,
+        clipMaxX: frame.clipMaxX,
+        clipMaxY: frame.clipMaxY,
+        clipRadius: frame.clipRadius,
+        sourcePass: .None,
+        hit: node.hit,
+        hitKey: node.hitKey
+    }
+}
+
+function caNodeHasShadow(node: borrow CALayerNode) -> Bool {
+    let color = caColorChannelPresentation(node.shadowColor)
+    return node.shadowOpacity.presentation > 0.0 && color.a > 0.0
+}
+
+function caShadowCmd(node: borrow CALayerNode, world: borrow CAAffineTransform, opacity: Float, frame: borrow CAPlanFrame) -> CADrawCmd {
+    let width = node.boundsW.presentation
+    let height = node.boundsH.presentation
+    let lengthScale = caLengthScale(world)
+    let blur = max(node.shadowRadius.presentation * lengthScale, 0.0)
+    let localOffsetX = node.shadowX.presentation
+    let localOffsetY = node.shadowY.presentation
+    let offsetX = world.a * localOffsetX + world.c * localOffsetY
+    let offsetY = world.b * localOffsetX + world.d * localOffsetY
+    var quad = caOrientedQuad(world, width, height)
+    quad.centerX = quad.centerX + offsetX
+    quad.centerY = quad.centerY + offsetY
+    let base = caApplyRect(world, Rect { x: 0.0, y: 0.0, width: width, height: height })
+    let pad = blur + 1.0
+    return CADrawCmd {
+        layer: node.id,
+        kind: caShadowKind(),
+        content: .Empty,
+        quad: quad,
+        worldBounds: Rect {
+            x: base.x + offsetX - pad,
+            y: base.y + offsetY - pad,
+            width: base.width + pad * 2.0,
+            height: base.height + pad * 2.0
+        },
+        localWidth: width,
+        localHeight: height,
+        opacity: opacity * node.shadowOpacity.presentation,
+        fill: caColorChannelPresentation(node.shadowColor),
+        cornerRadius: node.cornerRadius.presentation * lengthScale,
+        shadowRadius: blur,
+        shapeKind: caContentShapeKind(node.content),
+        lengthScale: lengthScale,
+        clipMinX: frame.clipMinX,
+        clipMinY: frame.clipMinY,
+        clipMaxX: frame.clipMaxX,
+        clipMaxY: frame.clipMaxY,
+        clipRadius: frame.clipRadius,
+        sourcePass: .None
+    }
+}
+
+function caCompositeCmd(layer: LayerId, bounds: borrow Rect, opacity: Float, frame: borrow CAPlanFrame, sourcePass: RenderPassId) -> CADrawCmd {
+    return CADrawCmd {
+        layer: layer,
+        kind: caCompositeKind(),
+        content: .Empty,
+        quad: CAOrientedQuad {
+            centerX: bounds.x + bounds.width / 2.0,
+            centerY: bounds.y + bounds.height / 2.0,
+            halfW: bounds.width / 2.0,
+            halfH: bounds.height / 2.0
+        },
+        worldBounds: bounds,
+        opacity: opacity,
+        clipMinX: frame.clipMinX,
+        clipMinY: frame.clipMinY,
+        clipMaxX: frame.clipMaxX,
+        clipMaxY: frame.clipMaxY,
+        clipRadius: frame.clipRadius,
+        sourcePass: .Some(sourcePass)
+    }
+}
+
+// Presentation state inherited by a node's children: world transform, clip, and
+// the enclosing glass wash adaptive text must measure against.
+function caPlanChildFrame(node: borrow CALayerNode, frame: borrow CAPlanFrame, world: borrow CAAffineTransform) -> CAPlanFrame {
+    var out = frame
+    out.world = world
+    if node.clip {
+        let box = caApplyRect(world, Rect { x: 0.0, y: 0.0, width: node.boundsW.presentation, height: node.boundsH.presentation })
+        out.clipMinX = max(frame.clipMinX, box.x)
+        out.clipMinY = max(frame.clipMinY, box.y)
+        out.clipMaxX = min(frame.clipMaxX, box.x + box.width)
+        out.clipMaxY = min(frame.clipMaxY, box.y + box.height)
+        out.clipRadius = node.cornerRadius.presentation * caLengthScale(world)
+    }
+    match node.content {
+        Glass(glass) -> {
+            let wash = caGlassWash(caColorChannelPresentation(node.fillColor), glass.material)
+            out.glassWash = wash.alpha
+            out.glassWashLuma = wash.luma
+        }
+        Empty -> {}
+        Solid(s) -> {}
+        Text(t) -> {}
+        Texture(t) -> {}
+        Icon(i) -> {}
+        Gradient(g) -> {}
+    }
+    return out
+}
+
+function caPlanNode(tree: borrow CALayerTree, frame: borrow CAPlanFrame, plan: borrow mut CARenderPlan) {
+    var idx = LayerSlot(0)
+    match tree.nodeSlot(frame.id) {
+        None -> { return }
+        Some(slot) -> { idx = slot }
+    }
+    let node = tree.nodes[idx.raw]
+    if !node.mounted {
+        return
+    }
+    let world = caConcat(frame.world, caLocalTransform(node))
+    let eff = frame.opacity * node.opacity.presentation
+    let isGroup = node.groupOpacity && node.childIds.count > 0
+    let isTarget = node.renderTarget && node.childIds.count > 0
+    let childFrame = caPlanChildFrame(node, frame, world)
+
+    if isGroup || isTarget {
+        let newPass = RenderPassId(plan.passes.count)
+        var kind: CAPassKind = .GroupOpacity
+        var targetId = RenderTargetId(0)
+        if isTarget {
+            kind = .RenderTarget
+            targetId = node.renderTargetId
+        }
+        plan.passes.append(CAPass {
+            kind: kind,
+            passId: newPass,
+            owner: node.id,
+            targetId: targetId,
+            groupOpacity: eff
+        })
+        if caNodeHasShadow(node) {
+            caPlanEmit(plan, newPass, caShadowCmd(node, world, 1.0, frame), node.damaged)
+        }
+        caPlanEmit(plan, newPass, caNodeDrawCmd(node, world, 1.0, frame), node.damaged)
+        for childId in node.childIds {
+            var cidx = LayerSlot(0)
+            match tree.nodeSlot(childId) {
+                None -> { continue }
+                Some(slot) -> { cidx = slot }
+            }
+            if tree.nodes[cidx.raw].mounted && !tree.nodes[cidx.raw].hoisted {
+                let cf = childFrame {
+                    let id = childId
+                    let pass = newPass
+                    let opacity = 1.0
+                }
+                caPlanNode(tree, cf, plan)
+            }
+        }
+        let isolated = plan.passes[newPass.raw]
+        if isolated.hasBounds {
+            caPlanEmit(
+                plan,
+                frame.pass,
+                caCompositeCmd(node.id, isolated.bounds, eff, frame, newPass),
+                isolated.dirty
+            )
+            if isolated.requiresRefresh {
+                var parentPass = plan.passes[frame.pass.raw]
+                parentPass.requiresRefresh = true
+                plan.passes[frame.pass.raw] = parentPass
+            }
+        }
+        return
+    }
+
+    if caNodeHasShadow(node) {
+        caPlanEmit(plan, frame.pass, caShadowCmd(node, world, eff, frame), node.damaged)
+    }
+    caPlanEmit(plan, frame.pass, caNodeDrawCmd(node, world, eff, frame), node.damaged)
+    for childId in node.childIds {
+        var cidx = LayerSlot(0)
+        match tree.nodeSlot(childId) {
+            None -> { continue }
+            Some(slot) -> { cidx = slot }
+        }
+        if tree.nodes[cidx.raw].mounted && !tree.nodes[cidx.raw].hoisted {
+            let cf = childFrame {
+                let id = childId
+                let opacity = eff
+            }
+            caPlanNode(tree, cf, plan)
+        }
+    }
+    return
+}
+
+function caPlan(tree: borrow CALayerTree) -> CARenderPlan {
+    var plan = CARenderPlan {}
+    if tree.rootId == LayerId(0) {
+        return plan
+    }
+    plan.passes.append(CAPass { kind: .Root, passId: RenderPassId(0) })
+    caPlanNode(tree, caPlanUnclipped(tree.rootId, RenderPassId(0)), plan)
+    for overlayId in caOrderedOverlays(tree) {
+        caPlanNode(tree, caPlanUnclipped(overlayId, RenderPassId(0)), plan)
+    }
+    return plan
+}

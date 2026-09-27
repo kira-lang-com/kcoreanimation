@@ -1,0 +1,139 @@
+import KiraGraphics
+import KiraLayout
+import Foundation
+
+// The small, view-free runtime the KiraUI describe/reconcile runner reads every
+// frame: the window page colour, the ambient UI context it carries, the frame's
+// graphics handle and duration, and the gradient axis a described surface fills
+// along. None of it builds or walks a view tree — it is what the runner asks of
+// the frame and the window, split out from the retired FoundationView renderer.
+
+// The page an ordinary window is cleared to: the paper an interface is drawn
+// on, and what shows wherever it draws nothing.
+function foundationPageColor() -> Color {
+    return Color {
+        r: 0.96,
+        g: 0.95,
+        b: 0.93,
+        a: 1.0
+    }
+}
+
+// The page a TRANSPARENT window is cleared to: the desktop's key colour, so
+// every pixel the interface does not paint is a hole rather than paper. See
+// KiraGraphics' Public/WindowComposition.kira.
+function foundationTransparentPage() -> Color {
+    return graphicsTransparentKey()
+}
+
+// Which of the two a window is drawn on.
+function foundationPageFor(transparent: Bool) -> Color {
+    if transparent {
+        return foundationTransparentPage()
+    }
+    return foundationPageColor()
+}
+
+// The ambient UI context a frame carries: the viewport, the pointer, the keys
+// held and the input-method composition in flight. The runner writes it before
+// it builds, and the input read side (FoundationInputSnapshot.kira) publishes
+// it to the ambient slot store for camera/tool code in any package.
+struct FoundationUiContext {
+    var frameCount: Int = 0
+    var viewport: Size = Size {}
+    var pointerX: Float = 0.0
+    var pointerY: Float = 0.0
+    var hoveredKey: Int = 0
+    var pressedKey: Int = 0
+    var clickedKey: Int = 0
+    var focusedKey: Int = 0
+    var scrollX: Float = 0.0
+    var scrollY: Float = 0.0
+    var lastTextCodepoint: Int = 0
+    var lastKeyCode: Int = 0
+    // Total events dispatched since app start. The interactive runner's
+    // re-present fast path compares this against the last presented frame's
+    // count: no new events + same viewport → the rebuilt tree could not differ.
+    var eventCount: Int = 0
+    // Drag tracking: the press origin, whether a drag is in progress, and which
+    // region owns it (so move/end keep targeting the press region even if the
+    // pointer leaves it).
+    var pressX: Float = 0.0
+    var pressY: Float = 0.0
+    var dragging: Bool = false
+    var dragKey: Int = 0
+    // Active input-method composition (pinyin buffer + Hanzi candidates). Read by
+    // the view builder to render the preedit/candidate bar; mutated by dispatch.
+    var ime: ImeComposition = ImeComposition {}
+    // Live input snapshot for camera/tool code: which pointer button is held
+    // (0 none, 1 left, 2 right, 3 middle), a held-key bitmask (see
+    // foundationKeyBit), and modifier keys. Only left presses drive widget
+    // onPress; right/middle still deliver drags to gesture regions.
+    var pressButton: Int = 0
+    var keysMask: Int = 0
+    var modShift: Bool = false
+    var modAlt: Bool = false
+}
+
+// Bit for a held key in keysMask — macOS virtual keycodes for the fly keys:
+// A=0, S=1, D=2, F=3, W=13, Q=12, E=14. Zero for keys we do not track.
+function foundationKeyBit(keyCode: Int) -> Int {
+    if keyCode == 13 { return 1 }   // W
+    if keyCode == 0 { return 2 }    // A
+    if keyCode == 1 { return 4 }    // S
+    if keyCode == 2 { return 8 }    // D
+    if keyCode == 12 { return 16 }  // Q
+    if keyCode == 14 { return 32 }  // E
+    if keyCode == 3 { return 64 }   // F
+    return 0
+}
+
+// Which way a gradient runs across the surface it fills. Named directions
+// rather than an angle: these are the four a layout can answer without knowing
+// how large the surface came out, and an angle over a box whose aspect changes
+// is a gradient that shears as the window resizes.
+enum FoundationGradient {
+    None
+    // Top to bottom.
+    Down
+    // Leading to trailing.
+    Across
+    // Top-leading corner to bottom-trailing corner.
+    Diagonal
+}
+
+// The gradient axis a described surface fills along, as the compositor's layer
+// content spells it.
+function foundationLayerGradientAxis(gradient: borrow FoundationGradient) -> Int {
+    match gradient {
+        None -> return 0
+        Down -> return 1
+        Across -> return 2
+        Diagonal -> return 3
+    }
+}
+
+// Build a Graphics handle from the active frame so the backend can create
+// resources and submit batched draws on whichever backend the runtime selected.
+function foundationFrameGraphics(frame: borrow RenderFrame) -> Graphics {
+    return Graphics {
+        userData: frame.userData,
+        backend: frame.backend,
+        backendContext: frame.backendContext
+    }
+}
+
+// Per-frame duration (seconds) for the live FPS readout, from whichever clock
+// the backend keeps it on.
+@Native
+function foundationFrameDuration(frame: borrow RenderFrame) -> Float {
+    return frame.statistics().frameSeconds
+}
+
+// No-op default for a runner's `engineFrame` hook.
+function foundationNoopEngineFrame(frame: borrow mut RenderFrame) {
+    let ignored = frame.backend
+    return
+}
+
+function foundationNoContinuousRebuild() -> Bool { return false }

@@ -1,0 +1,10 @@
+Package AnimationKik {
+    let version = "0.1.0"
+    let kira = "0.1.0"
+    let kind = PackageKind.App
+    let moduleRoot = "AnimationKik"
+    let defaults = Defaults { executionMode: Backend.Llvm, buildTarget: BuildTarget.Host }
+    let dependencies = [
+        Dependency { name: "KCoreAnimation", path: "../.." }
+    ]
+}

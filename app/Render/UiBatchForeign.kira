@@ -1,0 +1,299 @@
+import Foundation
+import KiraGraphics
+// Foreign surface for the batched UI compositor.
+//
+// Rendering stays on KiraGraphics. Raw staging memory uses KiraGraphics' shared
+// runtime-memory helpers, while the text engine uses the package's generated typed
+// bindings so C-layout glyph and metric fields are read through their declared types.
+// Write one quad's record: the thirty floats the KSL `UiQuad` struct reads for
+// every mode, in its field order (see quadFloatCount in UiBatch.kira).
+// `px`/`py` are pixel coordinates, which the fragment stage clips against; `pos`
+// is the same point in clip space, with the y flip a top-left-origin UI needs.
+//
+// The clip position is computed HERE rather than in the vertex stage, so that the
+// stage only ever selects between two stored numbers and the bytes reaching the
+// rasterizer are the ones a per-vertex buffer used to hold.
+//
+// Written in Kira rather than behind a native fast-path symbol. A `kira_ui`
+// library existed for this and no toolchain shipped one, so every call trapped
+// by name on the platform the compositor actually runs on; a UI that needs a
+// native library to draw a rectangle is not portable. The cost is per-float
+// writes through the runtime's raw-memory helpers, which are on every native
+// link line and need no platform to have anything.
+@Native
+function writeQuadRecord(
+    ptr: RawPtr, baseFloats: U64,
+    px0: Float, py0: Float, px1: Float, py1: Float,
+    lx0: Float, ly0: Float, lx1: Float, ly1: Float,
+    vw: Float, vh: Float,
+    halfW: Float, halfH: Float, radius: Float, borderWidth: Float, mode: Float,
+    edgeRefraction: Float,
+    fr: Float, fg: Float, fb: Float, fa: Float,
+    br: Float, bg: Float, bb: Float, ba: Float,
+    clipMinX: Float, clipMinY: Float, clipMaxX: Float, clipMaxY: Float,
+    // The quad turned about its own centre. Written HERE, with the identity as
+    // its default, rather than left to the callers that want it: the buffer is
+    // reused frame to frame, so a field a path forgets is not zero — it is
+    // whatever quad occupied that slot last, and a glyph inherits the angle of
+    // something else that has since gone.
+    rotCos: Float = 1.0,
+    rotSin: Float = 0.0,
+) {
+    let bytes = baseFloats * U64(4)
+    writeQuadRotation(ptr, baseFloats, rotCos, rotSin)
+    writeFloat32(ptr, bytes, px0 / vw * 2.0 - 1.0)
+    writeFloat32(ptr, bytes + U64(4), 1.0 - py0 / vh * 2.0)
+    writeFloat32(ptr, bytes + U64(8), px1 / vw * 2.0 - 1.0)
+    writeFloat32(ptr, bytes + U64(12), 1.0 - py1 / vh * 2.0)
+    writeFloat32(ptr, bytes + U64(16), px0)
+    writeFloat32(ptr, bytes + U64(20), py0)
+    writeFloat32(ptr, bytes + U64(24), px1)
+    writeFloat32(ptr, bytes + U64(28), py1)
+    writeFloat32(ptr, bytes + U64(32), lx0)
+    writeFloat32(ptr, bytes + U64(36), ly0)
+    writeFloat32(ptr, bytes + U64(40), lx1)
+    writeFloat32(ptr, bytes + U64(44), ly1)
+    writeFloat32(ptr, bytes + U64(48), halfW)
+    writeFloat32(ptr, bytes + U64(52), halfH)
+    writeFloat32(ptr, bytes + U64(56), radius)
+    writeFloat32(ptr, bytes + U64(60), borderWidth)
+    writeFloat32(ptr, bytes + U64(64), mode)
+    writeFloat32(ptr, bytes + U64(68), edgeRefraction)
+    writeFloat32(ptr, bytes + U64(72), fr)
+    writeFloat32(ptr, bytes + U64(76), fg)
+    writeFloat32(ptr, bytes + U64(80), fb)
+    writeFloat32(ptr, bytes + U64(84), fa)
+    writeFloat32(ptr, bytes + U64(88), br)
+    writeFloat32(ptr, bytes + U64(92), bg)
+    writeFloat32(ptr, bytes + U64(96), bb)
+    writeFloat32(ptr, bytes + U64(100), ba)
+    writeFloat32(ptr, bytes + U64(104), clipMinX)
+    writeFloat32(ptr, bytes + U64(108), clipMinY)
+    writeFloat32(ptr, bytes + U64(112), clipMaxX)
+    writeFloat32(ptr, bytes + U64(116), clipMaxY)
+    return
+}
+
+// The material block that follows a record: what a liquid-glass surface shades
+// itself with. Mode 3 is the only mode whose shader reads any of it, so it is the
+// only mode that writes it.
+@Native
+function writeQuadMaterial(
+    ptr: RawPtr, baseFloats: U64,
+    m0: Float, m1: Float, m2: Float, m3: Float,
+    m4: Float, m5: Float, m6: Float, m7: Float,
+    m8: Float, m9: Float, m10: Float, m11: Float,
+    m12: Float, m13: Float, m14: Float, m15: Float,
+    m16: Float, m17: Float, m18: Float, m19: Float,
+    m20: Float, m21: Float, m22: Float, m23: Float,
+) {
+    let bytes = (baseFloats + U64(30)) * U64(4)
+    writeFloat32(ptr, bytes, m0)
+    writeFloat32(ptr, bytes + U64(4), m1)
+    writeFloat32(ptr, bytes + U64(8), m2)
+    writeFloat32(ptr, bytes + U64(12), m3)
+    writeFloat32(ptr, bytes + U64(16), m4)
+    writeFloat32(ptr, bytes + U64(20), m5)
+    writeFloat32(ptr, bytes + U64(24), m6)
+    writeFloat32(ptr, bytes + U64(28), m7)
+    writeFloat32(ptr, bytes + U64(32), m8) // WTH????
+    writeFloat32(ptr, bytes + U64(36), m9)
+    writeFloat32(ptr, bytes + U64(40), m10)
+    writeFloat32(ptr, bytes + U64(44), m11)
+    writeFloat32(ptr, bytes + U64(48), m12)
+    writeFloat32(ptr, bytes + U64(52), m13)
+    writeFloat32(ptr, bytes + U64(56), m14)
+    writeFloat32(ptr, bytes + U64(60), m15)
+    writeFloat32(ptr, bytes + U64(64), m16)
+    writeFloat32(ptr, bytes + U64(68), m17)
+    writeFloat32(ptr, bytes + U64(72), m18)
+    writeFloat32(ptr, bytes + U64(76), m19)
+    writeFloat32(ptr, bytes + U64(80), m20)
+    writeFloat32(ptr, bytes + U64(84), m21)
+    writeFloat32(ptr, bytes + U64(88), m22)
+    writeFloat32(ptr, bytes + U64(92), m23)
+    return
+}
+// libc fread — the only raw-file symbol the linked program does not already bind
+// (fopen/fwrite/fclose live in the Metal backend's foreign surface and are reused
+// below through their Kira functions; a second @FFI.Extern binding of the same C
+// symbol would be dropped).
+@FFI.Extern { library: kiratext, symbol: fread, abi: c }
+function readFileBytes(ptr: RawPtr, size: U64, count: U64, stream: RawPtr): U64
+
+// Copy a Kira string's UTF-8 bytes into a NUL-terminated C buffer (caller frees).
+// Needed because fopen's one program-wide binding takes a RawPtr path (the shape
+// the image-dump hook needed for getenv-returned paths).
+@Native
+function allocateCPath(path: borrow String) -> RawPtr {
+    let buf = allocateBytes(U64(path.count * 4 + 1))
+    let indexSlot: int32_t_ptr = allocateBytes(8)
+    let cpSlot: uint32_t_ptr = allocateBytes(8)
+    writeWord(indexSlot, 0, 0)
+    writeWord(cpSlot, 0, 0)
+    var at = 0
+    var more = true
+    var guard = 0
+    while more && guard < 4096 {
+        let produced = kira_text_utf8_next(path, I32(1000000), indexSlot, cpSlot)
+        if produced == 0 {
+            more = false
+        } else {
+            let codepoint = Int(wordAt(cpSlot, 0))
+            if codepoint == 0 || codepoint > 127 {
+                // ASCII paths only — enough for the demo assets this serves.
+                more = codepoint > 127
+                if codepoint > 127 {
+                    writeByte(buf, U64(at), U8(63))
+                    at += 1
+                }
+            } else {
+                writeByte(buf, U64(at), U8(codepoint))
+                at += 1
+            }
+        }
+        guard += 1
+    }
+    writeByte(buf, U64(at), U8(0))
+    freeBytes(indexSlot)
+    freeBytes(cpSlot)
+    return buf
+}
+
+// Load a raw RGBA8 pixel blob into a sampled texture, returning the view a draw
+// call takes — or why there is none.
+//
+// `path` names `width * height * 4` bytes, row-major, no header. The file is
+// read through Foundation, which routes to `kira_rt_fs_*` on every backend, and
+// uploaded through the Kira Graphics texture API — so this works wherever a
+// Kira program runs rather than only where Metal did. Reaching into the Metal
+// backend's Objective-C surface directly is what made every non-Apple host
+// report the backdrop as missing whatever path it was handed.
+//
+// The reason travels with the failure. A file that is not there and a device
+// that refused the upload are different problems with different fixes, and
+// answering both with a zero is what hid the first one behind a message about
+// the second.
+function loadRgbaTexture(graphics: borrow Graphics, path: borrow String, width: Int, height: Int) -> Result<Int, ResourceFailure> {
+    let total = width * height * 4
+    let pixels = readFileRange(path, 0, total)
+    if pixels.count != total {
+        return .Error(.AssetUnreadable)
+    }
+    attempt {
+        let texture = try graphics.createTextureFromPixels(TextureDescriptor {
+            label: path,
+            width: width,
+            height: height,
+            format: .Rgba8Unorm,
+            usage: .Sampled,
+            sampleCount: 1,
+            storage: .Persistent
+        }, pixels)
+        return .Ok(Int(texture.viewId))
+    } handle {
+        DeviceRefused { return .Error(.DeviceRefused) }
+        AssetUnreadable { return .Error(.AssetUnreadable) }
+        ShaderRejected { return .Error(.ShaderRejected) }
+    }
+}
+
+// Is `name` present in the environment with an EMPTY value? Loading cannot report
+// this: a missing variable and a variable set to "" both fail to open a file and
+// both return 0. The difference is intent — an empty value is a run saying "no
+// image here", which callers use to skip their fallback paths entirely.
+function environmentValueIsEmpty(name: borrow String) -> Bool {
+    return environmentIsSet(name) && environmentValue(name).count == 0
+}
+
+// As above, but the path is the VALUE of environment variable `envName` (the
+// image-dump-style hookup for scripted runs).
+function loadRgbaTextureFromEnvironment(graphics: borrow Graphics, envName: borrow String, width: Int, height: Int) -> Result<Int, ResourceFailure> {
+    if !environmentIsSet(envName) {
+        return .Error(.AssetUnreadable)
+    }
+    return loadRgbaTexture(graphics, environmentValue(envName), width, height)
+}
+
+function glyphBitmapSize() -> U64 { return 32 }
+function verticalMetricsSize() -> U64 { return 12 }
+
+// The gradient block that follows the material one: the colour the far end of
+// the quad takes, and which way "far" runs.
+//
+// It is written for EVERY quad, including the flat ones, which write zeros. A
+// record's slot is reused by whatever quad lands in it next, so a block left
+// unwritten carries the last gradient that occupied it — a flat surface would
+// inherit a fade from a quad two frames ago.
+@Native
+function writeQuadGradient(
+    ptr: RawPtr, baseFloats: U64,
+    r: Float, g: Float, b: Float, a: Float, axis: Float,
+) {
+    let bytes = (baseFloats + U64(54)) * U64(4)
+    writeFloat32(ptr, bytes, r)
+    writeFloat32(ptr, bytes + U64(4), g)
+    writeFloat32(ptr, bytes + U64(8), b)
+    writeFloat32(ptr, bytes + U64(12), a)
+    writeFloat32(ptr, bytes + U64(16), axis)
+    return
+}
+
+// The morph block that ends a record: the SECOND shape a liquid-glass surface
+// is fusing with, and how hard.
+//
+// A glass surface is one rounded rectangle and its quad is sized to it, which
+// is enough right up until two of them are supposed to become one body. The
+// fused surface between them is not inside either rectangle — it is the neck,
+// and it exists in the gap — so the shape that grows it has to travel with the
+// quad that is going to rasterize it. `x`/`y` are its centre in the surface's
+// own local space (the quad's centre is the origin), `halfW`/`halfH` its half
+// extent and `radius` its corner; `blend` is the smooth minimum's reach in
+// points, and zero there means this surface is a single shape and the shader
+// never looks at the rest.
+//
+// Written for every glass quad rather than only the morphing ones, for the same
+// reason the gradient block is: a ring slot is reused, and an unwritten block
+// carries whatever the last quad to occupy it left there — which for this one
+// would be a phantom second shape.
+function writeQuadMorph(
+    ptr: RawPtr, baseFloats: U64,
+    x: Float, y: Float, halfW: Float, halfH: Float, radius: Float, blend: Float,
+) {
+    let bytes = (baseFloats + U64(59)) * U64(4)
+    writeFloat32(ptr, bytes, x)
+    writeFloat32(ptr, bytes + U64(4), y)
+    writeFloat32(ptr, bytes + U64(8), halfW)
+    writeFloat32(ptr, bytes + U64(12), halfH)
+    writeFloat32(ptr, bytes + U64(16), radius)
+    writeFloat32(ptr, bytes + U64(20), blend)
+    return
+}
+
+// The corner kind that ends a record: 0 is a circular rounded rectangle, 1 the
+// continuous superellipse a squircle is.
+//
+// A float and not a flag because that is what a vertex record carries, and its
+// own field rather than a bit stolen from `mode`: the generic pipeline does
+// encode the squircle in `mode` (0.25), but a glass surface's `mode` already
+// says which of the five region pipelines the patch belongs to, and there is no
+// room left in it for what SHAPE the surface is.
+function writeQuadShapeKind(ptr: RawPtr, baseFloats: U64, kind: Float) {
+    writeFloat32(ptr, (baseFloats + U64(65)) * U64(4), kind)
+    return
+}
+
+// How far the quad is turned about its own centre, as the COSINE and SINE of the
+// angle rather than the angle.
+//
+// Resolved on the host because it is one value per quad and would otherwise be
+// two transcendentals per vertex — four times the work for the same number. It
+// also keeps the vertex stage free of a maths library it otherwise never needs.
+//
+// The identity is (1, 0), which is what every quad that is not turned carries,
+// and the rotation below reduces to exactly the unrotated corner for it.
+function writeQuadRotation(ptr: RawPtr, baseFloats: U64, cosine: Float, sine: Float) {
+    writeFloat32(ptr, (baseFloats + U64(66)) * U64(4), cosine)
+    writeFloat32(ptr, (baseFloats + U64(67)) * U64(4), sine)
+    return
+}

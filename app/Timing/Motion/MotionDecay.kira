@@ -1,0 +1,164 @@
+import Foundation
+
+// Where a thrown thing comes to rest, and what happens when it is pulled past
+// an edge.
+//
+// Both of these are the platform's own, and both are exponential rather than
+// the constant-friction the physics textbook gives. A fling does not decelerate
+// at a fixed rate: its velocity is multiplied by a constant each millisecond,
+// so it covers a lot of ground quickly and then creeps. Substituting `v²/2a`
+// for it is the difference between a list that feels thrown and one that feels
+// dragged to a halt.
+
+// How much of its speed a fling keeps per millisecond.
+//
+// A rate rather than a deceleration, and per MILLISECOND rather than per
+// second, because that is the unit the constant is stated in: after one
+// millisecond a fling is moving at 0.998 of its speed, after two at 0.998².
+function motionDecayRateNormal() -> Float {
+    return 0.998
+}
+
+// The faster stop, for surfaces that should not coast: a picker, a short list
+// where a normal fling would run off the end and bounce every time.
+function motionDecayRateFast() -> Float {
+    return 0.99
+}
+
+// How far a fling at this velocity will travel before stopping.
+//
+// The whole distance, in one call, with no simulation — which is what makes
+// snapping possible. A list that snaps to items has to know where a fling
+// WOULD land in order to pick the item nearest it and retarget before the
+// deceleration ever starts; discovering the answer by running the animation is
+// discovering it too late.
+//
+// The integral of `v₀·rateᵗ` from zero to infinity, which is `-v₀/ln(rate)`.
+// The `rate/(1-rate)` form seen in the wild is the discrete sum of the same
+// series and agrees with this to about a part in a thousand.
+function motionDecayProjection(velocity: Float, rate: Float) -> Float {
+    let perMillisecond = velocity / 1000.0
+    let decay = log(clamp(rate, 0.0001, 0.9999))
+    return -perMillisecond / decay
+}
+
+// How far a fling has travelled `seconds` in.
+function motionDecayOffset(velocity: Float, rate: Float, seconds: Float) -> Float {
+    let perMillisecond = velocity / 1000.0
+    let decay = log(clamp(rate, 0.0001, 0.9999))
+    let milliseconds = max(seconds, 0.0) * 1000.0
+    return perMillisecond * (pow(rate, milliseconds) - 1.0) / decay
+}
+
+// How fast it is still moving `seconds` in. A release that lands mid-fling
+// hands this to whatever takes over, so the two are one continuous motion.
+function motionDecayVelocity(velocity: Float, rate: Float, seconds: Float) -> Float {
+    return velocity * pow(rate, max(seconds, 0.0) * 1000.0)
+}
+
+// When a fling has slowed to where it is no longer worth a frame.
+//
+// Half a point per second: below that the animation would keep asking for
+// frames to move a distance no display can show.
+function motionDecayIsSpent(velocity: Float) -> Bool {
+    return abs(velocity) < 0.5
+}
+
+// --- rubber banding --------------------------------------------------------
+
+// The resistance a surface offers when pulled past its own end.
+//
+// `offset` is how far the content WOULD have moved past the edge; the answer is
+// how far it actually moves. It is not a clamp and not a constant fraction: the
+// resistance increases with the pull, so the surface never stops responding but
+// asymptotically stops travelling. Pulled 5 points it gives about 2.7; pulled
+// the whole height of the viewport it gives about a third of it.
+//
+// `dimension` is what the pull is measured against — the viewport's own length
+// along the axis. It sets the scale at which the resistance builds, which is
+// why the same gesture on a tall list and a short one feels the same.
+function motionRubberBand(offset: Float, dimension: Float, constant: Float) -> Float {
+    if offset <= 0.0 {
+        return 0.0
+    }
+    let d = max(dimension, 1.0)
+    return (offset * d * constant) / (d + constant * offset)
+}
+
+// The constant the platform uses. Smaller is stiffer.
+function motionRubberBandConstant() -> Float {
+    return 0.55
+}
+
+// The pull that produced a given resistance — the inverse of the above.
+//
+// Needed on the way IN, not the way out. A drag that begins while the surface
+// is already held past its edge has to recover the raw pull the current
+// position stands for, or the finger and the content come apart: the gesture
+// would add its movement to a distance that had already been compressed, and
+// the surface would jump.
+function motionRubberBandInverse(banded: Float, dimension: Float, constant: Float) -> Float {
+    if banded <= 0.0 {
+        return 0.0
+    }
+    let d = max(dimension, 1.0)
+    // The banded value approaches `d` and never reaches it, so the denominator
+    // is positive for every value this can actually be handed; the floor is
+    // there for a caller that hands it one that could not have come from
+    // `motionRubberBand`.
+    let room = max(d - banded, 0.0001)
+    return (banded * d) / (constant * room)
+}
+
+// The same resistance either side of a range, as a signed displacement.
+//
+// A surface is pulled past its start with a negative overshoot and past its end
+// with a positive one, and the curve is symmetric, so the sign is taken off,
+// the resistance applied, and the sign put back.
+function motionRubberBandSigned(overshoot: Float, dimension: Float, constant: Float) -> Float {
+    if overshoot < 0.0 {
+        return -motionRubberBand(-overshoot, dimension, constant)
+    }
+    return motionRubberBand(overshoot, dimension, constant)
+}
+
+function motionRubberBandInverseSigned(banded: Float, dimension: Float, constant: Float) -> Float {
+    if banded < 0.0 {
+        return -motionRubberBandInverse(-banded, dimension, constant)
+    }
+    return motionRubberBandInverse(banded, dimension, constant)
+}
+
+// --- snapping --------------------------------------------------------------
+
+// The nearest snap position to where a fling was going to land.
+//
+// Taken against the PROJECTED destination rather than the release point, which
+// is what makes a flick move by one item and a hard throw move by several. A
+// snap computed from where the finger left would ignore how hard it was thrown.
+function motionSnapNearest(destination: Float, pitch: Float, origin: Float) -> Float {
+    if pitch <= 0.0 {
+        return destination
+    }
+    let index = round((destination - origin) / pitch)
+    return origin + index * pitch
+}
+
+// The snap position at most one step from where the surface started, for
+// surfaces that advance by exactly one item per gesture however hard it is
+// thrown — a page carousel rather than a free list.
+function motionSnapNextPage(current: Float, destination: Float, pitch: Float, origin: Float) -> Float {
+    if pitch <= 0.0 {
+        return destination
+    }
+    let here = round((current - origin) / pitch)
+    let there = motionSnapNearest(destination, pitch, origin)
+    let wanted = (there - origin) / pitch
+    if wanted > here + 0.5 {
+        return origin + (here + 1.0) * pitch
+    }
+    if wanted < here - 0.5 {
+        return origin + (here - 1.0) * pitch
+    }
+    return origin + here * pitch
+}

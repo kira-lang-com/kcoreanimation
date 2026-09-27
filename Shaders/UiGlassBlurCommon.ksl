@@ -1,0 +1,65 @@
+// The two calibrated gaussian taps the glass blur pair share.
+//
+// Same kernel as the reference specialization, with only its numerically
+// negligible outermost pair removed and the retained weights renormalized:
+// near's removed mass is 0.0125%, far's is 0.2264%. That drops four bilinear
+// samples per output pixel across H+V while keeping the authored physical blur
+// radius.
+//
+// The weights sum to 1 in each, which is what keeps a second pass from
+// darkening the image.
+//
+// Every tap reads TWO sources and blends them. A blur is linear, so blurring a
+// crossfade is the crossfade of the blurs — which is what lets the caller hand
+// the filter its two photographs instead of compositing them into a third
+// full-resolution texture first, only to read that texture back at a quarter of
+// its resolution. At either end of the crossfade the second read is skipped, on
+// the same 0.001 threshold `UiBackground.ksl` settles on, so a steady scheme
+// costs exactly what one source cost.
+
+const nearCentre: Float = 0.232934620588
+const nearInner: Float = 0.316094188275
+const nearOuter: Float = 0.067438501431
+const nearInnerAt: Float = 1.376837128907
+const nearOuterAt: Float = 3.236195028878
+
+const farCentre: Float = 0.144429654361
+const farInner: Float = 0.247941942614
+const farMiddle: Float = 0.134832143947
+const farOuter: Float = 0.045011086258
+const farInnerAt: Float = 1.452983549719
+const farMiddleAt: Float = 3.391712260535
+const farOuterAt: Float = 5.333673259024
+
+// How near an endpoint the crossfade stops being one.
+const settled: Float = 0.001
+
+function blendedTap(a: Texture2d, b: Texture2d, smp: Sampler, uv: Float2, blend: Float) -> Float4 {
+    if blend <= settled {
+        return sample(a, smp, uv)
+    }
+    if blend >= 1.0 - settled {
+        return sample(b, smp, uv)
+    }
+    return mix(sample(a, smp, uv), sample(b, smp, uv), blend)
+}
+
+function nearFilter(a: Texture2d, b: Texture2d, smp: Sampler, uv: Float2, step: Float2, blend: Float) -> Float4 {
+    let c = blendedTap(a, b, smp, uv, blend) * nearCentre
+    let inner = blendedTap(a, b, smp, uv + step * nearInnerAt, blend)
+        + blendedTap(a, b, smp, uv - step * nearInnerAt, blend)
+    let outer = blendedTap(a, b, smp, uv + step * nearOuterAt, blend)
+        + blendedTap(a, b, smp, uv - step * nearOuterAt, blend)
+    return c + inner * nearInner + outer * nearOuter
+}
+
+function farFilter(a: Texture2d, b: Texture2d, smp: Sampler, uv: Float2, step: Float2, blend: Float) -> Float4 {
+    let c = blendedTap(a, b, smp, uv, blend) * farCentre
+    let inner = blendedTap(a, b, smp, uv + step * farInnerAt, blend)
+        + blendedTap(a, b, smp, uv - step * farInnerAt, blend)
+    let middle = blendedTap(a, b, smp, uv + step * farMiddleAt, blend)
+        + blendedTap(a, b, smp, uv - step * farMiddleAt, blend)
+    let outer = blendedTap(a, b, smp, uv + step * farOuterAt, blend)
+        + blendedTap(a, b, smp, uv - step * farOuterAt, blend)
+    return c + inner * farInner + middle * farMiddle + outer * farOuter
+}

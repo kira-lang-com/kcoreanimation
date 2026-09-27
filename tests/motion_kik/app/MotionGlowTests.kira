@@ -1,0 +1,291 @@
+import Foundation
+import KCoreAnimation
+
+// The highlight, checked against the shipping implementation it is taken from:
+// a two-state fade with different durations each way, a radial falloff that is
+// linear to half strength and then eased away, and a light that travels with
+// the finger.
+
+function mgStep() -> Float {
+    return 1.0 / 240.0
+}
+
+// Runs a light for `seconds` and answers its level at the end.
+function mgRun(state: borrow mut MotionGlowState, seconds: Float) -> Float {
+    var frames = 0
+    let total = Int(round(seconds / mgStep()))
+    var level = 0.0
+    while frames < total {
+        level = motionGlowAdvance(state, mgStep())
+        frames = frames + 1
+    }
+    return level
+}
+
+// --- the fade --------------------------------------------------------------
+
+// A held press reaches full brightness in the fade-in time and not before.
+construct MgAPressReachesItsLevel() extends Test {
+    test {
+        var state = MotionGlowState {}
+        motionGlowPress(state, 0.0, 0.0)
+        let level = mgRun(state, motionGlowFadeIn())
+        return mtScaled(level, 3)
+    }
+    expect { return .Ok(100) }
+}
+
+// It is most of the way there in half that time: the curve is eased OUT, so the
+// press is answered immediately rather than ramping in linearly.
+construct MgTheFadeInIsFrontLoaded() extends Test {
+    test {
+        var state = MotionGlowState {}
+        motionGlowPress(state, 0.0, 0.0)
+        let half = mgRun(state, motionGlowFadeIn() * 0.5)
+        if half > motionGlowLevel() * 0.6 {
+            return 1
+        }
+        return 0
+    }
+    expect { return .Ok(1) }
+}
+
+// Leaving takes longer than arriving. The two directions are not one motion
+// reversed, and this is the number that makes the light drain rather than
+// switch off.
+construct MgTheFadeOutIsSlowerThanTheFadeIn() extends Test {
+    test {
+        if motionGlowFadeOut() > motionGlowFadeIn() * 1.5 {
+            return 1
+        }
+        return 0
+    }
+    expect { return .Ok(1) }
+}
+
+// Released, it goes out completely — and only after the fade-out time.
+construct MgAReleaseGoesDarkInItsOwnTime() extends Test {
+    test {
+        var state = MotionGlowState {}
+        motionGlowPress(state, 0.0, 0.0)
+        let ignored = mgRun(state, motionGlowFadeIn())
+        motionGlowRelease(state)
+        let midway = mgRun(state, motionGlowFadeOut() * 0.5)
+        let ended = mgRun(state, motionGlowFadeOut() * 0.5)
+        if midway <= 0.0 {
+            return 0 - 1
+        }
+        if motionGlowLit(state) {
+            return 0 - 2
+        }
+        return mtScaled(ended, 3)
+    }
+    expect { return .Ok(0) }
+}
+
+// A tap too quick to reach full brightness fades from where it actually got to.
+// Snapping up to full first and then fading is the version that flickers.
+construct MgAQuickTapFadesFromWhereItReached() extends Test {
+    test {
+        var state = MotionGlowState {}
+        motionGlowPress(state, 0.0, 0.0)
+        // Released a quarter of the way into the fade-in.
+        let partial = mgRun(state, motionGlowFadeIn() * 0.25)
+        motionGlowRelease(state)
+        let afterOneFrame = motionGlowAdvance(state, mgStep())
+        if afterOneFrame > partial {
+            return 0 - 1
+        }
+        if partial >= motionGlowLevel() {
+            return 0 - 2
+        }
+        return 1
+    }
+    expect { return .Ok(1) }
+}
+
+// --- the radial falloff ----------------------------------------------------
+
+// Full strength at the centre, and straight down to half across the inner
+// half — a quarter of the way out is three quarters lit.
+construct MgTheCoreFallsStraightToHalf() extends Test {
+    test {
+        let centre = motionGlowFalloff(0.0)
+        let quarter = motionGlowFalloff(motionGlowDiameter() * 0.125)
+        if centre == 1.0 {
+            return mtScaled(quarter, 3)
+        }
+        return 0 - 1
+    }
+    expect { return .Ok(750) }
+}
+
+construct MgTheFalloffIsHalfWhereTheCoreEnds() extends Test {
+    test { return mtScaled(motionGlowFalloff(motionGlowDiameter() * 0.25), 3) }
+    expect { return .Ok(500) }
+}
+
+construct MgTheFalloffReachesNothingAtTheRim() extends Test {
+    test {
+        let rim = motionGlowFalloff(motionGlowDiameter() * 0.5)
+        let beyond = motionGlowFalloff(motionGlowDiameter())
+        return mtScaled(rim + beyond, 3)
+    }
+    expect { return .Ok(0) }
+}
+
+// It never rises on the way out.
+construct MgTheFalloffOnlyFalls() extends Test {
+    test {
+        var previous = 2.0
+        var step = 0
+        while step <= 20 {
+            let here = motionGlowFalloff(motionGlowDiameter() * 0.5 * Float(step) / 20.0)
+            if here > previous {
+                return 0
+            }
+            previous = here
+            step = step + 1
+        }
+        return 1
+    }
+    expect { return .Ok(1) }
+}
+
+// --- the light follows the finger ------------------------------------------
+
+// The highlight is centred where the touch is, not in the middle of what was
+// touched, and it tracks with no easing of its own — a light that lagged the
+// finger would trail the thing causing it.
+construct MgTheLightIsCentredOnTheTouch() extends Test {
+    test {
+        var state = MotionGlowState {}
+        motionGlowPress(state, 40.0, 10.0)
+        let ignored = mgRun(state, motionGlowFadeIn())
+        let atTouch = motionGlowAt(state, 40.0, 10.0)
+        let awayFromIt = motionGlowAt(state, 40.0 + motionGlowDiameter() * 0.45, 10.0)
+        if atTouch > awayFromIt && awayFromIt > 0.0 {
+            return mtScaled(atTouch, 3)
+        }
+        return 0 - 1
+    }
+    expect { return .Ok(100) }
+}
+
+construct MgTheLightTracksTheFinger() extends Test {
+    test {
+        var state = MotionGlowState {}
+        motionGlowPress(state, 0.0, 0.0)
+        let ignored = mgRun(state, motionGlowFadeIn())
+        motionGlowMove(state, 90.0, 0.0)
+        // Moved with no frame in between: the light is already there.
+        let atNew = motionGlowAt(state, 90.0, 0.0)
+        return mtScaled(atNew, 3)
+    }
+    expect { return .Ok(100) }
+}
+
+// --- overlapping touches ---------------------------------------------------
+
+// Two touches are two lights and they add up. This is what a fast run of taps
+// actually is, and it is why the response looks like it ramps and holds: the
+// fades overlap. One accumulating reservoir would get that silhouette but could
+// not put two lights in two places, which is what two fingers are.
+construct MgOverlappingTouchesAddUp() extends Test {
+    test {
+        var first = MotionGlowState {}
+        motionGlowPress(first, 0.0, 0.0)
+        let alone = mgRun(first, motionGlowFadeIn())
+
+        var second = MotionGlowState {}
+        motionGlowPress(second, 0.0, 0.0)
+        let ignored = mgRun(second, motionGlowFadeIn())
+        let together = motionGlowAt(first, 0.0, 0.0) + motionGlowAt(second, 0.0, 0.0)
+        if together > alone * 1.9 {
+            return 1
+        }
+        return 0
+    }
+    expect { return .Ok(1) }
+}
+
+// Two touches far apart light two places rather than one brighter one.
+construct MgTwoFingersLightTwoPlaces() extends Test {
+    test {
+        var left = MotionGlowState {}
+        var right = MotionGlowState {}
+        motionGlowPress(left, 0.0, 0.0)
+        motionGlowPress(right, 400.0, 0.0)
+        let ignoredL = mgRun(left, motionGlowFadeIn())
+        let ignoredR = mgRun(right, motionGlowFadeIn())
+        // Each is lit at its own touch and dark at the other's.
+        let leftAtRight = motionGlowAt(left, 400.0, 0.0)
+        let rightAtLeft = motionGlowAt(right, 0.0, 0.0)
+        if leftAtRight == 0.0 && rightAtLeft == 0.0 {
+            return mtScaled(motionGlowAt(left, 0.0, 0.0), 3)
+        }
+        return 0 - 1
+    }
+    expect { return .Ok(100) }
+}
+
+// An unlit element asks for no frames.
+construct MgADarkElementNeedsNoFrames() extends Test {
+    test {
+        var state = MotionGlowState {}
+        if motionGlowLit(state) {
+            return 1
+        }
+        return 0
+    }
+    expect { return .Ok(0) }
+}
+
+// --- the two press springs -------------------------------------------------
+
+// Down is quick and mostly damped; up is slower and bouncy enough to overshoot.
+// One spring for both is the version that loses the elasticity.
+construct MgTheReleaseSpringIsBouncierThanThePress() extends Test {
+    test {
+        let on = motionLiftOn(1.0)
+        let off = motionLiftOff(1.0)
+        if off.damping < on.damping && off.response > on.response {
+            return 1
+        }
+        return 0
+    }
+    expect { return .Ok(1) }
+}
+
+// The release spring actually passes its target — that is what bouncy means.
+construct MgTheReleaseSpringOvershoots() extends Test {
+    test {
+        var state = motionSpringStart(motionLiftOff(100.0), 0.0, 0.0)
+        var peak = 0.0
+        var frames = 0
+        while frames < 480 {
+            let sample = motionSpringAdvance(state, mgStep())
+            if sample.value > peak {
+                peak = sample.value
+            }
+            frames = frames + 1
+        }
+        if peak > 100.0 {
+            return 1
+        }
+        return 0
+    }
+    expect { return .Ok(1) }
+}
+
+// A press lifts the element toward the finger rather than pushing it in.
+construct MgAPressLiftsRatherThanShrinks() extends Test {
+    test {
+        let lift = motionPressLiftScale(100.0)
+        if lift > 1.0 {
+            return mtScaled(lift, 2)
+        }
+        return 0
+    }
+    expect { return .Ok(120) }
+}

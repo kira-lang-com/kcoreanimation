@@ -1,0 +1,274 @@
+import Foundation
+
+// What a layer is filled with, as a CLOSED enum rather than an open family.
+//
+// A closed set is what the compositor exhaustively matches on when it turns a
+// layer into a draw command: every arm maps to one extracted UiBatch primitive,
+// and a new kind is a new arm the compiler forces every reader to answer. The
+// payloads are plain value structs, so a content value clones with the node it
+// rides on (the retained tree reads nodes by value).
+enum CAContent {
+    // A layer that only groups, clips, or transforms its children.
+    Empty
+    // A rounded rectangle / squircle fill with an optional border. Maps to the
+    // batch's SDF surface quad (mode 0).
+    Solid(CASolid)
+    // A run of text. Maps to the glyph path (mode 1); the runs are resolved to
+    // the atlas at submit, never here.
+    Text(CAText)
+    // An external KiraGraphics texture (an engine viewport, a shared surface).
+    // Maps to the external-texture quad (mode 2).
+    Texture(CATexture)
+    // A vector icon rasterized into the glyph atlas and tinted (mode 1).
+    Icon(CAIcon)
+    // A refracting glass surface (mode 3). The layer's `capturesBackdrop`
+    // directive decides whether the compositor opens a backdrop capture for it.
+    Glass(CAGlass)
+    // A linear gradient fill across the layer's bounds (mode 0 with a far
+    // colour and an axis).
+    Gradient(CAGradient)
+}
+
+// Colour as four unit channels. Its own type rather than KiraGraphics' `Color`
+// so the model tree, the animation maths and the tests do not pull the graphics
+// package in; the compositor converts to the backend colour at the submit seam.
+@Derive(Copy)
+struct CAColor {
+    var r: Float = 0.0
+    var g: Float = 0.0
+    var b: Float = 0.0
+    var a: Float = 1.0
+}
+
+@Derive(Copy)
+struct CAGlassWash {
+    var alpha: Float = 0.0
+    var luma: Float = 1.0
+}
+
+function caBlendChannel(base: Float, layer: Float, mode: Float) -> Float {
+    if mode < 0.5 { return layer }
+    if mode < 1.5 { return min(base + layer, 1.0) }
+    if mode < 2.5 {
+        if layer >= 1.0 { return base > 0.0 ? 1.0 : 0.0 }
+        return min(base / (1.0 - layer), 1.0)
+    }
+    if mode < 3.5 {
+        if layer <= 0.5 { return 2.0 * base * layer }
+        return 1.0 - 2.0 * (1.0 - base) * (1.0 - layer)
+    }
+    if mode < 4.5 {
+        if base <= 0.5 { return 2.0 * base * layer }
+        return 1.0 - 2.0 * (1.0 - base) * (1.0 - layer)
+    }
+    if mode < 5.5 { return max(base, layer) }
+    if mode < 6.5 { return min(base, layer) }
+    return base * layer
+}
+
+function caGlassApplyLayer(base: Float, color: Float, alpha: Float, mode: Float) -> Float {
+    if alpha <= 0.0 { return base }
+    let blended = caBlendChannel(base, color, mode)
+    return base + (blended - base) * alpha
+}
+
+function caGlassApplyStackChannel(base: Float, lower: Float, upper: Float, lowerAlpha: Float, material: borrow CAGlassMaterial) -> Float {
+    let first = caGlassApplyLayer(base, lower, lowerAlpha, material.washBlend)
+    return caGlassApplyLayer(first, upper, material.washUpperAlpha, material.washUpperBlend)
+}
+
+function caGlassWash(tint: borrow CAColor, material: borrow CAGlassMaterial) -> CAGlassWash {
+    let blackR = caGlassApplyStackChannel(0.0, tint.r, material.washUpperR, tint.a, material)
+    let blackG = caGlassApplyStackChannel(0.0, tint.g, material.washUpperG, tint.a, material)
+    let blackB = caGlassApplyStackChannel(0.0, tint.b, material.washUpperB, tint.a, material)
+    let whiteR = caGlassApplyStackChannel(1.0, tint.r, material.washUpperR, tint.a, material)
+    let whiteG = caGlassApplyStackChannel(1.0, tint.g, material.washUpperG, tint.a, material)
+    let whiteB = caGlassApplyStackChannel(1.0, tint.b, material.washUpperB, tint.a, material)
+    let alpha = clamp(1.0 - ((whiteR - blackR) + (whiteG - blackG) + (whiteB - blackB)) / 3.0, 0.0, 1.0)
+    if alpha <= 0.0001 {
+        return CAGlassWash {}
+    }
+    let r = clamp(blackR / alpha, 0.0, 1.0)
+    let g = clamp(blackG / alpha, 0.0, 1.0)
+    let b = clamp(blackB / alpha, 0.0, 1.0)
+    return CAGlassWash {
+        alpha: alpha,
+        luma: r * 0.299 + g * 0.587 + b * 0.114
+    }
+}
+
+// 0 = rounded rectangle, 1 = continuous squircle. An Int on the wire between
+// here and the batch, which reads the same code off its quad.
+struct CASolid {
+    var fill: CAColor = CAColor {}
+    var border: CAColor = CAColor { a: 0.0 }
+    var borderWidth: Float = 0.0
+    var cornerRadius: Float = 0.0
+    var shapeKind: Int = 0
+}
+
+struct CAText {
+    var content: String = ""
+    var color: CAColor = CAColor {}
+    var size: Float = 15.0
+    var weight: Float = 400.0
+    var adaptiveInk: Bool = false
+    var inkLeft: Float = 0.0
+    var inkRight: Float = 0.0
+    var inkTop: Float = 0.0
+    var inkBottom: Float = 0.0
+}
+
+struct CATexture {
+    var handle: TextureHandle = TextureHandle(0)
+    var secondaryHandle: TextureHandle = TextureHandle(0)
+    var transition: Float = 0.0
+    var opacity: Float = 1.0
+    var cornerRadius: Float = 0.0
+}
+
+struct CAIcon {
+    var svg: String = ""
+    var tint: CAColor = CAColor {}
+    var weightGrowth: Float = 0.0
+}
+
+struct CAGlass {
+    var blur: Float = 1.0
+    var edgeRefraction: Float = 1.0
+    var tint: CAColor = CAColor { r: 1.0, g: 1.0, b: 1.0, a: 0.04 }
+    var material: CAGlassMaterial = CAGlassMaterial {}
+    // Touch highlight and morph target in the layer's LOCAL coordinate space.
+    // The compositor applies the layer's presentation transform at submit time.
+    var glowX: Float = 0.0
+    var glowY: Float = 0.0
+    var glowStrength: Float = 0.0
+    var morphX: Float = 0.0
+    var morphY: Float = 0.0
+    var morphWidth: Float = 0.0
+    var morphHeight: Float = 0.0
+    var morphRadius: Float = 0.0
+    var morphBlend: Float = 0.0
+    var shapeKind: Int = 0
+}
+
+// `axis`: 0 none, 1 down, 2 across (leading→trailing), 3 corner→corner. `start`
+// is the near colour (also the layer's `fillColor`); `end` is the far colour.
+struct CAGradient {
+    var start: CAColor = CAColor {}
+    var end: CAColor = CAColor {}
+    var axis: Int = 1
+    var shapeKind: Int = 0
+}
+
+// A stable code per kind, so the flat reconcile and the damage signature stay on
+// Ints (the retained passes never clone a whole content value to ask its kind).
+function caContentKind(content: borrow CAContent) -> Int {
+    match content {
+        Empty -> return 0
+        Solid(s) -> return 1
+        Text(t) -> return 2
+        Texture(x) -> return 3
+        Icon(i) -> return 4
+        Glass(g) -> return 5
+        Gradient(r) -> return 6
+    }
+}
+
+function caContentShapeKind(content: borrow CAContent) -> Int {
+    match content {
+        Solid(s) -> return s.shapeKind
+        Glass(g) -> return g.shapeKind
+        Gradient(g) -> return g.shapeKind
+        Empty -> return 0
+        Text(t) -> return 0
+        Texture(t) -> return 0
+        Icon(i) -> return 0
+    }
+}
+
+function caColorCode(color: borrow CAColor) -> Int {
+    return Int(round(color.r * 255.0)) * 16777216
+        + Int(round(color.g * 255.0)) * 65536
+        + Int(round(color.b * 255.0)) * 256
+        + Int(round(color.a * 255.0))
+}
+
+function caGlassMaterialSignature(material: borrow CAGlassMaterial) -> Int {
+    return Int(round(material.edgeStrokeStrength * 1000.0)) * 3
+        + Int(round(material.edgeStrokeDarken * 1000.0)) * 5
+        + Int(round(material.edgeStrokePeak * 1000.0)) * 7
+        + Int(round(material.edgeStrokeFade * 1000.0)) * 11
+        + Int(round(material.sheenStrength * 1000.0)) * 13
+        + Int(round(material.lensMaxBend * 100.0)) * 17
+        + Int(round(material.refractionReach * 100.0)) * 19
+        + Int(round(material.blurNearSplit * 1000.0)) * 23
+        + Int(round(material.borderSpread * 1000.0)) * 29
+        + Int(round(material.borderSideOffset * 1000.0)) * 31
+        + Int(round(material.borderSideSpread * 1000.0)) * 37
+        + Int(round(material.borderGrey * 1000.0)) * 41
+        + Int(round(material.borderSideGrey * 1000.0)) * 43
+        + Int(round(material.innerRimStrength * 1000.0)) * 47
+        + Int(round(material.innerRimWidth * 1000.0)) * 53
+        + Int(round(material.washBlend * 1000.0)) * 59
+        + Int(round(material.washUpperR * 1000.0)) * 61
+        + Int(round(material.washUpperG * 1000.0)) * 67
+        + Int(round(material.washUpperB * 1000.0)) * 71
+        + Int(round(material.washUpperAlpha * 1000.0)) * 73
+        + Int(round(material.washUpperBlend * 1000.0)) * 79
+}
+
+// A cheap fingerprint of everything about the content that the renderer draws.
+// Equal signatures across frames mean the layer's paint is unchanged, which is
+// what lets a still layer be re-flushed from the retained batch (damage skip).
+function caContentSignature(content: borrow CAContent) -> Int {
+    match content {
+        Empty -> return 1
+        Solid(s) -> return 1000000
+            + caColorCode(s.fill) * 31
+            + caColorCode(s.border) * 17
+            + Int(round(s.borderWidth * 100.0)) * 7
+            + Int(round(s.cornerRadius * 100.0)) * 3
+            + s.shapeKind
+        Text(t) -> return 2000000
+            + t.content.count * 131
+            + Int(round(t.size * 100.0)) * 31
+            + Int(round(t.weight)) * 7
+            + caColorCode(t.color)
+            + (t.adaptiveInk ? 1 : 0) * 19
+            + Int(round(t.inkLeft * 100.0)) * 23
+            + Int(round(t.inkRight * 100.0)) * 29
+            + Int(round(t.inkTop * 100.0)) * 37
+            + Int(round(t.inkBottom * 100.0)) * 41
+        Texture(x) -> return 3000000
+            + x.handle.raw * 131
+            + x.secondaryHandle.raw * 97
+            + Int(round(x.transition * 1000.0)) * 17
+            + Int(round(x.opacity * 1000.0)) * 7
+            + Int(round(x.cornerRadius * 100.0))
+        Icon(i) -> return 4000000
+            + i.svg.count * 131
+            + caColorCode(i.tint)
+            + Int(round(i.weightGrowth * 100.0)) * 17
+        Glass(g) -> return 5000000
+            + Int(round(g.blur * 1000.0)) * 131
+            + Int(round(g.edgeRefraction * 1000.0)) * 31
+            + caColorCode(g.tint)
+            + caGlassMaterialSignature(g.material)
+            + Int(round(g.glowX * 100.0)) * 83
+            + Int(round(g.glowY * 100.0)) * 89
+            + Int(round(g.glowStrength * 1000.0)) * 97
+            + Int(round(g.morphX * 100.0)) * 101
+            + Int(round(g.morphY * 100.0)) * 103
+            + Int(round(g.morphWidth * 100.0)) * 107
+            + Int(round(g.morphHeight * 100.0)) * 109
+            + Int(round(g.morphRadius * 100.0)) * 113
+            + Int(round(g.morphBlend * 100.0)) * 127
+            + g.shapeKind * 137
+        Gradient(r) -> return 6000000
+            + caColorCode(r.start) * 131
+            + caColorCode(r.end) * 31
+            + r.axis * 7
+            + r.shapeKind
+    }
+}

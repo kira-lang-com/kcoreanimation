@@ -1,0 +1,465 @@
+import Foundation
+import KCoreAnimation
+
+// Pass-planning assertions: the render plan is where the four hard cases are made
+// correct, and every one is a number a test can read without a GPU. Group opacity
+// becomes its own pass composited once at the group alpha (never a fold of child
+// alphas); render targets become passes with a texture; a rotated layer keeps its
+// exact oriented quad; a clipped subtree carries the intersected clip; and an
+// undamaged pass reports itself reusable. Perceptual colour is asserted directly.
+
+function caPlanScaled(value: Float, digits: Int) -> Int {
+    var scale = 1.0
+    for i in 0..digits {
+        scale = scale * 10.0
+    }
+    return Int(round(value * scale))
+}
+
+function caCompositeCountInPass(plan: borrow CARenderPlan, passIndex: RenderPassId) -> Int {
+    var count = 0
+    for cmd in plan.passes[passIndex.raw].cmds {
+        if cmd.kind == caCompositeKind() {
+            count = count + 1
+        }
+    }
+    return count
+}
+
+function caFirstCompositeOpacity(plan: borrow CARenderPlan, passIndex: RenderPassId) -> Float {
+    for cmd in plan.passes[passIndex.raw].cmds {
+        if cmd.kind == caCompositeKind() {
+            return cmd.opacity
+        }
+    }
+    return 0.0
+}
+
+// A node's own draw command (not a composite), searched across every pass.
+function caFindNodeCmd(plan: borrow CARenderPlan, layer: LayerId) -> CADrawCmd {
+    for pass in plan.passes {
+        for cmd in pass.cmds {
+            if cmd.layer == layer && cmd.kind != caCompositeKind() {
+                return cmd
+            }
+        }
+    }
+    return CADrawCmd {}
+}
+
+function caPassKindCode(pass: borrow CAPass) -> Int {
+    match pass.kind {
+        Root -> return 0
+        GroupOpacity -> return 1
+        RenderTarget -> return 2
+    }
+}
+
+// Group opacity is isolated: two passes, one composite in the root at the group
+// alpha (0.5) — the children are NOT in the root pass and their alphas are not
+// folded. Encodes passCount*1000 + rootComposites*100 + round(compositeAlpha*100).
+construct CaPlanGroupOpacityIsolated() extends Test {
+    test {
+        var tree = caLayerTree()
+        let root = tree.makeLayer(caNoLayer(), 0, .Empty)
+        tree.setBounds(root, 400.0, 400.0)
+        let group = tree.makeLayer(root, 1, .Empty)
+        let c1 = tree.makeLayer(group, 2, .Solid(CASolid {}))
+        let c2 = tree.makeLayer(group, 3, .Solid(CASolid {}))
+        tree.beginTransaction(caImmediateTiming())
+        tree.setFrame(group, 0.0, 0.0, 400.0, 400.0)
+        tree.setFrame(c1, 10.0, 10.0, 50.0, 50.0)
+        tree.setFrame(c2, 30.0, 30.0, 50.0, 50.0)
+        tree.setGroupOpacity(group, true)
+        tree.setOpacity(group, 0.5)
+        tree.commitTransaction()
+        let plan = caPlan(tree)
+        return caPlanPassCount(plan) * 1000
+            + caCompositeCountInPass(plan, RenderPassId(0)) * 100
+            + caPlanScaled(caFirstCompositeOpacity(plan, RenderPassId(0)), 2)
+    }
+    expect {
+        let e: Result<Any, TestFailure> = .Ok(2150)
+        return e
+    }
+}
+
+// Nested groups nest passes: root, outer, inner.
+construct CaPlanNestedGroups() extends Test {
+    test {
+        var tree = caLayerTree()
+        let root = tree.makeLayer(caNoLayer(), 0, .Empty)
+        let outer = tree.makeLayer(root, 1, .Empty)
+        let inner = tree.makeLayer(outer, 2, .Empty)
+        let leaf = tree.makeLayer(inner, 3, .Solid(CASolid {}))
+        tree.beginTransaction(caImmediateTiming())
+        tree.setGroupOpacity(outer, true)
+        tree.setOpacity(outer, 0.8)
+        tree.setGroupOpacity(inner, true)
+        tree.setOpacity(inner, 0.6)
+        tree.commitTransaction()
+        return caPlanPassCount(caPlan(tree))
+    }
+    expect {
+        let e: Result<Any, TestFailure> = .Ok(3)
+        return e
+    }
+}
+
+construct CaPlanGroupCompositeCoversEscapedChild() extends Test {
+    test {
+        var tree = caLayerTree()
+        let root = tree.makeLayer(caNoLayer(), 0, .Empty)
+        tree.setBounds(root, 400.0, 400.0)
+        let group = tree.makeLayer(root, 1, .Empty)
+        let child = tree.makeLayer(group, 2, .Solid(CASolid {}))
+        tree.beginTransaction(caImmediateTiming())
+        tree.setFrame(group, 100.0, 100.0, 50.0, 50.0)
+        tree.setFrame(child, -20.0, 10.0, 100.0, 20.0)
+        tree.setGroupOpacity(group, true)
+        tree.setOpacity(group, 0.5)
+        tree.commitTransaction()
+        let plan = caPlan(tree)
+        for cmd in plan.passes[0].cmds {
+            if cmd.kind == caCompositeKind() {
+                return Int(round(cmd.worldBounds.x)) * 1000
+                    + Int(round(cmd.worldBounds.width))
+            }
+        }
+        return 0
+    }
+    expect {
+        let e: Result<Any, TestFailure> = .Ok(80100)
+        return e
+    }
+}
+
+// A render-target subtree becomes a pass targeting its texture id.
+construct CaPlanRenderTargetPass() extends Test {
+    test {
+        var tree = caLayerTree()
+        let root = tree.makeLayer(caNoLayer(), 0, .Empty)
+        let viewport = tree.makeLayer(root, 1, .Empty)
+        let inside = tree.makeLayer(viewport, 2, .Solid(CASolid {}))
+        tree.setRenderTarget(viewport, true, RenderTargetId(777))
+        let plan = caPlan(tree)
+        var targetId = RenderTargetId(0)
+        for pass in plan.passes {
+            if caPassKindCode(pass) == 2 {
+                targetId = pass.targetId
+            }
+        }
+        return targetId.raw
+    }
+    expect {
+        let e: Result<Any, TestFailure> = .Ok(777)
+        return e
+    }
+}
+
+// A rotated layer keeps its exact oriented quad: 90 degrees is cos 0, sin 1, and
+// the plan carries the turned quad rather than an axis-aligned box.
+construct CaPlanRotatedQuadExact() extends Test {
+    test {
+        var tree = caLayerTree()
+        let root = tree.makeLayer(caNoLayer(), 0, .Empty)
+        tree.setBounds(root, 800.0, 600.0)
+        let box = tree.makeLayer(root, 5, .Solid(CASolid {}))
+        tree.beginTransaction(caImmediateTiming())
+        tree.setFrame(box, 100.0, 100.0, 200.0, 100.0)
+        tree.setRotation(box, 1.5707963267948966)
+        tree.commitTransaction()
+        let cmd = caFindNodeCmd(caPlan(tree), box)
+        return caPlanScaled(cmd.quad.rotSin, 3) * 10 + caPlanScaled(cmd.quad.rotCos, 3)
+    }
+    expect {
+        let e: Result<Any, TestFailure> = .Ok(10000)
+        return e
+    }
+}
+
+// A clipped container's child command carries the intersected clip rectangle.
+construct CaPlanClipInCommand() extends Test {
+    test {
+        var tree = caLayerTree()
+        let root = tree.makeLayer(caNoLayer(), 0, .Empty)
+        tree.setBounds(root, 800.0, 600.0)
+        let panel = tree.makeLayer(root, 1, .Empty)
+        let child = tree.makeLayer(panel, 2, .Solid(CASolid {}))
+        tree.beginTransaction(caImmediateTiming())
+        tree.setFrame(panel, 100.0, 100.0, 200.0, 200.0)
+        tree.setClip(panel, true)
+        tree.setFrame(child, 150.0, 150.0, 100.0, 100.0)
+        tree.commitTransaction()
+        let cmd = caFindNodeCmd(caPlan(tree), child)
+        return Int(round(cmd.clipMaxX))
+    }
+    expect {
+        let e: Result<Any, TestFailure> = .Ok(300)
+        return e
+    }
+}
+
+// Presentation metrics follow the complete world transform. A 2x scaled layer
+// doubles its corner radius, while text inside it rasterizes at the same 2x
+// presentation scale. Encodes radius*100 + textScale.
+construct CaPlanScalesPresentationMetrics() extends Test {
+    test {
+        var tree = caLayerTree()
+        let root = tree.makeLayer(caNoLayer(), 0, .Empty)
+        let panel = tree.makeLayer(root, 1, .Solid(CASolid {}))
+        let label = tree.makeLayer(panel, 2, .Text(CAText { content: "Kira" }))
+        tree.beginTransaction(caImmediateTiming())
+        tree.setBounds(root, 400.0, 400.0)
+        tree.setFrame(panel, 20.0, 20.0, 100.0, 60.0)
+        tree.setCornerRadius(panel, 10.0)
+        tree.setScale(panel, 2.0, 2.0)
+        tree.setFrame(label, 5.0, 5.0, 40.0, 20.0)
+        tree.commitTransaction()
+        let plan = caPlan(tree)
+        let panelCmd = caFindNodeCmd(plan, panel)
+        let textCmd = caFindNodeCmd(plan, label)
+        return Int(round(panelCmd.cornerRadius)) * 100 + Int(round(textCmd.textScale))
+    }
+    expect {
+        let e: Result<Any, TestFailure> = .Ok(2002)
+        return e
+    }
+}
+
+// Adaptive text carries the enclosing glass wash in the plan. The default white
+// glass tint has alpha .04, so its equivalent wash is .04 at white luma.
+construct CaPlanCarriesGlassWash() extends Test {
+    test {
+        var tree = caLayerTree()
+        let root = tree.makeLayer(caNoLayer(), 0, .Empty)
+        let glass = tree.makeLayer(root, 1, .Glass(CAGlass {}))
+        let label = tree.makeLayer(glass, 2, .Text(CAText { content: "Glass", adaptiveInk: true }))
+        tree.beginTransaction(caImmediateTiming())
+        tree.setBounds(root, 400.0, 400.0)
+        tree.setFrame(glass, 0.0, 0.0, 200.0, 100.0)
+        tree.setFrame(label, 10.0, 10.0, 80.0, 20.0)
+        tree.commitTransaction()
+        let cmd = caFindNodeCmd(caPlan(tree), label)
+        return caPlanScaled(cmd.glassWash, 3) * 10000 + caPlanScaled(cmd.glassWashLuma, 3)
+    }
+    expect {
+        let e: Result<Any, TestFailure> = .Ok(401000)
+        return e
+    }
+}
+
+// Damage caching: a group pass is dirty the frame its subtree mounts and reusable
+// the next frame when nothing changed. Encodes dirtyFirst*10 + dirtySecond.
+construct CaPlanDamageReuse() extends Test {
+    test {
+        var tree = caLayerTree()
+        let root = tree.makeLayer(caNoLayer(), 0, .Empty)
+        let group = tree.makeLayer(root, 1, .Empty)
+        let leaf = tree.makeLayer(group, 2, .Solid(CASolid {}))
+        tree.beginTransaction(caImmediateTiming())
+        tree.setGroupOpacity(group, true)
+        tree.setOpacity(group, 0.5)
+        tree.commitTransaction()
+        let first = caPlan(tree)
+        var dirtyFirst = false
+        for pass in first.passes {
+            if caPassKindCode(pass) == 1 && pass.dirty {
+                dirtyFirst = true
+            }
+        }
+        tree.clearDamage()
+        let second = caPlan(tree)
+        var dirtySecond = false
+        for pass in second.passes {
+            if caPassKindCode(pass) == 1 && pass.dirty {
+                dirtySecond = true
+            }
+        }
+        var code = 0
+        if dirtyFirst {
+            code = code + 10
+        }
+        if dirtySecond {
+            code = code + 1
+        }
+        return code
+    }
+    expect {
+        let e: Result<Any, TestFailure> = .Ok(10)
+        return e
+    }
+}
+
+// Colour interpolates perceptually: the midpoint of black->white in OKLab is a
+// mid-grey around sRGB 0.39 — neither the sRGB midpoint (0.5) nor the linear-RGB
+// midpoint (0.735). 1 iff the midpoint lands in the perceptual band.
+construct CaPerceptualColorMidpoint() extends Test {
+    test {
+        let black = CAColor { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }
+        let white = CAColor { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }
+        let mid = caColorLerp(black, white, 0.5)
+        if mid.r > 0.35 && mid.r < 0.42 {
+            return 1
+        }
+        return 0
+    }
+    expect {
+        let e: Result<Any, TestFailure> = .Ok(1)
+        return e
+    }
+}
+
+// Retained glass keeps its complete material and interaction payload in the draw
+// command. The submitter must not reconstruct a default material and lose authored
+// lens, highlight, morph, or shape state.
+construct CaPlanPreservesGlassPayload() extends Test {
+    test {
+        var tree = caLayerTree()
+        let root = tree.makeLayer(caNoLayer(), 0, .Empty)
+        let glass = tree.makeLayer(root, 1, .Glass(CAGlass {
+            glowX: 7.0,
+            morphBlend: 12.0,
+            shapeKind: 1,
+            material: CAGlassMaterial { lensMaxBend: 91.0 }
+        }))
+        tree.beginTransaction(caImmediateTiming())
+        tree.setBounds(root, 400.0, 400.0)
+        tree.setFrame(glass, 20.0, 30.0, 160.0, 80.0)
+        tree.commitTransaction()
+        let cmd = caFindNodeCmd(caPlan(tree), glass)
+        var result = 0
+        match cmd.content {
+            Glass(g) -> {
+                result = Int(round(g.material.lensMaxBend)) * 10000
+                    + Int(round(g.glowX)) * 100
+                    + Int(round(g.morphBlend))
+                    + g.shapeKind
+            }
+            Empty -> {}
+            Solid(s) -> {}
+            Text(t) -> {}
+            Texture(t) -> {}
+            Icon(i) -> {}
+            Gradient(g) -> {}
+        }
+        return result
+    }
+    expect {
+        let e: Result<Any, TestFailure> = .Ok(910713)
+        return e
+    }
+}
+
+// Backdrop capture is a layer directive, independent of content kind. A solid
+// layer can request it and the render plan must carry that request unchanged.
+construct CaPlanCarriesBackdropDirective() extends Test {
+    test {
+        var tree = caLayerTree()
+        let root = tree.makeLayer(caNoLayer(), 0, .Empty)
+        let capture = tree.makeLayer(root, 1, .Solid(CASolid {}))
+        tree.setCapturesBackdrop(capture, true)
+        return caFindNodeCmd(caPlan(tree), capture).capturesBackdrop ? 1 : 0
+    }
+    expect {
+        let e: Result<Any, TestFailure> = .Ok(1)
+        return e
+    }
+}
+
+// A render-target pass that samples a live texture must be re-presented even
+// when its layer model is clean. Geometry stays retained; only the target refreshes.
+construct CaPlanLiveTextureRefreshesTarget() extends Test {
+    test {
+        var tree = caLayerTree()
+        let root = tree.makeLayer(caNoLayer(), 0, .Empty)
+        let target = tree.makeLayer(root, 1, .Empty)
+        let live = tree.makeLayer(target, 2, .Texture(CATexture { handle: TextureHandle(91) }))
+        tree.setRenderTarget(target, true, RenderTargetId(7))
+        let plan = caPlan(tree)
+        for pass in plan.passes {
+            if pass.owner == target {
+                return pass.requiresRefresh ? 1 : 0
+            }
+        }
+        return 0
+    }
+    expect {
+        let e: Result<Any, TestFailure> = .Ok(1)
+        return e
+    }
+}
+
+// A parent offscreen that composites a refreshing child pass must refresh too,
+// otherwise it would keep a stale copy of the child's newly rendered texture.
+construct CaPlanRefreshPropagatesThroughNestedPasses() extends Test {
+    test {
+        var tree = caLayerTree()
+        let root = tree.makeLayer(caNoLayer(), 0, .Empty)
+        let outer = tree.makeLayer(root, 1, .Empty)
+        let inner = tree.makeLayer(outer, 2, .Empty)
+        let live = tree.makeLayer(inner, 3, .Texture(CATexture { handle: TextureHandle(92) }))
+        tree.setRenderTarget(outer, true, RenderTargetId(8))
+        tree.setGroupOpacity(inner, true)
+        tree.setOpacity(inner, 0.8)
+        let plan = caPlan(tree)
+        var outerRefresh = false
+        var innerRefresh = false
+        for pass in plan.passes {
+            if pass.owner == outer { outerRefresh = pass.requiresRefresh }
+            if pass.owner == inner { innerRefresh = pass.requiresRefresh }
+        }
+        return outerRefresh && innerRefresh ? 1 : 0
+    }
+    expect {
+        let e: Result<Any, TestFailure> = .Ok(1)
+        return e
+    }
+}
+
+// Shadow is its own ordered draw before the layer. Its authored offset and blur
+// live in local points, so a 2x layer transform doubles both in presentation.
+construct CaPlanShadowPrecedesContentAndTransforms() extends Test {
+    test {
+        var tree = caLayerTree()
+        let root = tree.makeLayer(caNoLayer(), 0, .Empty)
+        let box = tree.makeLayer(root, 1, .Solid(CASolid { shapeKind: 1 }))
+        tree.beginTransaction(caImmediateTiming())
+        tree.setBounds(root, 400.0, 400.0)
+        tree.setFrame(box, 100.0, 100.0, 100.0, 50.0)
+        tree.setScale(box, 2.0, 2.0)
+        tree.setCornerRadius(box, 8.0)
+        tree.setShadow(box, 10.0, 0.5, 3.0, 4.0)
+        tree.setShadowColor(box, CAColor { r: 0.0, g: 0.0, b: 0.0, a: 1.0 })
+        tree.commitTransaction()
+        let plan = caPlan(tree)
+        var shadowIndex = -1
+        var contentIndex = -1
+        var shadow = CADrawCmd {}
+        var content = CADrawCmd {}
+        for index in 0..plan.passes[0].cmds.count {
+            let cmd = plan.passes[0].cmds[index]
+            if cmd.layer == box && cmd.kind == caShadowKind() {
+                shadowIndex = index
+                shadow = cmd
+            } else if cmd.layer == box && cmd.kind != caCompositeKind() {
+                contentIndex = index
+                content = cmd
+            }
+        }
+        var result = 0
+        if shadowIndex >= 0 && contentIndex > shadowIndex {
+            result = 1000000
+        }
+        result = result
+            + Int(round(shadow.shadowRadius)) * 10000
+            + Int(round(shadow.quad.centerX - content.quad.centerX)) * 100
+            + Int(round(shadow.quad.centerY - content.quad.centerY)) * 10
+            + shadow.shapeKind
+        return result
+    }
+    expect {
+        let e: Result<Any, TestFailure> = .Ok(1200681)
+        return e
+    }
+}

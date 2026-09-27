@@ -1,0 +1,72 @@
+// Scoped ambient state slots backing Kira UI state. Each Foundation runner enters a
+// private scope for its event loop, so stable keys survive widget rebuilds without
+// colliding with another Foundation instance in the same process.
+//
+// Single-threaded by contract (the UI frame loop).
+
+@FFI.Extern { library: kirastatestore, symbol: kira_state_slot_put, abi: c, retains: value }
+function rawStateSlotPut(key: CString, value: RawPtr): Void
+
+
+@Native
+function stateScopeCreate() -> U64 { return kira_state_scope_create() }
+
+@Native
+function stateScopeCurrent() -> U64 { return kira_state_scope_current() }
+
+@Native
+function stateScopeEnter(scope: U64) {
+    kira_state_scope_enter(scope)
+    return
+}
+
+// True when a value was stored under `key`.
+@Native
+function stateSlotHas(key: String) -> Bool {
+    return kira_state_slot_has(key) != 0
+}
+
+// The pointer stored under `key` (null when absent — check with stateSlotHas first).
+@Native
+function stateSlotGet(key: String) -> RawPtr {
+    return kira_state_slot_get(key)
+}
+
+// Transfer one affine callback-state owner under `key`, replacing any existing
+// entry. `retains: value` is the ownership boundary: the compiler requires the
+// move and does not release that state reference after the successful C call.
+// The C store releases exactly that reference on replacement/reset.
+@Native
+function stateSlotPut(key: String, value: NativeState<Any>) {
+    rawStateSlotPut(key, move value)
+    return
+}
+
+// Drop every slot in the current Foundation scope, releasing the one
+// native-state reference owned by each entry.
+@Native
+function stateSlotReset() {
+    kira_state_slot_reset()
+    return
+}
+
+// Number of live slots.
+@Native
+function stateSlotCount() -> Int {
+    let raw = kira_state_slot_count()
+    return Int(raw)
+}
+
+@Native
+function stateSlotRemove(key: String) -> Bool {
+    return kira_state_slot_remove(key) != 0
+}
+
+@Native
+function stateSlotResetAll() {
+    kira_state_slot_reset_all()
+    return
+}
+
+@Native
+function stateSlotCountAll() -> Int { return Int(kira_state_slot_count_all()) }

@@ -1,0 +1,56 @@
+import Foundation
+
+enum CALevel {
+    Inline
+    Overlay(Int)
+}
+
+struct CALayerNode {
+    var id: LayerId = LayerId(0)
+    var parentId: LayerId = LayerId(0)
+    var key: Int = 0
+    var childIds: [LayerId] = []
+    var content: CAContent = .Empty
+    var contentSignature: Int = 0
+    // Geometry channels, in the PARENT's coordinates.
+    var posX: CAChannel = CAChannel {}
+    var posY: CAChannel = CAChannel {}
+    var boundsW: CAChannel = CAChannel {}
+    var boundsH: CAChannel = CAChannel {}
+    var opacity: CAChannel = CAChannel { model: 1.0, presentation: 1.0 }
+    var scaleX: CAChannel = CAChannel { model: 1.0, presentation: 1.0 }
+    var scaleY: CAChannel = CAChannel { model: 1.0, presentation: 1.0 }
+    var rotation: CAChannel = CAChannel {}
+    // Appearance channels — animatable like geometry. Colour is perceptual.
+    var fillColor: CAColorChannel = CAColorChannel { from: CAColor { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }, model: CAColor { r: 1.0, g: 1.0, b: 1.0, a: 1.0 } }
+    var borderColor: CAColorChannel = CAColorChannel {}
+    var cornerRadius: CAChannel = CAChannel {}
+    var borderWidth: CAChannel = CAChannel {}
+    var shadowRadius: CAChannel = CAChannel {}
+    var shadowOpacity: CAChannel = CAChannel {}
+    var shadowX: CAChannel = CAChannel {}
+    var shadowY: CAChannel = CAChannel {}
+    var shadowColor: CAColorChannel = CAColorChannel {}
+    // Anchor as a fraction of bounds: scale and rotation pivot here.
+    var anchorX: Float = 0.5
+    var anchorY: Float = 0.5
+    var clip: Bool = false
+    // Whether opacity applies to the composited SUBTREE (an offscreen group)
+    // rather than to this layer's own content only.
+    var groupOpacity: Bool = false
+    // This subtree renders into its own texture. A nonzero id names a target
+    // registered with the compositor; zero asks for a compositor-owned cache.
+    var renderTarget: Bool = false
+    var renderTargetId: RenderTargetId = RenderTargetId(0)
+    // This layer refracts a captured, blurred copy of what is drawn beneath it.
+    var capturesBackdrop: Bool = false
+    var level: CALevel = .Inline
+    var hit: Bool = false
+    var hitKey: Int = 0
+    // Lifted onto the overlay list: skipped by the in-place walk and drawn from
+    // the canvas root instead, so it escapes its parent's clip and order.
+    var hoisted: Bool = false
+    var mounted: Bool = true
+    var damaged: Bool = true
+    var reused: Bool = false
+}
