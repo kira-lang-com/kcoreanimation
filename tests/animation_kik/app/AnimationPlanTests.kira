@@ -84,6 +84,24 @@ construct CaPlanGroupOpacityIsolated() extends Test {
     }
 }
 
+// A group at full opacity looks the same drawn in place, so it opens no pass.
+construct CaPlanOpaqueGroupDrawsInPlace() extends Test {
+    test {
+        var tree = caLayerTree()
+        let root = tree.makeLayer(caNoLayer(), 0, .Empty)
+        let group = tree.makeLayer(root, 1, .Empty)
+        let leaf = tree.makeLayer(group, 2, .Solid(CASolid {}))
+        tree.beginTransaction(caImmediateTiming())
+        tree.setGroupOpacity(group, true)
+        tree.commitTransaction()
+        return caPlanPassCount(caPlan(tree))
+    }
+    expect {
+        let e: Result<Any, TestFailure> = .Ok(1)
+        return e
+    }
+}
+
 // Nested groups nest passes: root, outer, inner.
 construct CaPlanNestedGroups() extends Test {
     test {
@@ -400,8 +418,10 @@ construct CaPlanRefreshPropagatesThroughNestedPasses() extends Test {
         let inner = tree.makeLayer(outer, 2, .Empty)
         let live = tree.makeLayer(inner, 3, .Texture(CATexture { handle: TextureHandle(92) }))
         tree.setRenderTarget(outer, true, RenderTargetId(8))
+        tree.beginTransaction(caImmediateTiming())
         tree.setGroupOpacity(inner, true)
         tree.setOpacity(inner, 0.8)
+        tree.commitTransaction()
         let plan = caPlan(tree)
         var outerRefresh = false
         var innerRefresh = false

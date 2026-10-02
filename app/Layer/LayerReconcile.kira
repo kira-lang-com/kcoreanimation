@@ -71,6 +71,7 @@ function caApplyLayerDescription(tree: borrow mut CALayerTree, id: LayerId, laye
         tree.commitTransaction()
     }
     tree.setOpacity(id, layer.opacity)
+    tree.setGroupOpacity(id, layer.allowsGroupOpacity)
     tree.setScale(id, layer.scaleX, layer.scaleY)
     tree.setRotation(id, layer.rotation)
     tree.setAnchor(id, layer.anchorPoint.x, layer.anchorPoint.y)

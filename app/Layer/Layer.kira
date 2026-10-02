@@ -90,6 +90,10 @@ class CALayerDescription {
     var size: Size = Size {}
     var anchorPoint: Point = Point { x: 0.5, y: 0.5 }
     var opacity: Float = 1.0
+    // Whether `opacity` fades the layer and everything in it as one picture,
+    // as Core Animation's `allowsGroupOpacity` does, rather than each sublayer
+    // on its own -- which lets overlapping sublayers show through each other.
+    var allowsGroupOpacity: Bool = false
     var scaleX: Float = 1.0
     var scaleY: Float = 1.0
     var rotation: Float = 0.0

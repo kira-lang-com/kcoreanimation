@@ -184,7 +184,8 @@ function caPlanNode(tree: borrow CALayerTree, frame: borrow CAPlanFrame, plan: b
     }
     let world = caConcat(frame.world, caLocalTransform(node))
     let eff = frame.opacity * node.opacity.presentation
-    let isGroup = node.groupOpacity && node.childIds.count > 0
+    // A group at full opacity looks the same drawn in place, so it is.
+    let isGroup = node.groupOpacity && node.opacity.presentation < 1.0 && node.childIds.count > 0
     let isTarget = node.renderTarget && node.childIds.count > 0
     let isBlurred = node.blur > 0.0 && node.childIds.count > 0
     let childFrame = caPlanChildFrame(node, frame, world)
