@@ -320,21 +320,9 @@ function surfaceDistance(point: Float2, halfSize: Float2, radius: Float, mode: F
     return GlassCommon.sdRound(point, halfSize, radius)
 }
 
-// How much of a fragment the clip leaves: all of it inside a plain box, and
-// inside a rounded one all but what falls past its corners, eased across a
-// pixel as a surface's own edge is.
+// How much of this fragment its clip leaves; see `GlassCommon.clipShapeCoverage`.
 function clipCoverage(input: VertexOut) -> Float {
-    if input.clipCorner.x <= 0.0 {
-        return 1.0
-    }
-    let extent = Float2((input.clip.z - input.clip.x) * 0.5, (input.clip.w - input.clip.y) * 0.5)
-    let center = Float2((input.clip.x + input.clip.z) * 0.5, (input.clip.y + input.clip.w) * 0.5)
-    let radius = min(input.clipCorner.x, min(extent.x, extent.y))
-    let point = Float2(input.px.x - center.x, input.px.y - center.y)
-    if input.clipCorner.y > 0.5 {
-        return clamp(0.5 - GlassCommon.sdSquircle(point, extent, radius), 0.0, 1.0)
-    }
-    return clamp(0.5 - GlassCommon.sdRound(point, extent, radius), 0.0, 1.0)
+    return GlassCommon.clipShapeCoverage(input.px, input.clip, input.clipCorner)
 }
 // A layer's gaussian blur, read off the texture its tree was drawn into:
 // the center and three rings of taps out to `reach` -- the blur's radius in

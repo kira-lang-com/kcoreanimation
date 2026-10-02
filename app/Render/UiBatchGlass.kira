@@ -253,23 +253,26 @@ extend UiBatch {
             state.streams[state.streamIndex.raw].glassBounds.append(captureMaxY)
         }
         state.streams[state.streamIndex.raw].glassBoundCount = state.streams[state.streamIndex.raw].glassBoundCount + 1
+        // A widening corner runs on past the short side to the long one; every
+        // other corner stops at the short side.
+        let widening = shapeKind > 1.5
         var clampedRadius = radius
-        if clampedRadius > halfW {
-            clampedRadius = halfW
+        let reach = widening ? max(halfW, halfH) : min(halfW, halfH)
+        if clampedRadius > reach {
+            clampedRadius = reach
         }
-        if clampedRadius > halfH {
-            clampedRadius = halfH
-        }
-        // Morphing, rotated and fading surfaces use one full exact patch. The
-        // optimized region split below relies on axis-aligned rectangular
-        // insets; once the surface is fused or turned, those rectangles no
-        // longer bound regions with the same shader preconditions. And the
+        // Morphing, rotated, fading and widening surfaces use one full exact
+        // patch. The optimized region split below relies on axis-aligned
+        // rectangular insets and a corner no deeper than the short side; once
+        // the surface is fused, turned or its corner runs past that, those
+        // rectangles no longer bound regions with the same shader
+        // preconditions. And the
         // interior pipelines write opaquely, blending off, so only the full
         // one -- which blends by its coverage -- can let what is behind a
         // fading surface through. Its first spare carries how far it has faded,
         // so the zero every other full patch carries is a surface fully there.
         let fading = opacity < 1.0
-        if morphActive || rotated || fading {
+        if morphActive || rotated || fading || widening {
             self.glassEmitPatch(
                 cx, cy, vw, vh, halfW, halfH, clampedRadius, 3.0,
                 -lhx, -lhy, lhx, lhy,

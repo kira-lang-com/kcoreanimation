@@ -180,6 +180,10 @@ struct CAGlass {
     var morphHeight: Float = 0.0
     var morphRadius: Float = 0.0
     var morphBlend: Float = 0.0
+    // As a solid's, and 2 a squircle whose corner can run past the short
+    // side: as wide as the radius and as tall as the side allows, up to the
+    // ellipse the box holds. It clips what the surface holds to the same
+    // shape.
     var shapeKind: Int = 0
     // What the surface's laid-out size does to it. Glass is one recipe across
     // every size, and only the compositor knows the size, so the recipe rides

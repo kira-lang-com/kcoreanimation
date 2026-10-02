@@ -251,6 +251,64 @@ function sdSquircle(point: Float2, halfSize: Float2, radius: Float) -> Float {
     return estimate
 }
 
+// A box whose corner is `radius` along each side, as far as that side allows.
+//
+// Below both half sides it is the squircle, exponent and all. Past the short
+// one the corner stays as tall as the short side and keeps widening, a quarter
+// superellipse wider than it is tall, and as it does the exponent eases from
+// the squircle's to two; past the long one too it is the ellipse the box
+// holds. One radius runs the whole way from the card to the ellipse, which is
+// what lets a surface turn from one into the other as one shape.
+function sdWideCorner(point: Float2, halfSize: Float2, radius: Float) -> Float {
+    let shortSide = min(halfSize.x, halfSize.y)
+    let longSide = max(halfSize.x, halfSize.y)
+    if radius <= shortSide {
+        return sdSquircle(point, halfSize, radius)
+    }
+    let widened = clamp((radius - shortSide) / max(longSide - shortSide, 0.001), 0.0, 1.0)
+    let exponent = squircleExponent + (2.0 - squircleExponent) * widened
+    let corner = Float2(max(min(radius, halfSize.x), 0.001), max(min(radius, halfSize.y), 0.001))
+    let q = abs(point) - (halfSize - corner)
+    let edge = abs(point) - halfSize
+    if q.x <= 0.0 || q.y <= 0.0 {
+        return min(max(edge.x, edge.y), 0.0) + length(max(edge, Float2(0.0, 0.0)))
+    }
+    // The implicit superellipse over its gradient, as the squircle's is, but
+    // with the corner's two radii apart.
+    let nx = q.x / corner.x
+    let ny = q.y / corner.y
+    let sum = max(pow(nx, exponent) + pow(ny, exponent), 0.000001)
+    let radial = pow(sum, 1.0 / exponent)
+    let scale = pow(sum, 1.0 / exponent - 1.0)
+    let gradient = max(length(Float2(pow(nx, exponent - 1.0) / corner.x, pow(ny, exponent - 1.0) / corner.y)) * scale, 0.000001)
+    let estimate = (radial - 1.0) / gradient
+    if estimate > 0.0 {
+        return max(estimate, length(max(edge, Float2(0.0, 0.0))))
+    }
+    return estimate
+}
+
+// How much of a fragment at `px` a clip leaves: all of it inside a plain box
+// (`corner.x` zero), and inside a rounded one all but what falls past its
+// corner, eased across a pixel as a surface's own edge is. `clip` is the box
+// as min and max corners; `corner` its radius and its kind, as a surface's.
+function clipShapeCoverage(px: Float2, clip: Float4, corner: Float2) -> Float {
+    if corner.x <= 0.0 {
+        return 1.0
+    }
+    let extent = Float2((clip.z - clip.x) * 0.5, (clip.w - clip.y) * 0.5)
+    let center = Float2((clip.x + clip.z) * 0.5, (clip.y + clip.w) * 0.5)
+    let point = px - center
+    if corner.y > 1.5 {
+        return clamp(0.5 - sdWideCorner(point, extent, corner.x), 0.0, 1.0)
+    }
+    let radius = min(corner.x, min(extent.x, extent.y))
+    if corner.y > 0.5 {
+        return clamp(0.5 - sdSquircle(point, extent, radius), 0.0, 1.0)
+    }
+    return clamp(0.5 - sdRound(point, extent, radius), 0.0, 1.0)
+}
+
 function sdRoundNormal(point: Float2, halfSize: Float2, radius: Float) -> Float2 {
     let sx = -1.0
     if point.x >= 0.0 { sx = 1.0 }
@@ -340,11 +398,16 @@ function smoothUnion(first: Float, second: Float, k: Float) -> Float {
 // off the fused body rather than off one half of it.
 // One rounded rectangle, with the corner the surface asked for.
 //
-// `kind` at zero is a circular corner; anything above is the continuous
-// superellipse a squircle is — the curvature runs into the straight edges
-// instead of meeting them at a point where it jumps, which is the difference
-// between a rounded rectangle and the shape Apple's panels actually are.
+// `kind` at zero is a circular corner; one is the continuous superellipse a
+// squircle is — the curvature runs into the straight edges instead of meeting
+// them at a point where it jumps, which is the difference between a rounded
+// rectangle and the shape Apple's panels actually are; two is the squircle
+// whose corner keeps widening past the short side into the ellipse the box
+// holds -- see `sdWideCorner`.
 function shapeDistance(point: Float2, halfSize: Float2, radius: Float, kind: Float) -> Float {
+    if kind > 1.5 {
+        return sdWideCorner(point, halfSize, radius)
+    }
     if kind > 0.5 {
         return sdSquircle(point, halfSize, radius)
     }
@@ -354,16 +417,16 @@ function shapeDistance(point: Float2, halfSize: Float2, radius: Float, kind: Flo
 // Which way a single shape's surface faces.
 //
 // The closed-form normal is the circular rounded rectangle's and describes
-// nothing else, so a squircle takes central differences of its own field. Two
-// extra distance evaluations, paid only by a surface that asked for the
-// continuous corner.
+// nothing else, so a squircle or an ellipse takes central differences of its
+// own field. Four extra distance evaluations, paid only by a surface that
+// asked for one.
 function shapeNormal(point: Float2, halfSize: Float2, radius: Float, kind: Float) -> Float2 {
     if kind <= 0.5 {
         return sdRoundNormal(point, halfSize, radius)
     }
     let e = 0.75
-    let dx = sdSquircle(point + Float2(e, 0.0), halfSize, radius) - sdSquircle(point - Float2(e, 0.0), halfSize, radius)
-    let dy = sdSquircle(point + Float2(0.0, e), halfSize, radius) - sdSquircle(point - Float2(0.0, e), halfSize, radius)
+    let dx = shapeDistance(point + Float2(e, 0.0), halfSize, radius, kind) - shapeDistance(point - Float2(e, 0.0), halfSize, radius, kind)
+    let dy = shapeDistance(point + Float2(0.0, e), halfSize, radius, kind) - shapeDistance(point - Float2(0.0, e), halfSize, radius, kind)
     let gradient = Float2(dx, dy)
     if length(gradient) < 0.00001 {
         return Float2(0.0, -1.0)

@@ -9,6 +9,8 @@
 // same buffer, so a stream can be drawn by either — the specialization is the
 // branches it does *not* take, not a different vertex format.
 
+import GlassCommon
+
 type UiQuad {
     // Clip position and pixel position at the top-left and bottom-right corners.
     let posX0: Float
@@ -129,10 +131,16 @@ type VertexOut {
     let px: Float2
     let fill: Float4
     let clip: Float4
+    let clipCorner: Float2
 }
 
 type FragmentOut {
     let color: Float4
+}
+
+// How much of this fragment its clip leaves; see `GlassCommon.clipShapeCoverage`.
+function clipCoverage(input: VertexOut) -> Float {
+    return GlassCommon.clipShapeCoverage(input.px, input.clip, input.clipCorner)
 }
 
 shader UiGlyph {
@@ -162,6 +170,7 @@ shader UiGlyph {
             out.px = Float2(mix(v.pxX0, v.pxX1, right), mix(v.pxY0, v.pxY1, bottom))
             out.fill = Float4(v.fillR, v.fillG, v.fillB, v.fillA)
             out.clip = Float4(v.clipMinX, v.clipMinY, v.clipMaxX, v.clipMaxY)
+            out.clipCorner = Float2(v.clipRadius, v.clipShapeKind)
             return out
         }
     }
@@ -190,7 +199,7 @@ shader UiGlyph {
             }
             // Coverage, not color: the atlas holds one channel and the run's
             // own fill supplies the ink.
-            let cov = sample(atlas, atlasSmp, input.local).x
+            let cov = sample(atlas, atlasSmp, input.local).x * clipCoverage(input)
             let a = input.fill.w * cov
             result.color = Float4(input.fill.x * a, input.fill.y * a, input.fill.z * a, a)
             return result
