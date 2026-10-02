@@ -26,6 +26,13 @@ extend UiBatch {
         // Turned about its own centre, as cosine and sine.
         rotCos: Float = 1.0,
         rotSin: Float = 0.0,
+        // How the ink meets what is under it. A burn draws through a pipeline
+        // that takes its colour AWAY from the target, so it carries the ink's
+        // distance from white — `1 - colour` — rather than the colour.
+        blend: CABlendMode = .Normal,
+        // The ink's own width over its height, where the box it is drawn in has
+        // been stretched away from it. Zero when the box is the ink's.
+        inkAspect: Float = 0.0,
     ) {
         var state = nativeRecover<UiBatchState>(self.storage)
         var scale = state.scale
@@ -34,9 +41,21 @@ extend UiBatch {
         }
         // The box the caller gave IS the ink's box: a symbol is rasterized
         // trimmed to its drawing, so its width and height are its own and the
-        // two are not generally equal.
-        let devPxW = w * scale
-        let devPxH = h * scale
+        // two are not generally equal. A box stretched out of the ink's own
+        // proportions is drawn the way any transformed picture is: the ink is
+        // rasterized in its own proportions, covering the box's longer reach,
+        // and that picture is stretched into the box.
+        var inkW = w
+        var inkH = h
+        if inkAspect > 0.0 && h > 0.0 {
+            if w / h > inkAspect {
+                inkH = w / inkAspect
+            } else {
+                inkW = h * inkAspect
+            }
+        }
+        let devPxW = inkW * scale
+        let devPxH = inkH * scale
         let sizePts = h
         let devPx = devPxH
         // Rasterized at the same oversample as text, and for the same reason: an icon is
@@ -156,16 +175,18 @@ extend UiBatch {
                 // resampled rather than displayed.
                 let leftDev = x * scale
                 let topDev = y * scale
-                let rightDev = leftDev + Float(wpx) / overs
-                let bottomDev = topDev + Float(hpx) / overs
+                let rightDev = leftDev + w * scale
+                let bottomDev = topDev + h * scale
+                let oversX = Float(wpx) / (w * scale)
+                let oversY = Float(hpx) / (h * scale)
                 let x0 = Float(Int(leftDev))
                 let y0 = Float(Int(topDev))
                 let x1 = Float(Int(rightDev) + 1)
                 let y1 = Float(Int(bottomDev) + 1)
-                let u0 = (Float(atlasX) - (leftDev - x0) * overs) / atlasW
-                let v0 = (Float(atlasY) - (topDev - y0) * overs) / atlasW
-                let u1 = (Float(atlasX + wpx) + (x1 - rightDev) * overs) / atlasW
-                let v1 = (Float(atlasY + hpx) + (y1 - bottomDev) * overs) / atlasW
+                let u0 = (Float(atlasX) - (leftDev - x0) * oversX) / atlasW
+                let v0 = (Float(atlasY) - (topDev - y0) * oversY) / atlasW
+                let u1 = (Float(atlasX + wpx) + (x1 - rightDev) * oversX) / atlasW
+                let v1 = (Float(atlasY + hpx) + (y1 - bottomDev) * oversY) / atlasW
                 let gx = x0 / scale
                 let gy = y0 / scale
                 let iconW = (x1 - x0) / scale
@@ -175,13 +196,19 @@ extend UiBatch {
                     let base = state.frameBase + state.quadCount * stride
                     // Mode 1, recorded for the draw path — see the same note in the
                     // glyph emitter. An icon that inherits a stale glass code is drawn
-                    // through a glass pipeline and disappears.
+                    // through a glass pipeline and disappears. A burned or dodged
+                    // icon records 110 or 210, the codes its blending pipelines take.
                     let requiresGeneric = rotSin != 0.0 || rotCos != 1.0
+                    let iconModeCode = 10 + caBlendModeRoute(blend)
+                    var ink = Color { r: color.r, g: color.g, b: color.b, a: color.a }
+                    if blend == .LinearBurn {
+                        ink = Color { r: 1.0 - color.r, g: 1.0 - color.g, b: 1.0 - color.b, a: color.a }
+                    }
                     if state.quadCount < state.streams[state.streamIndex.raw].quadModes.count {
-                        state.streams[state.streamIndex.raw].quadModes[state.quadCount] = 10
+                        state.streams[state.streamIndex.raw].quadModes[state.quadCount] = iconModeCode
                         state.streams[state.streamIndex.raw].quadRequiresGeneric[state.quadCount] = requiresGeneric
                     } else {
-                        state.streams[state.streamIndex.raw].quadModes.append(10)
+                        state.streams[state.streamIndex.raw].quadModes.append(iconModeCode)
                         state.streams[state.streamIndex.raw].quadRequiresGeneric.append(requiresGeneric)
                     }
                     writeQuadRecord(
@@ -190,7 +217,7 @@ extend UiBatch {
                         u0, v0, u1, v1,
                         state.viewportW, state.viewportH,
                         0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
-                        color.r, color.g, color.b, color.a,
+                        ink.r, ink.g, ink.b, ink.a,
                         0.0, 0.0, 0.0, 0.0,
                         clipMinX, clipMinY, clipMaxX, clipMaxY,
                         rotCos, rotSin

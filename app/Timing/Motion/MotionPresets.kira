@@ -70,21 +70,23 @@ function motionLiftOff(target: Float) -> MotionSpring {
     return MotionSpring { response: 0.4143, damping: 0.3594, target: target }
 }
 
-// How much bigger a glass control gets while it is held, in POINTS.
+// How much bigger a glass control gets while it is held, in POINTS, across its
+// shorter side.
 //
 // Points rather than a scale factor, because it is the material lifting toward
 // the finger by a fixed amount rather than every control growing by the same
-// proportion: twenty points on a small button is a lot and on a wide panel is
-// barely anything, which is correct — the lift is the same physical rise.
+// proportion: the rise is a lot on a small button and barely anything on a wide
+// panel, which is correct — it is the same physical rise. The element grows
+// uniformly by it, so it keeps its shape. Measured off the platform's own
+// back-and-forward capsule: 44 points tall at rest, 51.7 held, and 1.17 wide.
 //
 // And it grows. A control that shrank under a press would read as a key being
 // pushed into a surface; glass comes UP to meet the finger.
 function motionPressLift() -> Float {
-    return 20.0
+    return 7.5
 }
 
-// The lift as a scale factor for an element of a given size along the axis it
-// is measured on.
+// The lift as a scale factor for an element whose shorter side is `extent`.
 function motionPressLiftScale(extent: Float) -> Float {
     return 1.0 + motionPressLift() / max(extent, 1.0)
 }

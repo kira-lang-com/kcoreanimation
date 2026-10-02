@@ -25,6 +25,13 @@ struct CALayoutIntent {
     // A fixed extent, or negative for none.
     var fixedWidth: Float = -1.0
     var fixedHeight: Float = -1.0
+    // A floor under the extent, never a cap: a layer that wants more gets more.
+    var minWidth: Float = 0.0
+    var minHeight: Float = 0.0
+    // A ceiling over the width, or negative for none: a layer that fills stops
+    // here, which is how a column of readable text keeps its measure on a wide
+    // window. The floor still wins where the two cross.
+    var maxWidth: Float = -1.0
     // The size the layer's own content wants (a run of text, a glyph), when it
     // neither fills nor is fixed.
     var intrinsicWidth: Float = 0.0
@@ -36,6 +43,14 @@ struct CALayoutIntent {
     var paddingBottom: Float = 0.0
     // A flex weight for a sublayer that shares leftover main-axis space.
     var flex: Int = 0
+    // Where a sublayer smaller than this layer's inner box sits in it, as a unit
+    // point: (0, 0) is the top-leading corner, (0.5, 0.5) the centre. The origin
+    // by default, which is where a layer's sublayers are positioned when nothing
+    // asks otherwise.
+    var alignment: Point = Point { x: 0.0, y: 0.0 }
+    // Where the layer is drawn relative to where it was placed, without moving
+    // anything around it: the space it takes stays where layout put it.
+    var offset: Point = Point { x: 0.0, y: 0.0 }
 }
 
 // Declarative layer value consumed by the retained tree reconciler. Identity is
@@ -51,7 +66,9 @@ class CALayerDescription {
     var rotation: Float = 0.0
     var cornerRadius: Float = 0.0
     var borderWidth: Float = 0.0
-    var backgroundColor: CAColor = CAColor { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }
+    // The layer's own fill, drawn only when its content carries no colour of its
+    // own. Clear unless stated, as a layer's background is.
+    var backgroundColor: CAColor = CAColor { a: 0.0 }
     var borderColor: CAColor = CAColor {}
     var clipsChildren: Bool = false
     var content: CAContent = .Empty
@@ -59,7 +76,17 @@ class CALayerDescription {
     var renderTarget: Bool = false
     var capturesBackdrop: Bool = false
     var hittable: Bool = false
+    // Whether the layer answers a press anywhere on it as a whole, as SwiftUI's
+    // interactive glass does: a press on a control inside it is reported
+    // against this layer too, under its `hitKey`, so the surface can move with
+    // the press while the control takes the action.
+    var interactive: Bool = false
     var hitKey: Int = 0
+    // Whether a change to this layer lands at once rather than animating there,
+    // as `CATransaction.setDisableActions` does: for a layer whose values
+    // something already moves every frame, which an animation on top of it
+    // would only drag behind.
+    var disablesActions: Bool = false
     // How this layer wants to be sized and how it arranges its sublayers; a
     // toolkit's layout pass reads this and writes `position`/`size`.
     var layout: CALayoutIntent = CALayoutIntent {}

@@ -157,7 +157,7 @@ function sdRound(point: Float2, halfSize: Float2, radius: Float) -> Float {
 // pinned to `motionGlowDiameter()` by `MotionGlowRadiusMatchesTheShader`; the
 // two must move together.
 function glowFalloff(distance: Float) -> Float {
-    let r = distance / 150.0
+    let r = distance / 80.0
     if r >= 1.0 {
         return 0.0
     }

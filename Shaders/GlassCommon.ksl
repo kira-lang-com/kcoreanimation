@@ -29,6 +29,18 @@ const sheenEnd: Float = 5.0
 const blurEdgeStart: Float = 2.0
 const blurEdgeEnd: Float = 3.0
 
+// The edge light, as Apple's kit draws it on every Liquid Glass surface: inner
+// shadows the shape casts on itself, grown by `edgeLightSpread` and pushed
+// `edgeLightOffset` toward the opposite edge, so the hole each leaves lines up
+// with the near edge and only its blur reaches in — a soft band under the top
+// edge and another over the bottom. How bright and how dark are per-surface
+// greys carried in the vertex; this is the shape. `UiBatchGlass.kira`'s
+// `glassEdgeLightReach` mirrors the two blurs.
+const edgeLightOffset: Float = 40.0
+const edgeLightSpread: Float = 40.0
+const edgeLightDodgeBlur: Float = 10.0
+const edgeLightBurnBlur: Float = 30.0
+
 // The sharp backdrop under a glass fragment.
 //
 // Two images and a weight, because the backdrop a scheme change presents IS a
@@ -46,6 +58,24 @@ function backdropTap(first: Texture2d, firstSmp: Sampler, second: Texture2d, sec
         return sample(second, secondSmp, uv)
     }
     return mix(sample(first, firstSmp, uv), sample(second, secondSmp, uv), blend)
+}
+
+// How much of an inner shadow lands `distance` outside the hole it leaves,
+// blurred by `blur` the way a design tool blurs one: a Gaussian whose sigma is
+// half the blur, integrated across the hole's edge — in the logistic form,
+// since there is no `erf` to call.
+function innerShadow(distance: Float, blur: Float) -> Float {
+    let sigma = max(blur * 0.5, 0.0001)
+    return 1.0 / (1.0 + pow(2.718281828, -1.702 * distance / sigma))
+}
+
+// `rgb` lit along its top and bottom edges, given the distances to the holes
+// the light's two inner shadows leave: both bands added in `dodge`'s grey, and
+// the top one, wider, burned in `burn`'s.
+function edgeLight(rgb: Float3, topHole: Float, bottomHole: Float, dodge: Float, burn: Float) -> Float3 {
+    let lit = dodge * (innerShadow(topHole, edgeLightDodgeBlur) + innerShadow(bottomHole, edgeLightDodgeBlur))
+    let burned = (1.0 - burn) * innerShadow(topHole, edgeLightBurnBlur)
+    return rgb + Float3(lit - burned, lit - burned, lit - burned)
 }
 
 function blendChannel(base: Float, layer: Float, mode: Float) -> Float {
@@ -195,7 +225,7 @@ function refractionCurve(value: Float) -> Float {
 // same two halves as `motionGlowFalloff` on the Kira side, and the radius is
 // pinned to `motionGlowDiameter()` — the two must move together.
 function glowFalloff(distance: Float) -> Float {
-    let r = distance / 150.0
+    let r = distance / 80.0
     if r >= 1.0 {
         return 0.0
     }

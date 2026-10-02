@@ -116,6 +116,10 @@ struct UiBatchState {
     var pipeline: RenderPipeline = emptyRenderPipeline()
     var rectPipeline: RenderPipeline = emptyRenderPipeline()
     var glyphPipeline: RenderPipeline = emptyRenderPipeline()
+    // Icons burned or dodged into what is under them: the glyph shader, with
+    // its ink taken away from the target or added to it.
+    var glyphBurnPipeline: RenderPipeline = emptyRenderPipeline()
+    var glyphDodgePipeline: RenderPipeline = emptyRenderPipeline()
     // Liquid-glass region pipelines. The full glass branch's static register
     // allocation throttles GPU occupancy for every fragment its pipeline
     // shades, so glass interiors route to shaders holding only the math their

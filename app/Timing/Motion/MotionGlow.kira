@@ -39,35 +39,37 @@ struct MotionGlowState {
     var y: Float = 0.0
 }
 
-// How bright the highlight gets. A tenth, which is far less than it looks:
-// this is white laid over a material that is already bright, and the radial
-// falloff below means only the very centre reaches even this.
+// How bright the highlight gets: white added to the finished glass, at the
+// fingertip. Measured off the platform's dark capsule held down, which comes up
+// by 0.32 under the finger and by half that a finger's width away.
 function motionGlowLevel() -> Float {
-    return 0.1
+    return 0.3
 }
 
 // How long the light takes to arrive, and to go.
 //
 // Not the same number, and not the same curve. Arriving is eased out — fast
 // first, so the press is answered immediately — over about a tenth of a second.
-// Leaving is eased at both ends and takes nearly twice as long, so the light
-// drains rather than switches off.
+// Leaving is eased at both ends and takes three times as long, so the light
+// drains rather than switches off: the platform's is gone a third of a second
+// after the finger lifts.
 function motionGlowFadeIn() -> Float {
     return 0.12
 }
 
 function motionGlowFadeOut() -> Float {
-    return 0.22
+    return 0.35
 }
 
 // The diameter of the highlight, in points.
 //
 // Fixed rather than a fraction of the element: the light is the size of a
 // fingertip's influence, not the size of what was touched, so the same tap
-// lights a small button and a large panel identically. Anything smaller than
-// this is simply covered by it.
+// lights a small button and a large panel identically. On the platform's
+// capsule the light is down to half forty points from the finger, which is
+// where the falloff below reaches half: a quarter of the way across.
 function motionGlowDiameter() -> Float {
-    return 300.0
+    return 160.0
 }
 
 // The finger goes down at a point in the element's coordinates.

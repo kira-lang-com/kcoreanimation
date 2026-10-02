@@ -55,14 +55,14 @@ function caGradientAxis(content: borrow CAContent) -> Float {
 }
 
 // Draw a fill/gradient/glass surface as an oriented quad through the batch.
-function caDrawSurfaceQuad(quad: borrow CAOrientedQuad, radius: Float, borderWidth: Float, fill: borrow Color, border: borrow Color, clipMinX: Float, clipMinY: Float, clipMaxX: Float, clipMaxY: Float, shapeMode: Float, gradient: borrow Color, gradientAxis: Float, backend: borrow mut KiraGraphicsFoundationBackend) {
+function caDrawSurfaceQuad(quad: borrow CAOrientedQuad, radius: Float, borderWidth: Float, fill: borrow Color, border: borrow Color, clipMinX: Float, clipMinY: Float, clipMaxX: Float, clipMaxY: Float, shapeKind: Int, gradient: borrow Color, gradientAxis: Float, backend: borrow mut KiraGraphicsFoundationBackend) {
     backend.batch.pushLayerQuad(
         quad.centerX, quad.centerY, quad.halfW, quad.halfH,
         quad.rotCos, quad.rotSin,
         radius, borderWidth,
         fill, border,
         clipMinX, clipMinY, clipMaxX, clipMaxY,
-        shapeMode,
+        shapeKind,
         gradient, gradientAxis
     )
     return
@@ -95,6 +95,73 @@ function caQuadFrame(quad: borrow CAOrientedQuad) -> Rect {
         width: quad.halfW * 2.0,
         height: quad.halfH * 2.0
     }
+}
+
+// Draw a text layer: its run in its bounds, or — when it wraps and its bounds
+// are narrower than the run — each line in a line box of its own, one under the
+// last down the layer's own axis, so a turned layer's lines turn with it.
+function caDrawText(
+    t: borrow CAText,
+    quad: borrow CAOrientedQuad,
+    localWidth: Float,
+    textScale: Float,
+    fill: borrow Color,
+    clipMinX: Float,
+    clipMinY: Float,
+    clipMaxX: Float,
+    clipMaxY: Float,
+    wash: Float,
+    washLuma: Float,
+    backend: borrow mut KiraGraphicsFoundationBackend,
+) {
+    let frame = caQuadFrame(quad)
+    backend.drewVisibleUi = true
+    if t.wraps && foundationTextRunWidth(content: t.content, size: t.size, weight: t.weight) > localWidth + 0.5 {
+        let lines = foundationTextLines(t.content, t.size, t.weight, localWidth)
+        let pitch = foundationTextLineBox(t.size, t.weight) * textScale
+        var index = 0
+        for line in lines {
+            // The line box's centre, down the layer's axis from its top edge.
+            let along = pitch * (Float(index) + 0.5) - frame.height / 2.0
+            let centerX = quad.centerX - quad.rotSin * along
+            let centerY = quad.centerY + quad.rotCos * along
+            backend.batch.pushText(
+                backend.graphics,
+                line,
+                centerX - frame.width / 2.0, centerY - pitch / 2.0, frame.width, pitch,
+                fill, t.size * textScale, t.weight,
+                clipMinX, clipMinY, clipMaxX, clipMaxY,
+                t.adaptiveInk,
+                wash,
+                washLuma,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                quad.rotCos,
+                quad.rotSin
+            )
+            index += 1
+        }
+        return
+    }
+    backend.batch.pushText(
+        backend.graphics,
+        t.content,
+        frame.x, frame.y, frame.width, frame.height,
+        fill, t.size * textScale, t.weight,
+        clipMinX, clipMinY, clipMaxX, clipMaxY,
+        t.adaptiveInk,
+        wash,
+        washLuma,
+        t.inkLeft * textScale,
+        t.inkRight * textScale,
+        t.inkTop * textScale,
+        t.inkBottom * textScale,
+        quad.rotCos,
+        quad.rotSin
+    )
+    return
 }
 
 // One plan command. `passTextures[passId]` is the sampled view of the texture a
@@ -148,12 +215,12 @@ function caSubmitCmdAt(
     match cmd.content {
         Empty -> {}
         Solid(s) -> {
-            caDrawSurfaceQuad(quad, cmd.cornerRadius, cmd.borderWidth, fill, border, clipMinX, clipMinY, clipMaxX, clipMaxY, Float(s.shapeKind), Color { a: 0.0 }, 0.0, backend)
+            caDrawSurfaceQuad(quad, cmd.cornerRadius, cmd.borderWidth, fill, border, clipMinX, clipMinY, clipMaxX, clipMaxY, s.shapeKind, Color { a: 0.0 }, 0.0, backend)
             drawn = 1
         }
         Gradient(g) -> {
             let far = caColorToFoundation(g.end, cmd.opacity)
-            caDrawSurfaceQuad(quad, cmd.cornerRadius, cmd.borderWidth, fill, border, clipMinX, clipMinY, clipMaxX, clipMaxY, Float(g.shapeKind), far, Float(g.axis), backend)
+            caDrawSurfaceQuad(quad, cmd.cornerRadius, cmd.borderWidth, fill, border, clipMinX, clipMinY, clipMaxX, clipMaxY, g.shapeKind, far, Float(g.axis), backend)
             drawn = 1
         }
         Glass(g) -> {
@@ -165,24 +232,7 @@ function caSubmitCmdAt(
             drawn = 1
         }
         Text(t) -> {
-            let frame = caQuadFrame(quad)
-            backend.drewVisibleUi = true
-            backend.batch.pushText(
-                backend.graphics,
-                t.content,
-                frame.x, frame.y, frame.width, frame.height,
-                fill, t.size * cmd.textScale, t.weight,
-                clipMinX, clipMinY, clipMaxX, clipMaxY,
-                t.adaptiveInk,
-                cmd.glassWash,
-                cmd.glassWashLuma,
-                t.inkLeft * cmd.textScale,
-                t.inkRight * cmd.textScale,
-                t.inkTop * cmd.textScale,
-                t.inkBottom * cmd.textScale,
-                quad.rotCos,
-                quad.rotSin
-            )
+            caDrawText(t, quad, cmd.localWidth, cmd.textScale, fill, clipMinX, clipMinY, clipMaxX, clipMaxY, cmd.glassWash, cmd.glassWashLuma, backend)
             drawn = 1
         }
         Texture(x) -> {
@@ -209,7 +259,9 @@ function caSubmitCmdAt(
                 clipMinX, clipMinY, clipMaxX, clipMaxY,
                 i.weightGrowth * cmd.lengthScale,
                 quad.rotCos,
-                quad.rotSin
+                quad.rotSin,
+                i.blend,
+                cmd.localHeight > 0.0 ? cmd.localWidth / cmd.localHeight : 0.0
             )
             drawn = 1
         }
@@ -262,12 +314,12 @@ function caSubmitDrawItem(item: borrow CADrawItem, backend: borrow mut KiraGraph
     match item.content {
         Empty -> {}
         Solid(s) -> {
-            caDrawSurfaceQuad(item.quad, item.cornerRadius, item.borderWidth, fill, border, item.clipMinX, item.clipMinY, item.clipMaxX, item.clipMaxY, Float(s.shapeKind), Color { a: 0.0 }, 0.0, backend)
+            caDrawSurfaceQuad(item.quad, item.cornerRadius, item.borderWidth, fill, border, item.clipMinX, item.clipMinY, item.clipMaxX, item.clipMaxY, s.shapeKind, Color { a: 0.0 }, 0.0, backend)
             drawn = 1
         }
         Gradient(g) -> {
             let far = caColorToFoundation(g.end, item.opacity)
-            caDrawSurfaceQuad(item.quad, item.cornerRadius, item.borderWidth, fill, border, item.clipMinX, item.clipMinY, item.clipMaxX, item.clipMaxY, Float(g.shapeKind), far, Float(g.axis), backend)
+            caDrawSurfaceQuad(item.quad, item.cornerRadius, item.borderWidth, fill, border, item.clipMinX, item.clipMinY, item.clipMaxX, item.clipMaxY, g.shapeKind, far, Float(g.axis), backend)
             drawn = 1
         }
         Glass(g) -> {
@@ -279,24 +331,7 @@ function caSubmitDrawItem(item: borrow CADrawItem, backend: borrow mut KiraGraph
             drawn = 1
         }
         Text(t) -> {
-            let frame = caQuadFrame(item.quad)
-            backend.drewVisibleUi = true
-            backend.batch.pushText(
-                backend.graphics,
-                t.content,
-                frame.x, frame.y, frame.width, frame.height,
-                fill, t.size * item.textScale, t.weight,
-                item.clipMinX, item.clipMinY, item.clipMaxX, item.clipMaxY,
-                t.adaptiveInk,
-                item.glassWash,
-                item.glassWashLuma,
-                t.inkLeft * item.textScale,
-                t.inkRight * item.textScale,
-                t.inkTop * item.textScale,
-                t.inkBottom * item.textScale,
-                item.quad.rotCos,
-                item.quad.rotSin
-            )
+            caDrawText(t, item.quad, item.localWidth, item.textScale, fill, item.clipMinX, item.clipMinY, item.clipMaxX, item.clipMaxY, item.glassWash, item.glassWashLuma, backend)
             drawn = 1
         }
         Texture(x) -> {
@@ -323,7 +358,9 @@ function caSubmitDrawItem(item: borrow CADrawItem, backend: borrow mut KiraGraph
                 item.clipMinX, item.clipMinY, item.clipMaxX, item.clipMaxY,
                 i.weightGrowth * item.lengthScale,
                 item.quad.rotCos,
-                item.quad.rotSin
+                item.quad.rotSin,
+                i.blend,
+                item.localHeight > 0.0 ? item.localWidth / item.localHeight : 0.0
             )
             drawn = 1
         }

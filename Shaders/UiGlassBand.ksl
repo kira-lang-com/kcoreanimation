@@ -132,6 +132,8 @@ type VertexOut {
     // varying already costs a whole four-component slot, so the fourth rides
     // free — and this record has no slot to spare.
     let glow: Float4
+    // The edge light's two greys: what its bands add, what the top one burns.
+    let light: Float2
 }
 
 type FragmentOut {
@@ -190,6 +192,7 @@ shader UiGlassBand {
             out.wash = Float4(v.washUpperR, v.washUpperG, v.washUpperB, v.washUpperAlpha)
             out.washBlend = Float2(v.washBlend, v.washUpperBlend)
             out.glow = Float4(v.gradientR, v.gradientG, v.gradientB, v.shapeKind)
+            out.light = Float2(v.gradientA, v.gradientAxis)
             return out
         }
     }
@@ -297,6 +300,14 @@ shader UiGlassBand {
                 rim = clamp(rimWidth - inside, 0.0, 1.0) * input.borderInk.z
             }
             rgb = mix(rgb, Float3(rimInk, rimInk, rimInk), rim)
+
+            if input.light.x > 0.0 || input.light.y < 1.0 {
+                let lightReach = Float2(0.0, GlassCommon.edgeLightOffset)
+                let unfused = Float4(0.0, 0.0, 0.0, 0.0)
+                let topHole = GlassCommon.morphedDistanceInflated(input.local - lightReach, input.hsize, input.shape.x, unfused, 0.0, 0.0, GlassCommon.edgeLightSpread, input.glow.w)
+                let bottomHole = GlassCommon.morphedDistanceInflated(input.local + lightReach, input.hsize, input.shape.x, unfused, 0.0, 0.0, GlassCommon.edgeLightSpread, input.glow.w)
+                rgb = GlassCommon.edgeLight(rgb, topHole, bottomHole, input.light.x, input.light.y)
+            }
 
             let glassRgb = clamp(rgb, Float3(0.0, 0.0, 0.0), Float3(1.0, 1.0, 1.0))
             let over = 1.0 - cov

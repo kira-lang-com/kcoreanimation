@@ -407,15 +407,16 @@ struct CALayerTree {
         return
     }
 
-    function setHit(id: LayerId, hit: Bool, hitKey: Int) {
+    function setHit(id: LayerId, hit: Bool, interactive: Bool, hitKey: Int) {
         var idx = LayerSlot(0)
         match self.nodeSlot(id) {
             None -> { return }
             Some(slot) -> { idx = slot }
         }
         var node = self.nodes[idx.raw]
-        if node.hit != hit || node.hitKey != hitKey {
+        if node.hit != hit || node.interactive != interactive || node.hitKey != hitKey {
             node.hit = hit
+            node.interactive = interactive
             node.hitKey = hitKey
             self.nodes[idx.raw] = node
         }

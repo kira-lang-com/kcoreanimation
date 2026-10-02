@@ -9,6 +9,10 @@ import Foundation
 // untransformed bounds. That is what makes a rotated or scaled layer pressable
 // exactly where it is drawn — an axis-aligned bounds check against the projected
 // box would accept the corners of the bounding rectangle a rotation leaves empty.
+//
+// A press is also reported against the interactive surface it landed on, if
+// any: the topmost `interactive` layer under the point, whatever control is on
+// top of it. The control acts; the surface moves with the press.
 
 struct CAHitResult {
     var hit: Bool = false
@@ -18,6 +22,13 @@ struct CAHitResult {
     // wants the local position (a slider thumb, a canvas).
     var localX: Float = 0.0
     var localY: Float = 0.0
+    // The interactive surface under the point, zero when there is none: its
+    // key, where the point landed in its own coordinates, and its size.
+    var surfaceKey: Int = 0
+    var surfaceX: Float = 0.0
+    var surfaceY: Float = 0.0
+    var surfaceWidth: Float = 0.0
+    var surfaceHeight: Float = 0.0
 }
 
 function caDrawItemContainsPoint(item: borrow CADrawItem, x: Float, y: Float) -> Bool {
@@ -37,22 +48,38 @@ function caDrawItemContainsPoint(item: borrow CADrawItem, x: Float, y: Float) ->
 }
 
 function caHitTest(items: borrow [CADrawItem], x: Float, y: Float) -> CAHitResult {
-    // Back to front: the last item that covers the point is the one on top.
+    // Back to front: the last item that covers the point is the one on top. The
+    // walk goes on past the control for the surface it sits on, which is
+    // painted before it.
+    var result = CAHitResult {}
+    var surfaceFound = false
     for k in 0..items.count {
         let item = items[items.count - 1 - k]
-        if !item.hit || !caDrawItemContainsPoint(item, x, y) {
+        let wanted = (item.hit && !result.hit) || (item.interactive && !surfaceFound)
+        if !wanted || !caDrawItemContainsPoint(item, x, y) {
             continue
         }
         let inv = caInvert(item.transform)
-        return CAHitResult {
-            hit: true,
-            layer: item.layer,
-            hitKey: item.hitKey,
-            localX: caApplyX(inv, x, y),
-            localY: caApplyY(inv, x, y)
+        if item.hit && !result.hit {
+            result.hit = true
+            result.layer = item.layer
+            result.hitKey = item.hitKey
+            result.localX = caApplyX(inv, x, y)
+            result.localY = caApplyY(inv, x, y)
+        }
+        if item.interactive && !surfaceFound {
+            surfaceFound = true
+            result.surfaceKey = item.hitKey
+            result.surfaceX = caApplyX(inv, x, y)
+            result.surfaceY = caApplyY(inv, x, y)
+            result.surfaceWidth = item.localWidth
+            result.surfaceHeight = item.localHeight
+        }
+        if result.hit && surfaceFound {
+            return result
         }
     }
-    return CAHitResult {}
+    return result
 }
 
 // Hit test straight from the tree: flatten this frame's presentation and pick.

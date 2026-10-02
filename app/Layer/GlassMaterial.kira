@@ -32,4 +32,11 @@ struct CAGlassMaterial {
     let washUpperB: Float = 1.0
     let washUpperAlpha: Float = 0.0
     let washUpperBlend: Float = 0.0
+
+    // The light along the top and bottom edges: two soft bands hugging those
+    // edges, added in `edgeLightDodge`'s grey, and a broader one under the top
+    // edge burned in `edgeLightBurn`'s. Black adds nothing and white burns
+    // nothing, so the defaults are glass without it.
+    let edgeLightDodge: Float = 0.0
+    let edgeLightBurn: Float = 1.0
 }

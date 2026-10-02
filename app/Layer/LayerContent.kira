@@ -112,6 +112,9 @@ struct CAText {
     var color: CAColor = CAColor {}
     var size: Float = 15.0
     var weight: Float = 400.0
+    // Whether a run wider than its bounds breaks onto further lines at word
+    // boundaries, as a wrapped text layer does, rather than running past them.
+    var wraps: Bool = false
     var adaptiveInk: Bool = false
     var inkLeft: Float = 0.0
     var inkRight: Float = 0.0
@@ -127,10 +130,38 @@ struct CATexture {
     var cornerRadius: Float = 0.0
 }
 
+// How ink meets what is already drawn under it. A linear burn darkens what is
+// beneath by how far the ink is from white, and a linear dodge lightens it by
+// the ink itself — which is how Apple sets a symbol into glass: the glass shows
+// through the glyph rather than being painted over by it.
+@Derive(Equatable)
+enum CABlendMode {
+    Normal
+    LinearBurn
+    LinearDodge
+}
+
+function caBlendModeCode(mode: borrow CABlendMode) -> Int {
+    match mode {
+        Normal -> return 0
+        LinearBurn -> return 1
+        LinearDodge -> return 2
+    }
+}
+
+// Where a blend sends a quad in the batch: its mode's code, in the hundred the
+// blend names. A mode's own codes stay under 100, so a blended quad is never
+// mistaken for another mode, and every code from 100 up draws through a
+// blending pipeline.
+function caBlendModeRoute(mode: borrow CABlendMode) -> Int {
+    return caBlendModeCode(mode) * 100
+}
+
 struct CAIcon {
     var svg: String = ""
     var tint: CAColor = CAColor {}
     var weightGrowth: Float = 0.0
+    var blend: CABlendMode = .Normal
 }
 
 struct CAGlass {
@@ -150,6 +181,101 @@ struct CAGlass {
     var morphRadius: Float = 0.0
     var morphBlend: Float = 0.0
     var shapeKind: Int = 0
+    // What the surface's laid-out size does to it. Glass is one recipe across
+    // every size, and only the compositor knows the size, so the recipe rides
+    // on the content and is applied where the surface is drawn.
+    var sizing: CAGlassSizing = CAGlassSizing {}
+}
+
+// A figure that follows a surface's size: `base + slope * extent`, held
+// between `minimum` and `maximum`, where the extent is the shorter side in
+// points.
+@Derive(Copy)
+struct CAGlassRamp {
+    var base: Float = 0.0
+    var slope: Float = 0.0
+    var minimum: Float = 0.0
+    var maximum: Float = 0.0
+}
+
+function caGlassRampAt(ramp: borrow CAGlassRamp, width: Float, height: Float) -> Float {
+    return clamp(ramp.base + ramp.slope * min(width, height), ramp.minimum, ramp.maximum)
+}
+
+// What a surface's size does to its glass: how much of its blur it shows, the
+// greys its edge burns in, and how its top and bottom edges are lit. The default leaves a surface exactly as its
+// `blur` and material say, which is glass that does not change with size.
+@Derive(Copy)
+struct CAGlassSizing {
+    var blur: CAGlassRamp = CAGlassRamp { base: 1.0, minimum: 1.0, maximum: 1.0 }
+    // The greys the edge's ring and side lines burn in at this size. A ramp
+    // that tops out at zero states none, and the material's own grey stands.
+    var ringTone: CAGlassRamp = CAGlassRamp {}
+    var sideTone: CAGlassRamp = CAGlassRamp {}
+    // The greys the top and bottom edges are lit in at this size, read the
+    // same way.
+    var lightDodge: CAGlassRamp = CAGlassRamp {}
+    var lightBurn: CAGlassRamp = CAGlassRamp {}
+}
+
+// The blur a surface this size draws with.
+function caGlassBlurAt(glass: borrow CAGlass, width: Float, height: Float) -> Float {
+    return glass.blur * caGlassRampAt(glass.sizing.blur, width, height)
+}
+
+// The grey one of the edge's lines burns in at this size: the sizing's, when
+// it states one, and the material's otherwise.
+function caGlassToneAt(ramp: borrow CAGlassRamp, material: Float, width: Float, height: Float) -> Float {
+    if ramp.maximum <= 0.0 {
+        return material
+    }
+    return caGlassRampAt(ramp, width, height)
+}
+
+// The material a surface this size shades with: its own, with the edge's
+// greys and its light taken at the surface's size.
+function caGlassMaterialAt(glass: borrow CAGlass, width: Float, height: Float) -> CAGlassMaterial {
+    let material = glass.material
+    return CAGlassMaterial {
+        edgeStrokeStrength: material.edgeStrokeStrength,
+        edgeStrokeDarken: material.edgeStrokeDarken,
+        edgeStrokePeak: material.edgeStrokePeak,
+        edgeStrokeFade: material.edgeStrokeFade,
+        sheenStrength: material.sheenStrength,
+        lensMaxBend: material.lensMaxBend,
+        refractionReach: material.refractionReach,
+        blurNearSplit: material.blurNearSplit,
+        borderSpread: material.borderSpread,
+        borderSideOffset: material.borderSideOffset,
+        borderSideSpread: material.borderSideSpread,
+        borderGrey: caGlassToneAt(glass.sizing.ringTone, material.borderGrey, width, height),
+        borderSideGrey: caGlassToneAt(glass.sizing.sideTone, material.borderSideGrey, width, height),
+        innerRimStrength: material.innerRimStrength,
+        innerRimWidth: material.innerRimWidth,
+        washBlend: material.washBlend,
+        washUpperR: material.washUpperR,
+        washUpperG: material.washUpperG,
+        washUpperB: material.washUpperB,
+        washUpperAlpha: material.washUpperAlpha,
+        washUpperBlend: material.washUpperBlend,
+        edgeLightDodge: caGlassToneAt(glass.sizing.lightDodge, material.edgeLightDodge, width, height),
+        edgeLightBurn: caGlassToneAt(glass.sizing.lightBurn, material.edgeLightBurn, width, height)
+    }
+}
+
+function caGlassRampSignature(ramp: borrow CAGlassRamp) -> Int {
+    return Int(round(ramp.base * 1000.0)) * 3
+        + Int(round(ramp.slope * 100000.0)) * 5
+        + Int(round(ramp.minimum * 1000.0)) * 7
+        + Int(round(ramp.maximum * 1000.0)) * 11
+}
+
+function caGlassSizingSignature(sizing: borrow CAGlassSizing) -> Int {
+    return caGlassRampSignature(sizing.blur) * 13
+        + caGlassRampSignature(sizing.ringTone) * 17
+        + caGlassRampSignature(sizing.sideTone) * 19
+        + caGlassRampSignature(sizing.lightDodge) * 23
+        + caGlassRampSignature(sizing.lightBurn) * 29
 }
 
 // `axis`: 0 none, 1 down, 2 across (leading→trailing), 3 corner→corner. `start`
@@ -216,6 +342,8 @@ function caGlassMaterialSignature(material: borrow CAGlassMaterial) -> Int {
         + Int(round(material.washUpperB * 1000.0)) * 71
         + Int(round(material.washUpperAlpha * 1000.0)) * 73
         + Int(round(material.washUpperBlend * 1000.0)) * 79
+        + Int(round(material.edgeLightDodge * 1000.0)) * 83
+        + Int(round(material.edgeLightBurn * 1000.0)) * 89
 }
 
 // A cheap fingerprint of everything about the content that the renderer draws.
@@ -250,11 +378,13 @@ function caContentSignature(content: borrow CAContent) -> Int {
             + i.svg.count * 131
             + caColorCode(i.tint)
             + Int(round(i.weightGrowth * 100.0)) * 17
+            + caBlendModeCode(i.blend) * 19
         Glass(g) -> return 5000000
             + Int(round(g.blur * 1000.0)) * 131
             + Int(round(g.edgeRefraction * 1000.0)) * 31
             + caColorCode(g.tint)
             + caGlassMaterialSignature(g.material)
+            + caGlassSizingSignature(g.sizing)
             + Int(round(g.glowX * 100.0)) * 83
             + Int(round(g.glowY * 100.0)) * 89
             + Int(round(g.glowStrength * 1000.0)) * 97

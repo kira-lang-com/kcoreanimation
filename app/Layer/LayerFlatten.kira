@@ -37,6 +37,7 @@ struct CADrawItem {
     var clips: Bool = false
     var groupOpacity: Bool = false
     var hit: Bool = false
+    var interactive: Bool = false
     var hitKey: Int = 0
 }
 
@@ -102,6 +103,7 @@ function caDrawItemFor(node: borrow CALayerNode, frame: borrow CAWalkFrame, worl
         clips: node.clip,
         groupOpacity: node.groupOpacity,
         hit: node.hit,
+        interactive: node.interactive,
         hitKey: node.hitKey
     }
 }

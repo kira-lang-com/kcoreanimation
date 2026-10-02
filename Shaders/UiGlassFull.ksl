@@ -111,8 +111,9 @@ type VertexOut {
 
     let local: Float2
     let px: Float2
-    // Half extent (xy), and the anti-aliasing band in the quad's own units (z).
-    // A `Float2` varying already costs a whole four-component slot.
+    // Half extent (xy), the anti-aliasing band in the quad's own units (z),
+    // and the grey the edge light adds (w). A `Float2` varying already costs a
+    // whole four-component slot.
     let hsize: Float4
     // Radius, border width, draw mode and edge refraction in one interpolant.
     // A vertex output costs a whole SLOT whatever it carries, and this record
@@ -125,6 +126,8 @@ type VertexOut {
     let clip: Float4
     let edge: Float4
     let lens: Float4
+    // The ring's spread, the side lines' reach and spread, and — in the slot
+    // their grey used to repeat in — the grey the edge light burns.
     let borderStack: Float4
     let borderInk: Float4
     let wash: Float4
@@ -188,14 +191,14 @@ shader UiGlassFull {
             )
             out.local = Float2(mix(v.localX0, v.localX1, right), mix(v.localY0, v.localY1, bottom))
             out.px = Float2(mix(v.pxX0, v.pxX1, right), mix(v.pxY0, v.pxY1, bottom))
-            out.hsize = Float4(v.halfW, v.halfH, v.materialSpare2, 0.0)
+            out.hsize = Float4(v.halfW, v.halfH, v.materialSpare2, v.gradientA)
             out.shape = Float4(v.radius, v.borderWidth, v.mode, v.edgeRefraction)
             out.fill = Float4(v.fillR, v.fillG, v.fillB, v.fillA)
             out.border = Float4(v.borderR, v.borderG, v.borderB, v.borderA)
             out.clip = Float4(v.clipMinX, v.clipMinY, v.clipMaxX, v.clipMaxY)
             out.edge = Float4(v.edgeStrokeStrength, v.edgeStrokeDarken, v.edgeStrokePeak, v.edgeStrokeFade)
             out.lens = Float4(v.sheenStrength, v.lensMaxBend, v.refractionReach, v.blurNearSplit)
-            out.borderStack = Float4(v.borderSpread, v.borderSideOffset, v.borderSideSpread, v.borderGrey)
+            out.borderStack = Float4(v.borderSpread, v.borderSideOffset, v.borderSideSpread, v.gradientAxis)
             out.borderInk = Float4(v.borderGrey, v.borderSideGrey, v.innerRimStrength, v.innerRimWidth)
             out.wash = Float4(v.washUpperR, v.washUpperG, v.washUpperB, v.washUpperAlpha)
             out.washMorph = Float4(v.washBlend, v.washUpperBlend, v.morphRadius, v.morphBlend)
@@ -268,13 +271,13 @@ shader UiGlassFull {
             let onlyRing = ring * (1.0 - pairBand)
             let onlyPair = pairBand * (1.0 - ring)
             let bothBands = ring * pairBand
-            let inkOnce = ringGrey
-            let inkTwice = ringGrey * ringGrey
+            // Each line burns in its own grey — the ring in the ring's, the
+            // side lines in theirs — and where they cross, in both.
             let sideGrey = input.borderInk.y
             let hairline = stacked
             shadowAlpha = hairline
             let coveredArea = max(stacked, 0.0001)
-            let inkLevel = (inkOnce * (onlyRing + onlyPair) + inkTwice * bothBands) / coveredArea
+            let inkLevel = (ringGrey * onlyRing + sideGrey * onlyPair + ringGrey * sideGrey * bothBands) / coveredArea
             let gpOutside = input.local / Float2(input.hsize.x, input.hsize.y)
             let uvOutside = Float2(
                 input.border.x + gpOutside.x * input.border.z,
@@ -366,6 +369,15 @@ shader UiGlassFull {
                 rim = clamp(rimWidth - inside, 0.0, 1.0) * input.borderInk.z
             }
             rgb = mix(rgb, Float3(rimInk, rimInk, rimInk), rim)
+
+            let lightDodge = input.hsize.w
+            let lightBurn = input.borderStack.w
+            if lightDodge > 0.0 || lightBurn < 1.0 {
+                let lightReach = Float2(0.0, GlassCommon.edgeLightOffset)
+                let topHole = GlassCommon.morphedDistanceInflated(input.local - lightReach, Float2(input.hsize.x, input.hsize.y), input.shape.x, input.morph, morphR, morphK, GlassCommon.edgeLightSpread, corner)
+                let bottomHole = GlassCommon.morphedDistanceInflated(input.local + lightReach, Float2(input.hsize.x, input.hsize.y), input.shape.x, input.morph, morphR, morphK, GlassCommon.edgeLightSpread, corner)
+                rgb = GlassCommon.edgeLight(rgb, topHole, bottomHole, lightDodge, lightBurn)
+            }
 
             let glassRgb = clamp(rgb, Float3(0.0, 0.0, 0.0), Float3(1.0, 1.0, 1.0))
             let over = 1.0 - cov

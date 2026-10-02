@@ -57,6 +57,43 @@ struct MotionPullState {
     // stopped it. The rubber band's scale — a small control wants a small one
     // or it will follow the finger across the screen.
     var reach: Float = 120.0
+    // The element's size: the swell is a fixed rise across its shorter side,
+    // and how far it has been pulled is measured against it, axis by axis, for
+    // the lean.
+    var width: Float = 120.0
+    var height: Float = 120.0
+}
+
+// How far glass follows a pull, as a share of its shorter side. The platform's
+// capsule, dragged about, travels about ten points at most on a 44-point side.
+function motionPullReachShare() -> Float {
+    return 0.25
+}
+
+// How an element leans toward where it has been pulled, held there or not.
+//
+// The pull is measured against the element's own size on each axis, and the
+// axis pulled further for its size wins by the difference: the element grows
+// along it by `motionPullLeanAlong` of that and narrows across it by
+// `motionPullLeanAcross`. So a wide capsule pulled down a little goes tall and
+// narrow, pulled sideways just as far barely changes, and pulled diagonally
+// leans the way of its short side. Read off the platform's back-and-forward
+// capsule, 112 by 52 held: eleven points down, 0.80 wide and 1.16 tall; nine to
+// the side, 1.06 and 0.94; nine each way, 0.91 and 1.09.
+function motionPullLeanAlong() -> Float {
+    return 0.8
+}
+
+function motionPullLeanAcross() -> Float {
+    return 1.0
+}
+
+// Sizes the pull to the element it moves.
+function motionPullFit(state: borrow mut MotionPullState, width: Float, height: Float) {
+    state.width = max(width, 1.0)
+    state.height = max(height, 1.0)
+    state.reach = min(state.width, state.height) * motionPullReachShare()
+    return
 }
 
 // What a pulled element should be drawn with.
@@ -68,9 +105,11 @@ struct MotionDeformation {
     // Where the element sits, relative to where layout put it.
     let x: Float = 0.0
     let y: Float = 0.0
-    // The gel: greater than one along the direction of travel, less than one
-    // across it. Volume-preserving, so the element never looks like it is
-    // simply growing.
+    // The lean: the element's extent on each axis, relative to its size,
+    // greater than one along the way it is pulled and less across it. It is
+    // applied last, about the element's centre, to the whole element as it was
+    // drawn — what it holds included — while its box stays where layout put
+    // it, so nothing around it moves.
     let scaleX: Float = 1.0
     let scaleY: Float = 1.0
     // The swell under the fingertip, applied on top of the stretch.
@@ -239,7 +278,7 @@ function motionStretchLimit() -> Float {
     return 0.2
 }
 
-// The scale a press lifts an element to, given how big it is along that axis.
+// The scale a press lifts an element to, given its shorter side.
 //
 // It GROWS. A control that shrank under a press reads as a key being pushed
 // into a surface; glass comes up to meet the finger. The rise is a fixed number
@@ -252,34 +291,27 @@ function motionPressLiftFor(extent: Float) -> Float {
 function motionDeformationFor(state: borrow MotionPullState, press: Float) -> MotionDeformation {
     let stretch = state.stretchAmount
     let speed = hypot(state.velocityX, state.velocityY)
-    // Along the direction of travel, and across it. With no motion there is no
-    // direction, and the element is simply undeformed.
-    var alongX = 0.0
-    var alongY = 0.0
+    let pressScale = 1.0 + (motionPressLiftFor(min(state.width, state.height)) - 1.0) * press
+    // Which way it leans, and how hard: how far it has been pulled on each axis
+    // for its size there, swollen as it is now, and the speed stretching it
+    // along the way it is moving. Positive leans it tall, negative wide.
+    var lean = abs(state.y) / (state.height * pressScale) - abs(state.x) / (state.width * pressScale)
     if speed > 0.0001 {
-        alongX = abs(state.velocityX) / speed
-        alongY = abs(state.velocityY) / speed
+        lean += stretch * (abs(state.velocityY) - abs(state.velocityX)) / speed
     }
-    // Volume preserving: what an axis gains, the other loses, so the element
-    // stays the same size and only changes shape.
-    // What one axis gains, the other loses by the SAME factor rather than by a
-    // weighted share of it: the reciprocal is what keeps the area constant, so
-    // the element only ever changes shape and never appears to grow.
-    let along = 1.0 + stretch * (alongX - alongY)
-    var scaleX = along
-    var scaleY = 1.0 / along
-    if alongY > alongX {
-        let across = 1.0 + stretch * (alongY - alongX)
-        scaleX = 1.0 / across
-        scaleY = across
+    var scaleX = 1.0 + motionPullLeanAlong() * (0.0 - lean)
+    var scaleY = 1.0 - motionPullLeanAcross() * (0.0 - lean)
+    if lean > 0.0 {
+        scaleX = 1.0 - motionPullLeanAcross() * lean
+        scaleY = 1.0 + motionPullLeanAlong() * lean
     }
     return MotionDeformation {
         x: state.x,
         y: state.y,
         scaleX: max(scaleX, 0.5),
         scaleY: max(scaleY, 0.5),
-        pressScale: 1.0 + (motionPressLiftFor(state.reach) - 1.0) * press,
-        intensity: min(stretch / motionStretchLimit() + press * 0.5, 1.0)
+        pressScale: pressScale,
+        intensity: min(abs(lean) + press * 0.5, 1.0)
     }
 }
 
@@ -295,6 +327,11 @@ function motionPullCommitted(state: borrow MotionPullState, threshold: Float) ->
 // Whether the element still needs frames.
 function motionPullMoving(state: borrow MotionPullState) -> Bool {
     if state.held || state.returning {
+        return true
+    }
+    // Let go without a pull, the swell still has its overshoot to settle.
+    let press = motionSpringSample(state.press, state.press.elapsed)
+    if !motionSpringSettled(state.press, press, motionSpringEpsilon()) {
         return true
     }
     return state.stretchAmount > 0.0005

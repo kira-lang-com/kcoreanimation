@@ -29,6 +29,8 @@ function uiPipelineForQuad(
     if requiresGeneric {
         return state.pipeline
     }
+    if modeCode == 110 && state.glyphBurnPipeline.id != 0 { return state.glyphBurnPipeline }
+    if modeCode == 210 && state.glyphDodgePipeline.id != 0 { return state.glyphDodgePipeline }
     if fastRuns {
         if modeCode == 0 { return state.rectPipeline }
         if modeCode == 10 { return state.glyphPipeline }
@@ -115,7 +117,16 @@ extend UiBatch {
             }
             scan += 1
         }
-        let specialized = (glassSplit || fastRuns || externalSplit) && completeModes
+        // A burned or dodged icon has its own blending, which the generic
+        // pipeline's one draw cannot give it.
+        var blendSplit = false
+        var blendScan = 0
+        while blendScan < quadCount && !blendSplit && completeModes {
+            let scannedMode = state.streams[modeStream.raw].quadModes[blendScan]
+            blendSplit = scannedMode >= 100
+            blendScan += 1
+        }
+        let specialized = (glassSplit || fastRuns || externalSplit || blendSplit) && completeModes
         if state.probeModes {
             print(676766)
             print(modeStream.raw)

@@ -130,15 +130,22 @@ function foundationTextMeasure(content: borrow String, size: Float, weight: Floa
         width = foundationTextIntrinsicWidth(size: size, characterCount: content.count)
     }
 
-    // The height is the box the RASTERIZER treats as a full line, and that box
-    // is `ascent + descent` — the two metrics it places the baseline from. The
-    // face's reported line height is a different number, and where it is the
-    // smaller of the two the rasterizer decides the box is tighter than a line
-    // and falls back to centring the run's INK instead. That fallback exists for
-    // a leaf deliberately sized under a line; reaching it by accident is how
-    // "Hide" ends up a point below "Copy" beside it, because one of them has a
-    // descender and the other does not. Ask for whichever is larger and the
-    // fallback is only ever reached on purpose.
+    return Size {
+        width: width,
+        height: foundationTextLineBox(size, weight)
+    }
+}
+
+// The height of one line of a run: the box the RASTERIZER treats as a full line,
+// which is `ascent + descent` — the two metrics it places the baseline from. The
+// face's reported line height is a different number, and where it is the smaller
+// of the two the rasterizer decides the box is tighter than a line and falls
+// back to centring the run's INK instead. That fallback exists for a leaf
+// deliberately sized under a line; reaching it by accident is how "Hide" ends up
+// a point below "Copy" beside it, because one of them has a descender and the
+// other does not. Ask for whichever is larger and the fallback is only ever
+// reached on purpose.
+function foundationTextLineBox(size: Float, weight: Float) -> Float {
     var height = foundationTextRunLineHeight(size: size, weight: weight)
     let lineBox = foundationTextAscent(size, weight) + foundationTextDescent(size, weight)
     if lineBox > height {
@@ -147,10 +154,59 @@ function foundationTextMeasure(content: borrow String, size: Float, weight: Floa
     if height <= 0.0 {
         height = foundationTextIntrinsicHeight(size: size)
     }
+    return height
+}
 
+// The lines a run breaks into to fit `width`: as many words on each line as
+// fit, broken at the spaces between them. A word wider than the line stands on
+// a line of its own rather than being cut, and a run that fits is one line.
+//
+// One function for both sides of a wrapped text: layout asks it how tall the
+// text stands at a width, and the compositor asks it what to draw, so the box
+// and the ink cannot disagree about where a line ends.
+function foundationTextLines(content: borrow String, size: Float, weight: Float, width: Float) -> [String] {
+    var lines: [String] = []
+    let codes = foundationStringToCodepoints(content)
+    var lineStart = 0
+    // The end of the longest prefix of this line known to fit, at a space.
+    var fitEnd = -1
+    var i = 0
+    while i <= codes.count {
+        if i < codes.count && codes[i] != 32 {
+            i += 1
+        } else if foundationTextRunWidth(content: foundationStringFromCodepoints(codes, lineStart, i), size: size, weight: weight) <= width {
+            fitEnd = i
+            i += 1
+        } else if fitEnd > lineStart {
+            // Break at the last space that fitted, and measure this word again
+            // at the start of the next line.
+            lines.append(foundationStringFromCodepoints(codes, lineStart, fitEnd))
+            lineStart = fitEnd + 1
+            fitEnd = -1
+        } else {
+            lines.append(foundationStringFromCodepoints(codes, lineStart, i))
+            lineStart = i + 1
+            fitEnd = -1
+            i += 1
+        }
+    }
+    if lineStart < codes.count {
+        lines.append(foundationStringFromCodepoints(codes, lineStart, codes.count))
+    }
+    return move lines
+}
+
+// The box a run takes when it wraps to `width`: its widest line across, and a
+// line box for every line down.
+function foundationTextWrappedSize(content: borrow String, size: Float, weight: Float, width: Float) -> Size {
+    let lines = foundationTextLines(content, size, weight, width)
+    var widest = 0.0
+    for line in lines {
+        widest = max(widest, foundationTextRunWidth(content: line, size: size, weight: weight))
+    }
     return Size {
-        width: width,
-        height: height
+        width: widest,
+        height: foundationTextLineBox(size, weight) * max(Float(lines.count), 1.0)
     }
 }
 

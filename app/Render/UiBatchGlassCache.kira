@@ -55,6 +55,8 @@ struct GlassSurfaceKey {
     var washUpperAlpha: Float = 0.0
     var washUpperBlend: Float = 0.0
     var blurNearSplit: Float = 0.0
+    var edgeLightDodge: Float = 0.0
+    var edgeLightBurn: Float = 0.0
     var lensMaxBend: Float = 0.0
     var refractionReach: Float = 0.0
     var viewportWidth: Float = 0.0

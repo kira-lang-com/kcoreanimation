@@ -1,5 +1,63 @@
 import Foundation
 
+// The colour a described layer's fill channel animates to.
+//
+// One channel carries every colour a node draws in: a solid's fill, a run's ink,
+// a glyph's tint, glass's tint, a gradient's first stop. A content that states
+// its colour is drawn in it; `backgroundColor` is the fill of a layer whose
+// content states none. Applying the background over the content's own colour
+// is what painted every label, glyph and transparent row in the description's
+// default.
+function caDescribedFill(layer: borrow CALayerDescription) -> CAColor {
+    match layer.content {
+        Solid(s) -> return s.fill
+        Text(t) -> return t.color
+        Icon(i) -> return i.tint
+        Glass(g) -> return g.tint
+        Gradient(r) -> return r.start
+        Texture(x) -> return layer.backgroundColor
+        Empty -> return layer.backgroundColor
+    }
+}
+
+// A solid states its own outline: its corner, its border and that border's
+// width. Every other content takes the layer's.
+function caDescribedCornerRadius(layer: borrow CALayerDescription) -> Float {
+    match layer.content {
+        Solid(s) -> return s.cornerRadius
+        Text(t) -> return layer.cornerRadius
+        Icon(i) -> return layer.cornerRadius
+        Glass(g) -> return layer.cornerRadius
+        Gradient(r) -> return layer.cornerRadius
+        Texture(x) -> return layer.cornerRadius
+        Empty -> return layer.cornerRadius
+    }
+}
+
+function caDescribedBorderWidth(layer: borrow CALayerDescription) -> Float {
+    match layer.content {
+        Solid(s) -> return s.borderWidth
+        Text(t) -> return layer.borderWidth
+        Icon(i) -> return layer.borderWidth
+        Glass(g) -> return layer.borderWidth
+        Gradient(r) -> return layer.borderWidth
+        Texture(x) -> return layer.borderWidth
+        Empty -> return layer.borderWidth
+    }
+}
+
+function caDescribedBorderColor(layer: borrow CALayerDescription) -> CAColor {
+    match layer.content {
+        Solid(s) -> return s.border
+        Text(t) -> return layer.borderColor
+        Icon(i) -> return layer.borderColor
+        Glass(g) -> return layer.borderColor
+        Gradient(r) -> return layer.borderColor
+        Texture(x) -> return layer.borderColor
+        Empty -> return layer.borderColor
+    }
+}
+
 function caApplyLayerDescription(tree: borrow mut CALayerTree, id: LayerId, layer: borrow CALayerDescription) {
     tree.setContent(id, layer.content)
     tree.setPosition(id, layer.position.x, layer.position.y)
@@ -8,14 +66,14 @@ function caApplyLayerDescription(tree: borrow mut CALayerTree, id: LayerId, laye
     tree.setScale(id, layer.scaleX, layer.scaleY)
     tree.setRotation(id, layer.rotation)
     tree.setAnchor(id, layer.anchorPoint.x, layer.anchorPoint.y)
-    tree.setCornerRadius(id, layer.cornerRadius)
-    tree.setBorderWidth(id, layer.borderWidth)
-    tree.setFillColor(id, layer.backgroundColor)
-    tree.setBorderColor(id, layer.borderColor)
+    tree.setCornerRadius(id, caDescribedCornerRadius(layer))
+    tree.setBorderWidth(id, caDescribedBorderWidth(layer))
+    tree.setFillColor(id, caDescribedFill(layer))
+    tree.setBorderColor(id, caDescribedBorderColor(layer))
     tree.setClip(id, layer.clipsChildren)
     tree.setRenderTarget(id, layer.renderTarget, RenderTargetId(0))
     tree.setCapturesBackdrop(id, layer.capturesBackdrop)
-    tree.setHit(id, layer.hittable, layer.hitKey)
+    tree.setHit(id, layer.hittable, layer.interactive, layer.hitKey)
     tree.setLevel(id, layer.level)
     return
 }
@@ -26,7 +84,13 @@ function caReconcileLayer(tree: borrow mut CALayerTree, parent: LayerId, layer: 
         id = tree.makeLayer(parent, layer.key, layer.content)
     }
     tree.reuse(id)
-    caApplyLayerDescription(tree, id, layer)
+    if layer.disablesActions {
+        tree.beginTransaction(caImmediateTiming())
+        caApplyLayerDescription(tree, id, layer)
+        tree.commitTransaction()
+    } else {
+        caApplyLayerDescription(tree, id, layer)
+    }
     var children: [LayerId] = []
     for child in layer.sublayers {
         children.append(caReconcileLayer(tree, id, child))

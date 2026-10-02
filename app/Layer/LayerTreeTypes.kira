@@ -46,6 +46,7 @@ struct CALayerNode {
     var capturesBackdrop: Bool = false
     var level: CALevel = .Inline
     var hit: Bool = false
+    var interactive: Bool = false
     var hitKey: Int = 0
     // Lifted onto the overlay list: skipped by the in-place walk and drawn from
     // the canvas root instead, so it escapes its parent's clip and order.

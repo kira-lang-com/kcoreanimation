@@ -73,25 +73,42 @@ class KiraGraphicsFoundationBackend {
         clipMaxY: Float,
     ) {
         self.drewVisibleUi = true
+        // The surface is drawn at the size it takes on screen, so a layer that
+        // swells under a press swells its glass. The content states its light
+        // and its second shape in the layer's own units from its top-leading
+        // corner: both are carried to screen units from where the surface
+        // starts, as the batch takes them.
+        let width = quad.halfW * 2.0
+        let height = quad.halfH * 2.0
+        var unitX = 1.0
+        var unitY = 1.0
+        if localWidth > 0.0 {
+            unitX = width / localWidth
+        }
+        if localHeight > 0.0 {
+            unitY = height / localHeight
+        }
+        let originX = quad.centerX - width * 0.5
+        let originY = quad.centerY - height * 0.5
         self.batch.pushGlass(
-            quad.centerX - localWidth * 0.5,
-            quad.centerY - localHeight * 0.5,
-            localWidth,
-            localHeight,
+            originX,
+            originY,
+            width,
+            height,
             cornerRadius,
             fill,
-            glass.blur,
+            caGlassBlurAt(glass, width, height),
             glass.edgeRefraction,
             clipMinX, clipMinY, clipMaxX, clipMaxY,
-            glass.material,
-            glass.glowX,
-            glass.glowY,
+            caGlassMaterialAt(glass, width, height),
+            originX + glass.glowX * unitX,
+            originY + glass.glowY * unitY,
             glass.glowStrength,
-            glass.morphX,
-            glass.morphY,
-            glass.morphWidth,
-            glass.morphHeight,
-            glass.morphRadius,
+            originX + glass.morphX * unitX,
+            originY + glass.morphY * unitY,
+            glass.morphWidth * unitX,
+            glass.morphHeight * unitY,
+            glass.morphRadius * unitY,
             glass.morphBlend,
             Float(glass.shapeKind),
             quad.rotCos,

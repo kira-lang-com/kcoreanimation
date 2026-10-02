@@ -17,7 +17,7 @@ import KiraGraphics
 // whatever the backend emitted. A pipeline looks its functions up BY NAME, and
 // a name written here that does not match leaves the descriptor with a nil
 // vertex function, which Metal rejects at validation.
-function createSpecializedPipeline(graphics: borrow Graphics, label: String, artifact: borrow KslArtifact) -> RenderPipeline {
+function createSpecializedPipeline(graphics: borrow Graphics, label: String, artifact: borrow KslArtifact, preset: BlendPreset = .PremultipliedAlpha) -> RenderPipeline {
     let shader = shaderOrReport(graphics.createShaderFromKslArtifact(label, artifact), "shader")
     return pipelineOrReport(graphics.createRenderPipeline(RenderPipelineDescriptor {
         label: label,
@@ -25,7 +25,7 @@ function createSpecializedPipeline(graphics: borrow Graphics, label: String, art
         vertexEntry: artifact.vertexEntry,
         fragmentEntry: artifact.fragmentEntry,
         vertexLayout: VertexLayout { stride: 0, attributes: [] },
-        colorTargets: [ColorTargetDescriptor { format: .Swapchain, blend: BlendState { enabled: true, preset: .PremultipliedAlpha } }],
+        colorTargets: [ColorTargetDescriptor { format: .Swapchain, blend: BlendState { enabled: true, preset: preset } }],
         depthStencil: DepthStencilDescriptor { depthEnabled: false, depthWriteEnabled: false, depthCompare: .Always, format: .None },
         rasterization: RasterizationDescriptor { cullMode: .None, frontFace: .CounterClockwise },
         primitive: PrimitiveDescriptor { topology: .TriangleList }

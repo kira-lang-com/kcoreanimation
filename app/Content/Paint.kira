@@ -191,7 +191,9 @@ function foundationGlassMaterialWithTint(
         washUpperG: stack.upper.color.g,
         washUpperB: stack.upper.color.b,
         washUpperAlpha: stack.upper.alpha,
-        washUpperBlend: foundationBlendId(stack.upper.blend)
+        washUpperBlend: foundationBlendId(stack.upper.blend),
+        edgeLightDodge: base.edgeLightDodge,
+        edgeLightBurn: base.edgeLightBurn
     }
 }
 
@@ -228,7 +230,9 @@ function foundationGlassMaterialEdgeLit(
             washUpperG: base.washUpperG,
             washUpperB: base.washUpperB,
             washUpperAlpha: base.washUpperAlpha,
-            washUpperBlend: base.washUpperBlend
+            washUpperBlend: base.washUpperBlend,
+            edgeLightDodge: base.edgeLightDodge,
+            edgeLightBurn: base.edgeLightBurn
         }
     }
     return CAGlassMaterial {
@@ -252,7 +256,9 @@ function foundationGlassMaterialEdgeLit(
         washUpperG: base.washUpperG,
         washUpperB: base.washUpperB,
         washUpperAlpha: base.washUpperAlpha,
-        washUpperBlend: base.washUpperBlend
+        washUpperBlend: base.washUpperBlend,
+        edgeLightDodge: base.edgeLightDodge,
+        edgeLightBurn: base.edgeLightBurn
     }
 }
 

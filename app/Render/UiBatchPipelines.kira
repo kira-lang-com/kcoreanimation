@@ -298,6 +298,12 @@ function createBatch(graphics: borrow Graphics) -> NativeState<UiBatchState> {
     }), "copy pipeline")
     state.glassCopyPipeline = copyPipeline
 
+    // Not behind the switch below: the generic pipeline blends everything
+    // over what is under it, so a burned or dodged icon has nowhere else to
+    // draw correctly.
+    state.glyphBurnPipeline = createSpecializedPipeline(graphics, "kira-ui-glyph-burn", ksl!("Shaders/UiGlyph.ksl"), .PremultipliedSubtractive)
+    state.glyphDodgePipeline = createSpecializedPipeline(graphics, "kira-ui-glyph-dodge", ksl!("Shaders/UiGlyph.ksl"), .PremultipliedAdditive)
+
     if environmentIsSet("KIRA_UI_SPECIALIZED_RUNS") {
         state.rectPipeline = createSpecializedPipeline(graphics, "kira-ui-rect-fast", ksl!("Shaders/UiRect.ksl"))
         state.glyphPipeline = createSpecializedPipeline(graphics, "kira-ui-glyph-fast", ksl!("Shaders/UiGlyph.ksl"))

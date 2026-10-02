@@ -16,12 +16,17 @@ extend UiBatch {
         radius: Float, borderWidth: Float,
         fill: borrow Color, border: borrow Color,
         clipMinX: Float, clipMinY: Float, clipMaxX: Float, clipMaxY: Float,
-        shapeMode: Float,
+        shapeKind: Int,
         gradient: borrow Color, gradientAxis: Float,
     ) {
         if halfW <= 0.0 || halfH <= 0.0 {
             return
         }
+        // The layer names its corner by kind; the generic pipeline reads it off
+        // `mode`, where a continuous corner is 0.25. Handing the kind over as the
+        // mode drew a squircle layer as nothing at all.
+        var shapeMode = 0.0
+        if shapeKind != 0 { shapeMode = 0.25 }
         if fill.a <= 0.0 && gradient.a <= 0.0 && (border.a <= 0.0 || borderWidth <= 0.0) {
             return
         }
