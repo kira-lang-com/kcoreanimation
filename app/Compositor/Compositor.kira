@@ -22,14 +22,14 @@ function caColorToFoundation(color: borrow CAColor, opacity: Float) -> Color {
     return Color { r: color.r, g: color.g, b: color.b, a: color.a * opacity }
 }
 
-// The inverse seam: a foundation (graphics) colour as the compositor's own model
-// colour. A toolkit lowers a widget's `FoundationColor` into layer content
+// The inverse seam: a foundation (graphics) color as the compositor's own model
+// color. A toolkit lowers a widget's `FoundationColor` into layer content
 // through this, so the model tree carries `CAColor` and never the graphics type.
 function caColorFromFoundation(color: borrow FoundationColor) -> CAColor {
     return CAColor { r: color.r, g: color.g, b: color.b, a: color.a }
 }
 
-// A gradient command's far colour and axis; a flat fill returns a clear far.
+// A gradient command's far color and axis; a flat fill returns a clear far.
 function caGradientFar(content: borrow CAContent) -> Color {
     match content {
         Gradient(g) -> return Color { r: g.end.r, g: g.end.g, b: g.end.b, a: g.end.a }
@@ -55,13 +55,14 @@ function caGradientAxis(content: borrow CAContent) -> Float {
 }
 
 // Draw a fill/gradient/glass surface as an oriented quad through the batch.
-function caDrawSurfaceQuad(quad: borrow CAOrientedQuad, radius: Float, borderWidth: Float, fill: borrow Color, border: borrow Color, clipMinX: Float, clipMinY: Float, clipMaxX: Float, clipMaxY: Float, shapeKind: Int, gradient: borrow Color, gradientAxis: Float, backend: borrow mut KiraGraphicsFoundationBackend) {
+function caDrawSurfaceQuad(quad: borrow CAOrientedQuad, radius: Float, borderWidth: Float, fill: borrow Color, border: borrow Color, clipMinX: Float, clipMinY: Float, clipMaxX: Float, clipMaxY: Float, clipRadius: Float, clipShapeKind: Int, shapeKind: Int, gradient: borrow Color, gradientAxis: Float, backend: borrow mut KiraGraphicsFoundationBackend) {
     backend.batch.pushLayerQuad(
         quad.centerX, quad.centerY, quad.halfW, quad.halfH,
         quad.rotCos, quad.rotSin,
         radius, borderWidth,
         fill, border,
         clipMinX, clipMinY, clipMaxX, clipMaxY,
+        clipRadius, clipShapeKind,
         shapeKind,
         gradient, gradientAxis
     )
@@ -121,7 +122,7 @@ function caDrawText(
         let pitch = foundationTextLineBox(t.size, t.weight) * textScale
         var index = 0
         for line in lines {
-            // The line box's centre, down the layer's axis from its top edge.
+            // The line box's center, down the layer's axis from its top edge.
             let along = pitch * (Float(index) + 0.5) - frame.height / 2.0
             let centerX = quad.centerX - quad.rotSin * along
             let centerY = quad.centerY + quad.rotCos * along
@@ -184,7 +185,15 @@ function caSubmitCmdAt(
                 if sourcePass.raw >= passTextures.count { return 0 }
                 let texId = passTextures[sourcePass.raw]
                 if texId.raw <= 0 { return 0 }
-                backend.drawTextureFields(bounds, texId, TextureHandle(0), 0.0, cmd.opacity, 0.0)
+                // Drawn inside whatever clips the tree it came from, as the
+                // tree itself would have been.
+                let clip = Rect {
+                    x: max(bounds.x, cmd.clipMinX - originX),
+                    y: max(bounds.y, cmd.clipMinY - originY),
+                    width: min(bounds.x + bounds.width, cmd.clipMaxX - originX) - max(bounds.x, cmd.clipMinX - originX),
+                    height: min(bounds.y + bounds.height, cmd.clipMaxY - originY) - max(bounds.y, cmd.clipMinY - originY)
+                }
+                backend.drawTextureFields(bounds, texId, TextureHandle(0), 0.0, cmd.opacity, 0.0, cmd.blur, move clip, cmd.clipRadius, Float(cmd.clipShapeKind))
                 1
             }
         }
@@ -202,6 +211,7 @@ function caSubmitCmdAt(
             quad.centerX, quad.centerY, quad.halfW, quad.halfH,
             quad.rotCos, quad.rotSin,
             cmd.cornerRadius, cmd.shadowRadius,
+            cmd.shadowOffset, cmd.shadowKnockout,
             fill,
             clipMinX, clipMinY, clipMaxX, clipMaxY,
             cmd.shapeKind
@@ -215,19 +225,23 @@ function caSubmitCmdAt(
     match cmd.content {
         Empty -> {}
         Solid(s) -> {
-            caDrawSurfaceQuad(quad, cmd.cornerRadius, cmd.borderWidth, fill, border, clipMinX, clipMinY, clipMaxX, clipMaxY, s.shapeKind, Color { a: 0.0 }, 0.0, backend)
+            caDrawSurfaceQuad(quad, cmd.cornerRadius, cmd.borderWidth, fill, border, clipMinX, clipMinY, clipMaxX, clipMaxY, cmd.clipRadius, cmd.clipShapeKind, s.shapeKind, Color { a: 0.0 }, 0.0, backend)
             drawn = 1
         }
         Gradient(g) -> {
             let far = caColorToFoundation(g.end, cmd.opacity)
-            caDrawSurfaceQuad(quad, cmd.cornerRadius, cmd.borderWidth, fill, border, clipMinX, clipMinY, clipMaxX, clipMaxY, g.shapeKind, far, Float(g.axis), backend)
+            caDrawSurfaceQuad(quad, cmd.cornerRadius, cmd.borderWidth, fill, border, clipMinX, clipMinY, clipMaxX, clipMaxY, cmd.clipRadius, cmd.clipShapeKind, g.shapeKind, far, Float(g.axis), backend)
             drawn = 1
         }
         Glass(g) -> {
+            // Glass fades as a whole, not by its tint: the tint's alpha is how
+            // much of the blur shows, and thinning it with the layer drew a
+            // fading piece of glass as a sharp, unwashed gray.
             backend.drawRetainedGlass(
                 quad, cmd.localWidth, cmd.localHeight,
-                cmd.cornerRadius, fill, g,
-                clipMinX, clipMinY, clipMaxX, clipMaxY
+                cmd.cornerRadius, caColorToFoundation(cmd.fill, 1.0), g,
+                clipMinX, clipMinY, clipMaxX, clipMaxY,
+                cmd.opacity
             )
             drawn = 1
         }
@@ -314,19 +328,20 @@ function caSubmitDrawItem(item: borrow CADrawItem, backend: borrow mut KiraGraph
     match item.content {
         Empty -> {}
         Solid(s) -> {
-            caDrawSurfaceQuad(item.quad, item.cornerRadius, item.borderWidth, fill, border, item.clipMinX, item.clipMinY, item.clipMaxX, item.clipMaxY, s.shapeKind, Color { a: 0.0 }, 0.0, backend)
+            caDrawSurfaceQuad(item.quad, item.cornerRadius, item.borderWidth, fill, border, item.clipMinX, item.clipMinY, item.clipMaxX, item.clipMaxY, item.clipRadius, item.clipShapeKind, s.shapeKind, Color { a: 0.0 }, 0.0, backend)
             drawn = 1
         }
         Gradient(g) -> {
             let far = caColorToFoundation(g.end, item.opacity)
-            caDrawSurfaceQuad(item.quad, item.cornerRadius, item.borderWidth, fill, border, item.clipMinX, item.clipMinY, item.clipMaxX, item.clipMaxY, g.shapeKind, far, Float(g.axis), backend)
+            caDrawSurfaceQuad(item.quad, item.cornerRadius, item.borderWidth, fill, border, item.clipMinX, item.clipMinY, item.clipMaxX, item.clipMaxY, item.clipRadius, item.clipShapeKind, g.shapeKind, far, Float(g.axis), backend)
             drawn = 1
         }
         Glass(g) -> {
             backend.drawRetainedGlass(
                 item.quad, item.localWidth, item.localHeight,
-                item.cornerRadius, fill, g,
-                item.clipMinX, item.clipMinY, item.clipMaxX, item.clipMaxY
+                item.cornerRadius, caColorToFoundation(item.fill, 1.0), g,
+                item.clipMinX, item.clipMinY, item.clipMaxX, item.clipMaxY,
+                item.opacity
             )
             drawn = 1
         }

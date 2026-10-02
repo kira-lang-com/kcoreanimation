@@ -3,7 +3,7 @@ import KiraLayout
 import Foundation
 
 // The small, view-free runtime the KiraUI describe/reconcile runner reads every
-// frame: the window page colour, the ambient UI context it carries, the frame's
+// frame: the window page color, the ambient UI context it carries, the frame's
 // graphics handle and duration, and the gradient axis a described surface fills
 // along. None of it builds or walks a view tree — it is what the runner asks of
 // the frame and the window, split out from the retired FoundationView renderer.
@@ -19,7 +19,7 @@ function foundationPageColor() -> Color {
     }
 }
 
-// The page a TRANSPARENT window is cleared to: the desktop's key colour, so
+// The page a TRANSPARENT window is cleared to: the desktop's key color, so
 // every pixel the interface does not paint is a hole rather than paper. See
 // KiraGraphics' Public/WindowComposition.kira.
 function foundationTransparentPage() -> Color {

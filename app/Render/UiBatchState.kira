@@ -6,7 +6,7 @@ import KiraGraphics
 // between frames.
 //
 // Split out of `UiBatch.kira`, which was past the file-size ceiling with the
-// declarations and the behaviour in one place. What stayed there is the class
+// declarations and the behavior in one place. What stayed there is the class
 // itself, the fixed sizes and the frame lifecycle; what moved here is the shape
 // of the thing a frame is accumulated into.
 
@@ -229,7 +229,7 @@ struct UiBatchState {
     // Whether a full-bleed opaque quad may be PROMOTED out of the stream and
     // drawn by the background pass instead.
     //
-    // True for a window, where it is a real saving: the page colour covers every
+    // True for a window, where it is a real saving: the page color covers every
     // pixel, so drawing it through the backdrop pipeline costs one fullscreen
     // sample instead of a quad the whole batch then draws over.
     //
@@ -285,6 +285,10 @@ struct UiBatchState {
     // than the one-per-glyph the sub-region path cost on the backend that does.
     var atlasPixels: RawPtr
     var atlasDirty: Bool = false
+    // Whether something failed to find room this frame — in the atlas, or in the
+    // hash that points into it. What did not fit is drawn without ink this once
+    // and is not cached, and the next frame starts the atlas over.
+    var atlasExhausted: Bool = false
     // Whether this session has already announced that it drew real content.
     // The announcement is once per run, and the compositor is the only thing
     // that knows a stream held quads.

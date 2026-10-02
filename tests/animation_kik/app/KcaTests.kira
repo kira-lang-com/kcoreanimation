@@ -107,7 +107,7 @@ construct CaNestedInnerTiming() extends Test {
 }
 
 // Transform-aware hit testing: a 200x100 box at (100,100) rotated 90 degrees
-// about its centre (200,150) spans x[150,250] y[50,250]. (200,240) is inside the
+// about its center (200,150) spans x[150,250] y[50,250]. (200,240) is inside the
 // rotated shape but outside the un-rotated bounds; (285,150) is the reverse.
 construct CaTransformRotatedHit() extends Test {
     test {
@@ -117,7 +117,7 @@ construct CaTransformRotatedHit() extends Test {
         let box = tree.makeLayer(root, 5, .Solid(CASolid {}))
         tree.beginTransaction(caImmediateTiming())
         tree.setFrame(box, 100.0, 100.0, 200.0, 100.0)
-        tree.setHit(box, true, 7)
+        tree.setHit(box, true, true, 7)
         tree.setRotation(box, 1.5707963267948966)
         tree.commitTransaction()
         let inside = caHitTestTree(tree, 200.0, 240.0)
@@ -150,7 +150,7 @@ construct CaClipHitRespected() extends Test {
         tree.setFrame(panel, 100.0, 100.0, 200.0, 200.0)
         tree.setClip(panel, true)
         tree.setFrame(child, 50.0, 50.0, 400.0, 400.0)
-        tree.setHit(child, true, 9)
+        tree.setHit(child, true, true, 9)
         tree.commitTransaction()
         // child world spans (150,150)-(550,550); panel clip is (100,100)-(300,300).
         let inside = caHitTestTree(tree, 250.0, 250.0)
@@ -196,6 +196,35 @@ construct CaReconcileTeardown() extends Test {
     }
     expect {
         let e: Result<Any, TestFailure> = .Ok(1101)
+        return e
+    }
+}
+
+// A layer leaving with a removal is drawn until the removal has run and is gone
+// on the frame it ends, with no reconcile in between to take it out.
+construct CaLeavingLayerGoesWhenItsRemovalEnds() extends Test {
+    test {
+        var tree = caLayerTree()
+        let root = tree.makeLayer(caNoLayer(), 0, .Empty)
+        let leaving = tree.makeLayer(root, 5, .Solid(CASolid {}))
+        let held = tree.makeLayer(leaving, 6, .Solid(CASolid {}))
+        tree.setRemoval(leaving, CARemoval { duration: 0.2 })
+        tree.beginReconcile()
+        tree.reuse(root)
+        tree.endReconcile()
+        var code = 0
+        tree.advance(0.1)
+        if tree.isMounted(leaving) && caFlatten(tree).count == 3 {
+            code = code + 10
+        }
+        tree.advance(0.15)
+        if !tree.isMounted(leaving) && !tree.isMounted(held) && caFlatten(tree).count == 1 {
+            code = code + 1
+        }
+        return code
+    }
+    expect {
+        let e: Result<Any, TestFailure> = .Ok(11)
         return e
     }
 }
@@ -309,6 +338,33 @@ construct CaDeclarativeLayerImmediateReconcileDoesNotAnimate() extends Test {
     }
     expect {
         let e: Result<Any, TestFailure> = .Ok(1)
+        return e
+    }
+}
+
+// A resize takes the new frame at once and leaves a running fade running: the
+// layer is at its new x this frame, and halfway through its fade it is still
+// between the two opacities.
+construct CaAResizeSnapsGeometryAndKeepsAFadeRunning() extends Test {
+    test {
+        var tree = caLayerTree()
+        let root = caReconcileImmediate(tree, CALayerDescription { key: 1, opacity: 0.0 })
+        caReconcile(tree, CALayerDescription { key: 1, opacity: 1.0 })
+        tree.advance(0.1)
+        caReconcileResizing(tree, CALayerDescription { key: 1, opacity: 1.0, position: Point { x: 40.0, y: 0.0 } })
+        tree.advance(0.0)
+        var code = 0
+        if tree.presentationX(root) == 40.0 {
+            code = code + 10
+        }
+        let opacity = tree.presentationOpacity(root)
+        if opacity > 0.0 && opacity < 1.0 {
+            code = code + 1
+        }
+        return code
+    }
+    expect {
+        let e: Result<Any, TestFailure> = .Ok(11)
         return e
     }
 }

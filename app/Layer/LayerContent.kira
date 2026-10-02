@@ -25,13 +25,13 @@ enum CAContent {
     // directive decides whether the compositor opens a backdrop capture for it.
     Glass(CAGlass)
     // A linear gradient fill across the layer's bounds (mode 0 with a far
-    // colour and an axis).
+    // color and an axis).
     Gradient(CAGradient)
 }
 
-// Colour as four unit channels. Its own type rather than KiraGraphics' `Color`
+// Color as four unit channels. Its own type rather than KiraGraphics' `Color`
 // so the model tree, the animation maths and the tests do not pull the graphics
-// package in; the compositor converts to the backend colour at the submit seam.
+// package in; the compositor converts to the backend color at the submit seam.
 @Derive(Copy)
 struct CAColor {
     var r: Float = 0.0
@@ -203,16 +203,16 @@ function caGlassRampAt(ramp: borrow CAGlassRamp, width: Float, height: Float) ->
 }
 
 // What a surface's size does to its glass: how much of its blur it shows, the
-// greys its edge burns in, and how its top and bottom edges are lit. The default leaves a surface exactly as its
+// grays its edge burns in, and how its top and bottom edges are lit. The default leaves a surface exactly as its
 // `blur` and material say, which is glass that does not change with size.
 @Derive(Copy)
 struct CAGlassSizing {
     var blur: CAGlassRamp = CAGlassRamp { base: 1.0, minimum: 1.0, maximum: 1.0 }
-    // The greys the edge's ring and side lines burn in at this size. A ramp
-    // that tops out at zero states none, and the material's own grey stands.
+    // The grays the edge's ring and side lines burn in at this size. A ramp
+    // that tops out at zero states none, and the material's own gray stands.
     var ringTone: CAGlassRamp = CAGlassRamp {}
     var sideTone: CAGlassRamp = CAGlassRamp {}
-    // The greys the top and bottom edges are lit in at this size, read the
+    // The grays the top and bottom edges are lit in at this size, read the
     // same way.
     var lightDodge: CAGlassRamp = CAGlassRamp {}
     var lightBurn: CAGlassRamp = CAGlassRamp {}
@@ -223,7 +223,7 @@ function caGlassBlurAt(glass: borrow CAGlass, width: Float, height: Float) -> Fl
     return glass.blur * caGlassRampAt(glass.sizing.blur, width, height)
 }
 
-// The grey one of the edge's lines burns in at this size: the sizing's, when
+// The gray one of the edge's lines burns in at this size: the sizing's, when
 // it states one, and the material's otherwise.
 function caGlassToneAt(ramp: borrow CAGlassRamp, material: Float, width: Float, height: Float) -> Float {
     if ramp.maximum <= 0.0 {
@@ -233,7 +233,7 @@ function caGlassToneAt(ramp: borrow CAGlassRamp, material: Float, width: Float, 
 }
 
 // The material a surface this size shades with: its own, with the edge's
-// greys and its light taken at the surface's size.
+// grays and its light taken at the surface's size.
 function caGlassMaterialAt(glass: borrow CAGlass, width: Float, height: Float) -> CAGlassMaterial {
     let material = glass.material
     return CAGlassMaterial {
@@ -248,8 +248,8 @@ function caGlassMaterialAt(glass: borrow CAGlass, width: Float, height: Float) -
         borderSpread: material.borderSpread,
         borderSideOffset: material.borderSideOffset,
         borderSideSpread: material.borderSideSpread,
-        borderGrey: caGlassToneAt(glass.sizing.ringTone, material.borderGrey, width, height),
-        borderSideGrey: caGlassToneAt(glass.sizing.sideTone, material.borderSideGrey, width, height),
+        borderGray: caGlassToneAt(glass.sizing.ringTone, material.borderGray, width, height),
+        borderSideGray: caGlassToneAt(glass.sizing.sideTone, material.borderSideGray, width, height),
         innerRimStrength: material.innerRimStrength,
         innerRimWidth: material.innerRimWidth,
         washBlend: material.washBlend,
@@ -279,7 +279,7 @@ function caGlassSizingSignature(sizing: borrow CAGlassSizing) -> Int {
 }
 
 // `axis`: 0 none, 1 down, 2 across (leading→trailing), 3 corner→corner. `start`
-// is the near colour (also the layer's `fillColor`); `end` is the far colour.
+// is the near color (also the layer's `fillColor`); `end` is the far color.
 struct CAGradient {
     var start: CAColor = CAColor {}
     var end: CAColor = CAColor {}
@@ -313,6 +313,16 @@ function caContentShapeKind(content: borrow CAContent) -> Int {
     }
 }
 
+// A corner radius as a signature term. A capsule's radius is unbounded — the
+// box clamps it to half its short side when it is drawn — so it is folded to
+// one code instead of being converted, which an infinite float cannot be.
+function caRadiusCode(radius: Float) -> Int {
+    if radius > 1000000.0 {
+        return 100000000
+    }
+    return Int(round(radius * 100.0))
+}
+
 function caColorCode(color: borrow CAColor) -> Int {
     return Int(round(color.r * 255.0)) * 16777216
         + Int(round(color.g * 255.0)) * 65536
@@ -332,8 +342,8 @@ function caGlassMaterialSignature(material: borrow CAGlassMaterial) -> Int {
         + Int(round(material.borderSpread * 1000.0)) * 29
         + Int(round(material.borderSideOffset * 1000.0)) * 31
         + Int(round(material.borderSideSpread * 1000.0)) * 37
-        + Int(round(material.borderGrey * 1000.0)) * 41
-        + Int(round(material.borderSideGrey * 1000.0)) * 43
+        + Int(round(material.borderGray * 1000.0)) * 41
+        + Int(round(material.borderSideGray * 1000.0)) * 43
         + Int(round(material.innerRimStrength * 1000.0)) * 47
         + Int(round(material.innerRimWidth * 1000.0)) * 53
         + Int(round(material.washBlend * 1000.0)) * 59
@@ -356,7 +366,7 @@ function caContentSignature(content: borrow CAContent) -> Int {
             + caColorCode(s.fill) * 31
             + caColorCode(s.border) * 17
             + Int(round(s.borderWidth * 100.0)) * 7
-            + Int(round(s.cornerRadius * 100.0)) * 3
+            + caRadiusCode(s.cornerRadius) * 3
             + s.shapeKind
         Text(t) -> return 2000000
             + t.content.count * 131
@@ -373,7 +383,7 @@ function caContentSignature(content: borrow CAContent) -> Int {
             + x.secondaryHandle.raw * 97
             + Int(round(x.transition * 1000.0)) * 17
             + Int(round(x.opacity * 1000.0)) * 7
-            + Int(round(x.cornerRadius * 100.0))
+            + caRadiusCode(x.cornerRadius)
         Icon(i) -> return 4000000
             + i.svg.count * 131
             + caColorCode(i.tint)
@@ -392,7 +402,7 @@ function caContentSignature(content: borrow CAContent) -> Int {
             + Int(round(g.morphY * 100.0)) * 103
             + Int(round(g.morphWidth * 100.0)) * 107
             + Int(round(g.morphHeight * 100.0)) * 109
-            + Int(round(g.morphRadius * 100.0)) * 113
+            + caRadiusCode(g.morphRadius) * 113
             + Int(round(g.morphBlend * 100.0)) * 127
             + g.shapeKind * 137
         Gradient(r) -> return 6000000

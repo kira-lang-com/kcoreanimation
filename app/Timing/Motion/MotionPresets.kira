@@ -111,7 +111,7 @@ function motionSpringFromBounce(duration: Float, bounce: Float, target: Float) -
 // travels as an argument so the same spring code serves both answers and the
 // decision is made once, where the platform is known.
 //
-// The guidance is specific about what changes: elastic behaviour and overshoot
+// The guidance is specific about what changes: elastic behavior and overshoot
 // go away entirely, and what remains is a short, plain settle. It is NOT a
 // jump to the final value — motion that vanishes takes the sense of where a
 // thing came from with it — except where the movement itself is the effect.
@@ -127,7 +127,7 @@ function motionCurveReduced(spring: borrow MotionSpring) -> MotionSpring {
 
 // The spring a surface should actually animate with, given the viewer's
 // preference. Every animating surface in this package routes through here, so
-// honouring the preference is not something each one has to remember.
+// honoring the preference is not something each one has to remember.
 function motionCurveFor(name: borrow MotionCurveName, target: Float, reducedMotion: Bool) -> MotionSpring {
     let spring = motionCurve(name, target)
     if reducedMotion {
@@ -188,7 +188,7 @@ function motionEaseBetween(easing: borrow MotionEasing, from: Float, to: Float, 
 //
 // A hundred milliseconds is the platform's own figure for the feedback a
 // pointer-down draws, and it is short for a reason: past about that, the
-// acknowledgement stops reading as a response to the press and starts reading
+// acknowledgment stops reading as a response to the press and starts reading
 // as an animation that happens to follow it.
 function motionPressFeedbackDuration() -> Float {
     return 0.1

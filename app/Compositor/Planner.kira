@@ -26,6 +26,7 @@ struct CAPlanFrame {
     var clipMaxX: Float = 1000000.0
     var clipMaxY: Float = 1000000.0
     var clipRadius: Float = 0.0
+    var clipShapeKind: Int = 0
     var glassWash: Float = 0.0
     var glassWashLuma: Float = 1.0
 }
@@ -61,6 +62,7 @@ function caNodeDrawCmd(node: borrow CALayerNode, world: borrow CAAffineTransform
         clipMaxX: frame.clipMaxX,
         clipMaxY: frame.clipMaxY,
         clipRadius: frame.clipRadius,
+        clipShapeKind: frame.clipShapeKind,
         sourcePass: .None,
         hit: node.hit,
         hitKey: node.hitKey
@@ -85,7 +87,7 @@ function caShadowCmd(node: borrow CALayerNode, world: borrow CAAffineTransform, 
     quad.centerX = quad.centerX + offsetX
     quad.centerY = quad.centerY + offsetY
     let base = caApplyRect(world, Rect { x: 0.0, y: 0.0, width: width, height: height })
-    let pad = blur + 1.0
+    let pad = blur * 1.5 + 1.0
     return CADrawCmd {
         layer: node.id,
         kind: caShadowKind(),
@@ -103,6 +105,8 @@ function caShadowCmd(node: borrow CALayerNode, world: borrow CAAffineTransform, 
         fill: caColorChannelPresentation(node.shadowColor),
         cornerRadius: node.cornerRadius.presentation * lengthScale,
         shadowRadius: blur,
+        shadowOffset: Point { x: offsetX, y: offsetY },
+        shadowKnockout: node.capturesBackdrop,
         shapeKind: caContentShapeKind(node.content),
         lengthScale: lengthScale,
         clipMinX: frame.clipMinX,
@@ -110,6 +114,7 @@ function caShadowCmd(node: borrow CALayerNode, world: borrow CAAffineTransform, 
         clipMaxX: frame.clipMaxX,
         clipMaxY: frame.clipMaxY,
         clipRadius: frame.clipRadius,
+        clipShapeKind: frame.clipShapeKind,
         sourcePass: .None
     }
 }
@@ -132,6 +137,7 @@ function caCompositeCmd(layer: LayerId, bounds: borrow Rect, opacity: Float, fra
         clipMaxX: frame.clipMaxX,
         clipMaxY: frame.clipMaxY,
         clipRadius: frame.clipRadius,
+        clipShapeKind: frame.clipShapeKind,
         sourcePass: .Some(sourcePass)
     }
 }
@@ -148,6 +154,7 @@ function caPlanChildFrame(node: borrow CALayerNode, frame: borrow CAPlanFrame, w
         out.clipMaxX = min(frame.clipMaxX, box.x + box.width)
         out.clipMaxY = min(frame.clipMaxY, box.y + box.height)
         out.clipRadius = node.cornerRadius.presentation * caLengthScale(world)
+        out.clipShapeKind = caContentShapeKind(node.content)
     }
     match node.content {
         Glass(glass) -> {
@@ -179,9 +186,10 @@ function caPlanNode(tree: borrow CALayerTree, frame: borrow CAPlanFrame, plan: b
     let eff = frame.opacity * node.opacity.presentation
     let isGroup = node.groupOpacity && node.childIds.count > 0
     let isTarget = node.renderTarget && node.childIds.count > 0
+    let isBlurred = node.blur > 0.0 && node.childIds.count > 0
     let childFrame = caPlanChildFrame(node, frame, world)
 
-    if isGroup || isTarget {
+    if isGroup || isTarget || isBlurred {
         let newPass = RenderPassId(plan.passes.count)
         var kind: CAPassKind = .GroupOpacity
         var targetId = RenderTargetId(0)
@@ -215,13 +223,28 @@ function caPlanNode(tree: borrow CALayerTree, frame: borrow CAPlanFrame, plan: b
                 caPlanNode(tree, cf, plan)
             }
         }
+        // A blurred tree spreads past what it painted, so its texture is
+        // held open by the blur's reach on every side.
+        if isBlurred && plan.passes[newPass.raw].hasBounds {
+            var padded = plan.passes[newPass.raw]
+            let reach = node.blur * caLengthScale(world)
+            padded.bounds = Rect {
+                x: padded.bounds.x - reach,
+                y: padded.bounds.y - reach,
+                width: padded.bounds.width + reach * 2.0,
+                height: padded.bounds.height + reach * 2.0
+            }
+            plan.passes[newPass.raw] = padded
+        }
         let isolated = plan.passes[newPass.raw]
         if isolated.hasBounds {
+            var composite = caCompositeCmd(node.id, isolated.bounds, eff, frame, newPass)
+            composite.blur = isBlurred ? node.blur * caLengthScale(world) : 0.0
             caPlanEmit(
                 plan,
                 frame.pass,
-                caCompositeCmd(node.id, isolated.bounds, eff, frame, newPass),
-                isolated.dirty
+                move composite,
+                isolated.dirty || node.damaged
             )
             if isolated.requiresRefresh {
                 var parentPass = plan.passes[frame.pass.raw]

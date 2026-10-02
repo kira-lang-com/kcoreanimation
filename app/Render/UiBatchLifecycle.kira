@@ -57,6 +57,9 @@ extend UiBatch {
         }
         state.quadCount = 0
         state.backgroundActive = false
+        if state.atlasExhausted {
+            resetGlyphAtlas(state)
+        }
         state.viewportW = viewportW
         if viewportW <= 0.0 {
             state.viewportW = 1.0

@@ -13,12 +13,12 @@ import Foundation
 // that the two directions have different durations and different curves — a
 // tenth of a second to arrive, twice that to leave.
 //
-// A run of taps overlapping each other is NOT modelled as one glow accumulating
+// A run of taps overlapping each other is NOT modeled as one glow accumulating
 // charge. Each touch owns its own highlight, and touches that overlap in time
 // simply add up: a second finger, or a second tap while the first is still
 // fading, is a second `MotionGlowState` and the host sums them. That is why a
 // fast run of taps looks like it ramps and holds — the fades overlap — and why
-// it drops in one go when the tapping stops. Modelling it as a single
+// it drops in one go when the tapping stops. Modeling it as a single
 // accumulating reservoir gets the same silhouette for the wrong reason and then
 // disagrees everywhere else: it cannot put two lights in two places, which is
 // the ordinary case of two fingers.
@@ -32,7 +32,7 @@ struct MotionGlowState {
     var elapsed: Float = 0.0
     // What to draw this frame, 0…`motionGlowLevel()`.
     var opacity: Float = 0.0
-    // Where the light is centred, in the element's own coordinates. It follows
+    // Where the light is centered, in the element's own coordinates. It follows
     // the finger rather than sitting at the element's middle — the light comes
     // from where it was touched.
     var x: Float = 0.0
@@ -101,7 +101,7 @@ function motionGlowRelease(state: borrow mut MotionGlowState) {
     return
 }
 
-// Advances the light by one frame and answers what to draw at the centre.
+// Advances the light by one frame and answers what to draw at the center.
 function motionGlowAdvance(state: borrow mut MotionGlowState, delta: Float) -> Float {
     state.elapsed += max(delta, 0.0)
     var duration = motionGlowFadeOut()
@@ -121,7 +121,7 @@ function motionGlowAdvance(state: borrow mut MotionGlowState, delta: Float) -> F
     return state.opacity
 }
 
-// The light's strength at a distance from its centre, as a fraction of its
+// The light's strength at a distance from its center, as a fraction of its
 // radius.
 //
 // Two halves with different shapes, which is what stops the highlight reading
@@ -135,7 +135,7 @@ function motionGlowFalloff(distance: Float) -> Float {
         return 0.0
     }
     if r <= 0.5 {
-        // Linear from 1.0 at the centre to 0.5 at the halfway mark.
+        // Linear from 1.0 at the center to 0.5 at the halfway mark.
         return 1.0 - r
     }
     // And eased from that half to nothing at the rim.

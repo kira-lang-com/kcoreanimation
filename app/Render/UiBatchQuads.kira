@@ -25,7 +25,7 @@ extend UiBatch {
         m12: Float = 0.0, m13: Float = 0.0, m14: Float = 0.0, m15: Float = 0.0,
         m16: Float = 0.0, m17: Float = 0.0, m18: Float = 0.0, m19: Float = 0.0,
         m20: Float = 0.0, m21: Float = 0.0, m22: Float = 0.0, m23: Float = 0.0,
-        // The gradient's far colour and its axis (0 none, 1 down, 2 across,
+        // The gradient's far color and its axis (0 none, 1 down, 2 across,
         // 3 corner to corner). A flat quad leaves them at zero.
         gradR: Float = 0.0, gradG: Float = 0.0, gradB: Float = 0.0, gradA: Float = 0.0,
         gradAxis: Float = 0.0,
@@ -39,11 +39,15 @@ extend UiBatch {
         // 0 for a circular rounded rectangle, 1 for a squircle's continuous
         // superellipse corner.
         shapeKind: Float = 0.0,
-        // The quad turned about its own centre, as cosine and sine. See
+        // The quad turned about its own center, as cosine and sine. See
         // `writeQuadRotation`; (1, 0) is a quad that is not turned, which is
         // almost all of them.
         rotCos: Float = 1.0,
         rotSin: Float = 0.0,
+        // The corner of a rounded clip, zero for a clip that is a plain box, and
+        // its kind: one for the continuous corner a squircle has.
+        clipRadius: Float = 0.0,
+        clipShapeKind: Float = 0.0,
     ) {
         var state = nativeRecover<UiBatchState>(self.storage)
         if state.quadCount >= maxQuadsPerBatch() {
@@ -102,11 +106,6 @@ extend UiBatch {
         if pointerIsNull(contents) {
             return
         }
-        // Mode 3 — liquid glass — is the only mode whose shader reads the material
-        // block; its region patches (3.0 full, 3.25 band, 3.45 core — see
-        // pushGlass) all carry it. Mode 4 is above them numerically and
-        // reads none of it.
-        let writesMaterial = modeCode == 30 || modeCode == 31 || modeCode == 32 || modeCode == 33 || modeCode == 34
         let vw = state.viewportW
         let vh = state.viewportH
         // Base float index of this quad's record, inside this frame's ring slot.
@@ -120,11 +119,10 @@ extend UiBatch {
             fr, fg, fb, fa,
             br, bg, bb, ba,
             clipMinX, clipMinY, clipMaxX, clipMaxY,
+            rotCos: rotCos, rotSin: rotSin,
+            clipRadius: clipRadius,
+            clipShapeKind: clipShapeKind,
         )
-        // The material block belongs to liquid glass and is read by no other mode, in
-        // any backend's compiled shader, so only mode 3 writes it. The slot keeps
-        // whatever the last quad to occupy it wrote (a fresh Metal buffer arrives
-        // zeroed), which the modes that skip it never look at.
         // Written for every quad, flat ones included: the slot is reused, and an
         // unwritten block carries whatever gradient last occupied it.
         writeQuadGradient(contents, U64(base), gradR, gradG, gradB, gradA, gradAxis)
@@ -134,13 +132,15 @@ extend UiBatch {
         writeQuadMorph(contents, U64(base), morphX, morphY, morphHalfW, morphHalfH, morphRadius, morphBlend)
         writeQuadShapeKind(contents, U64(base), shapeKind)
         writeQuadRotation(contents, U64(base), rotCos, rotSin)
-        if writesMaterial {
-            writeQuadMaterial(
-                contents, U64(base),
-                m0, m1, m2, m3, m4, m5, m6, m7, m8, m9, m10, m11,
-                m12, m13, m14, m15, m16, m17, m18, m19, m20, m21, m22, m23,
-            )
-        }
+        // The material block too: glass shades itself with it, and a flat
+        // surface carries its touch highlight in the block's spare slots. Left
+        // to glass alone, a rule drawn where a glass quad had been took that
+        // quad's spares as a highlight and burned brighter than its siblings.
+        writeQuadMaterial(
+            contents, U64(base),
+            m0, m1, m2, m3, m4, m5, m6, m7, m8, m9, m10, m11,
+            m12, m13, m14, m15, m16, m17, m18, m19, m20, m21, m22, m23,
+        )
         // With a glass layer open, remember the (clipped) footprint this quad covers:
         // the next glass surface reads the grid to decide whether it is stacked over
         // this layer and therefore needs a capture of its own. The HUD's stream is
@@ -192,6 +192,10 @@ extend UiBatch {
         glowX: Float = 0.0,
         glowY: Float = 0.0,
         glowStrength: Float = 0.0,
+        // The corner of the clip the surface is drawn inside, when that clip
+        // is a rounded box: what it leaves past the clip's corners is not drawn.
+        clipRadius: Float = 0.0,
+        clipShapeKind: Float = 0.0,
     ) {
         if w <= 0.0 || h <= 0.0 {
             return
@@ -234,7 +238,12 @@ extend UiBatch {
             // they carry the highlight. Handed over in the quad's OWN space,
             // which is what the fragment measures distance in.
             glowX - cx, glowY - cy, glowStrength,
-            gradient.r, gradient.g, gradient.b, gradient.a, gradientAxis
+            gradient.r, gradient.g, gradient.b, gradient.a, gradientAxis,
+            morphX: 0.0, morphY: 0.0, morphHalfW: 0.0, morphHalfH: 0.0, morphRadius: 0.0, morphBlend: 0.0,
+            shapeKind: 0.0,
+            rotCos: 1.0, rotSin: 0.0,
+            clipRadius: clipRadius,
+            clipShapeKind: clipShapeKind
         )
         return
     }

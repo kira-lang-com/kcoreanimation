@@ -19,7 +19,7 @@ type UiQuad {
     let pxY0: Float
     let pxX1: Float
     let pxY1: Float
-    // `local` at the same two corners: the SDF offset from the centre for a
+    // `local` at the same two corners: the SDF offset from the center for a
     // surface, the atlas uv for a glyph.
     let localX0: Float
     let localY0: Float
@@ -56,20 +56,20 @@ type UiQuad {
     let blurNearSplit: Float
     // The border block: the ring's spread (already snapped to a whole device
     // pixel by the host), the offset/spread of the pair that reach past the left
-    // and right extremes, and the grey they are all drawn in.
+    // and right extremes, and the gray they are all drawn in.
     let borderSpread: Float
     let borderSideOffset: Float
     let borderSideSpread: Float
-    let borderGrey: Float
-    // The sides are drawn in their own, darker grey — measured off the reference,
+    let borderGray: Float
+    // The sides are drawn in their own, darker gray — measured off the reference,
     // where the left and right edges are #C7C7C7 at full coverage while the top and
     // bottom are a half-covered #DBDBDB.
-    let borderSideGrey: Float
+    let borderSideGray: Float
     // The inner rim: how strongly it tints, and how far in from the edge it runs.
     let innerRimStrength: Float
     let innerRimWidth: Float
-    // The wash, as the platform authors it: two fills, each with a colour, an
-    // opacity and a blend mode. The LOWER layer's colour is `fill` and its opacity
+    // The wash, as the platform authors it: two fills, each with a color, an
+    // opacity and a blend mode. The LOWER layer's color is `fill` and its opacity
     // is `borderWidth` (mode 3 has no border of its own to describe), so what is
     // carried here is that layer's blend mode and the upper layer whole.
     let washBlend: Float
@@ -81,7 +81,7 @@ type UiQuad {
     let materialSpare0: Float
     let materialSpare1: Float
     let materialSpare2: Float
-    // The gradient block: the colour the far end of the quad takes and which
+    // The gradient block: the color the far end of the quad takes and which
     // way far runs. Declared by every shader that pulls this record, because
     // the record's STRIDE is what a pull reads by — a shader that stops one
     // field short reads every quad after the first from the wrong offset.
@@ -103,13 +103,18 @@ type UiQuad {
     let morphBlend: Float
     // 0 circular, 1 the continuous superellipse a squircle is.
     let shapeKind: Float
-    // The quad turned about its own centre, as cosine and sine — see
+    // The quad turned about its own center, as cosine and sine — see
     // `writeQuadRotation`. Only `UiBatch` acts on it; every other shader
     // declares it because a storage pull reads by the record's STRIDE, and a
     // shader that stops two fields short reads the next quad from the wrong
     // offset.
     let rotCos: Float
     let rotSin: Float
+    // The corner of the rounded box the quad is clipped to, zero for a plain
+    // one, and its kind: one for a continuous corner. Declared by every shader
+    // that pulls this record, for its stride.
+    let clipRadius: Float
+    let clipShapeKind: Float
 }
 
 type VertexIn {
@@ -183,7 +188,7 @@ shader UiGlyph {
                 result.color = Float4(0.0, 0.0, 0.0, 0.0)
                 return result
             }
-            // Coverage, not colour: the atlas holds one channel and the run's
+            // Coverage, not color: the atlas holds one channel and the run's
             // own fill supplies the ink.
             let cov = sample(atlas, atlasSmp, input.local).x
             let a = input.fill.w * cov

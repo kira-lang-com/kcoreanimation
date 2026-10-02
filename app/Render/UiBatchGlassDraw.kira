@@ -131,7 +131,7 @@ function glassEnsureInteriorCache(state: borrow mut UiBatchState, graphics: borr
         storage: .Transient
     }), "glass interior cache")
     if state.glassCacheSampler.id == 0 {
-        // Nearest: a copy fragment lands exactly on its texel centre, and
+        // Nearest: a copy fragment lands exactly on its texel center, and
         // nearest guarantees the fetch returns that texel's bytes unchanged.
         state.glassCacheSampler = samplerOrReport(graphics.createSampler(SamplerDescriptor {
             label: "kira-ui-glass-cache-nearest",

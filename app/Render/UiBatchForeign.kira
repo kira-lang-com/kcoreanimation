@@ -31,16 +31,30 @@ function writeQuadRecord(
     fr: Float, fg: Float, fb: Float, fa: Float,
     br: Float, bg: Float, bb: Float, ba: Float,
     clipMinX: Float, clipMinY: Float, clipMaxX: Float, clipMaxY: Float,
-    // The quad turned about its own centre. Written HERE, with the identity as
+    // The quad turned about its own center. Written HERE, with the identity as
     // its default, rather than left to the callers that want it: the buffer is
     // reused frame to frame, so a field a path forgets is not zero — it is
     // whatever quad occupied that slot last, and a glyph inherits the angle of
     // something else that has since gone.
     rotCos: Float = 1.0,
     rotSin: Float = 0.0,
+    // Written with the rest for the same reason: a slot keeps the last
+    // quad's clip corner otherwise.
+    clipRadius: Float = 0.0,
+    clipShapeKind: Float = 0.0,
 ) {
     let bytes = baseFloats * U64(4)
     writeQuadRotation(ptr, baseFloats, rotCos, rotSin)
+    writeFloat32(ptr, (baseFloats + U64(68)) * U64(4), clipRadius)
+    writeFloat32(ptr, (baseFloats + U64(69)) * U64(4), clipShapeKind)
+    // The blocks only a surface sets -- its gradient, the shape it fuses with,
+    // its corner -- flat here, and set after this by the surfaces that have
+    // them. A glyph never sets them, so without this it took the last
+    // occupant's: text over a gradient page inherited the page's far color
+    // and went blue past the gradient's diagonal, partway through a word.
+    writeQuadGradient(ptr, baseFloats, 0.0, 0.0, 0.0, 0.0, 0.0)
+    writeQuadMorph(ptr, baseFloats, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    writeQuadShapeKind(ptr, baseFloats, 0.0)
     writeFloat32(ptr, bytes, px0 / vw * 2.0 - 1.0)
     writeFloat32(ptr, bytes + U64(4), 1.0 - py0 / vh * 2.0)
     writeFloat32(ptr, bytes + U64(8), px1 / vw * 2.0 - 1.0)
@@ -218,7 +232,7 @@ function loadRgbaTextureFromEnvironment(graphics: borrow Graphics, envName: borr
 function glyphBitmapSize() -> U64 { return 32 }
 function verticalMetricsSize() -> U64 { return 12 }
 
-// The gradient block that follows the material one: the colour the far end of
+// The gradient block that follows the material one: the color the far end of
 // the quad takes, and which way "far" runs.
 //
 // It is written for EVERY quad, including the flat ones, which write zeros. A
@@ -246,8 +260,8 @@ function writeQuadGradient(
 // is enough right up until two of them are supposed to become one body. The
 // fused surface between them is not inside either rectangle — it is the neck,
 // and it exists in the gap — so the shape that grows it has to travel with the
-// quad that is going to rasterize it. `x`/`y` are its centre in the surface's
-// own local space (the quad's centre is the origin), `halfW`/`halfH` its half
+// quad that is going to rasterize it. `x`/`y` are its center in the surface's
+// own local space (the quad's center is the origin), `halfW`/`halfH` its half
 // extent and `radius` its corner; `blend` is the smooth minimum's reach in
 // points, and zero there means this surface is a single shape and the shader
 // never looks at the rest.
@@ -283,7 +297,7 @@ function writeQuadShapeKind(ptr: RawPtr, baseFloats: U64, kind: Float) {
     return
 }
 
-// How far the quad is turned about its own centre, as the COSINE and SINE of the
+// How far the quad is turned about its own center, as the COSINE and SINE of the
 // angle rather than the angle.
 //
 // Resolved on the host because it is one value per quad and would otherwise be

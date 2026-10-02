@@ -32,8 +32,8 @@ struct GlassSurfaceKey {
     var glowX: Float = 0.0
     var glowY: Float = 0.0
     var glowStrength: Float = 0.0
-    var centreX: Float = 0.0
-    var centreY: Float = 0.0
+    var centerX: Float = 0.0
+    var centerY: Float = 0.0
     var halfWidth: Float = 0.0
     var halfHeight: Float = 0.0
     var radius: Float = 0.0

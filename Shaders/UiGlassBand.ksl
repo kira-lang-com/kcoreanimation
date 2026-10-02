@@ -56,8 +56,8 @@ type UiQuad {
     let borderSpread: Float
     let borderSideOffset: Float
     let borderSideSpread: Float
-    let borderGrey: Float
-    let borderSideGrey: Float
+    let borderGray: Float
+    let borderSideGray: Float
     let innerRimStrength: Float
     let innerRimWidth: Float
     let washBlend: Float
@@ -69,7 +69,7 @@ type UiQuad {
     let materialSpare0: Float
     let materialSpare1: Float
     let materialSpare2: Float
-    // The gradient block: the colour the far end of the quad takes and which
+    // The gradient block: the color the far end of the quad takes and which
     // way far runs. Declared by every shader that pulls this record, because
     // the record's STRIDE is what a pull reads by — a shader that stops one
     // field short reads the next quad from the wrong offset.
@@ -91,13 +91,18 @@ type UiQuad {
     let morphBlend: Float
     // 0 circular, 1 the continuous superellipse a squircle is.
     let shapeKind: Float
-    // The quad turned about its own centre, as cosine and sine — see
+    // The quad turned about its own center, as cosine and sine — see
     // `writeQuadRotation`. Only `UiBatch` acts on it; every other shader
     // declares it because a storage pull reads by the record's STRIDE, and a
     // shader that stops two fields short reads the next quad from the wrong
     // offset.
     let rotCos: Float
     let rotSin: Float
+    // The corner of the rounded box the quad is clipped to, zero for a plain
+    // one, and its kind: one for a continuous corner. Declared by every shader
+    // that pulls this record, for its stride.
+    let clipRadius: Float
+    let clipShapeKind: Float
 }
 
 type VertexIn {
@@ -125,14 +130,14 @@ type VertexOut {
     let borderInk: Float4
     let wash: Float4
     let washBlend: Float2
-    // The touch highlight: centre in this quad's own space, strength in z. It
+    // The touch highlight: center in this quad's own space, strength in z. It
     // rides the gradient block, which the glass pipelines carry for stride and
     // never read.
     // The touch highlight (xyz) and the surface's corner kind (w). A `Float3`
     // varying already costs a whole four-component slot, so the fourth rides
     // free — and this record has no slot to spare.
     let glow: Float4
-    // The edge light's two greys: what its bands add, what the top one burns.
+    // The edge light's two grays: what its bands add, what the top one burns.
     let light: Float2
 }
 
@@ -187,8 +192,8 @@ shader UiGlassBand {
             out.clip = Float4(v.clipMinX, v.clipMinY, v.clipMaxX, v.clipMaxY)
             out.edge = Float4(v.edgeStrokeStrength, v.edgeStrokeDarken, v.edgeStrokePeak, v.edgeStrokeFade)
             out.lens = Float4(v.sheenStrength, v.lensMaxBend, v.refractionReach, v.blurNearSplit)
-            out.borderStack = Float4(v.borderSpread, v.borderSideOffset, v.borderSideSpread, v.borderGrey)
-            out.borderInk = Float4(v.borderGrey, v.borderSideGrey, v.innerRimStrength, v.innerRimWidth)
+            out.borderStack = Float4(v.borderSpread, v.borderSideOffset, v.borderSideSpread, v.borderGray)
+            out.borderInk = Float4(v.borderGray, v.borderSideGray, v.innerRimStrength, v.innerRimWidth)
             out.wash = Float4(v.washUpperR, v.washUpperG, v.washUpperB, v.washUpperAlpha)
             out.washBlend = Float2(v.washBlend, v.washUpperBlend)
             out.glow = Float4(v.gradientR, v.gradientG, v.gradientB, v.shapeKind)
@@ -293,13 +298,7 @@ shader UiGlassBand {
             rgb = mix(rgb, rgb * input.edge.y, stroke)
             rgb = rgb + Float3(sheen, sheen, sheen)
 
-            let rimWidth = input.borderInk.w
-            let rimInk = input.borderInk.y
-            let rim = 0.0
-            if inside < rimWidth {
-                rim = clamp(rimWidth - inside, 0.0, 1.0) * input.borderInk.z
-            }
-            rgb = mix(rgb, Float3(rimInk, rimInk, rimInk), rim)
+            rgb = GlassCommon.specular(rgb, inside, input.borderInk.w, input.borderInk.z, n)
 
             if input.light.x > 0.0 || input.light.y < 1.0 {
                 let lightReach = Float2(0.0, GlassCommon.edgeLightOffset)

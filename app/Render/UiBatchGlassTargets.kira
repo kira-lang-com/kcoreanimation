@@ -174,7 +174,7 @@ function glassEnsureLayerScene(state: borrow mut UiBatchState, graphics: borrow 
     }
     // The capture is drawn by the SAME pipelines that draw the swapchain — the
     // background, the batch, every glass region — so it carries the swapchain's
-    // format. A colour target whose format differs from the pipeline that writes
+    // format. A color target whose format differs from the pipeline that writes
     // it is an attachment-state mismatch, which a validating backend rejects: on
     // Dawn it invalidates the whole frame's command buffer, and the window then
     // presents whatever the surface texture happened to hold.

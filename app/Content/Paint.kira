@@ -44,7 +44,7 @@ enum FoundationMaterial {
     // what the APPLICATION drew underneath them, which is the wrong thing for a
     // sidebar: what should show through a sidebar is the desktop, and an
     // application cannot see the desktop. So the surface is cleared to the
-    // window's key colour and the compositor fills it, which is also why it
+    // window's key color and the compositor fills it, which is also why it
     // only means anything in a transparent window (see
     // KiraGraphics' Public/WindowComposition.kira) — anywhere else it is a
     // hole in a window that has none, and draws as an ordinary flat surface.
@@ -73,7 +73,7 @@ enum FoundationFrost {
     High
     // Thick.
     XHigh
-    // Chrome: shapes and colour survive, detail does not.
+    // Chrome: shapes and color survive, detail does not.
     Max
 }
 
@@ -164,7 +164,7 @@ function foundationEdgeLightingScale(enabled: Bool, strength: Float) -> Float {
 }
 
 // The same material, carrying `stack`'s upper layer and lower blend mode. The lower
-// layer's colour and opacity are the surface fill, which the caller sets from
+// layer's color and opacity are the surface fill, which the caller sets from
 // `stack.lower` — see foundationTintFill.
 function foundationGlassMaterialWithTint(
     base: borrow CAGlassMaterial,
@@ -182,8 +182,8 @@ function foundationGlassMaterialWithTint(
         borderSpread: base.borderSpread,
         borderSideOffset: base.borderSideOffset,
         borderSideSpread: base.borderSideSpread,
-        borderGrey: base.borderGrey,
-        borderSideGrey: base.borderSideGrey,
+        borderGray: base.borderGray,
+        borderSideGray: base.borderSideGray,
         innerRimStrength: base.innerRimStrength,
         innerRimWidth: base.innerRimWidth,
         washBlend: foundationBlendId(stack.lower.blend),
@@ -221,8 +221,8 @@ function foundationGlassMaterialEdgeLit(
             borderSpread: base.borderSpread,
             borderSideOffset: base.borderSideOffset,
             borderSideSpread: base.borderSideSpread,
-            borderGrey: base.borderGrey,
-            borderSideGrey: base.borderSideGrey,
+            borderGray: base.borderGray,
+            borderSideGray: base.borderSideGray,
             innerRimStrength: base.innerRimStrength,
             innerRimWidth: base.innerRimWidth,
             washBlend: base.washBlend,
@@ -247,8 +247,8 @@ function foundationGlassMaterialEdgeLit(
         borderSpread: base.borderSpread,
         borderSideOffset: base.borderSideOffset,
         borderSideSpread: base.borderSideSpread,
-        borderGrey: base.borderGrey,
-        borderSideGrey: base.borderSideGrey,
+        borderGray: base.borderGray,
+        borderSideGray: base.borderSideGray,
         innerRimStrength: 0.0,
         innerRimWidth: base.innerRimWidth,
         washBlend: base.washBlend,
@@ -262,7 +262,7 @@ function foundationGlassMaterialEdgeLit(
     }
 }
 
-// The surface fill a tint stack's LOWER layer is: its colour, with the layer's
+// The surface fill a tint stack's LOWER layer is: its color, with the layer's
 // opacity as the alpha the compositor reads the wash strength from.
 function foundationTintFill(stack: borrow FoundationTintStack) -> Color {
     return Color {

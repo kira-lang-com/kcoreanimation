@@ -6,7 +6,7 @@ import KCoreAnimation
 // becomes its own pass composited once at the group alpha (never a fold of child
 // alphas); render targets become passes with a texture; a rotated layer keeps its
 // exact oriented quad; a clipped subtree carries the intersected clip; and an
-// undamaged pass reports itself reusable. Perceptual colour is asserted directly.
+// undamaged pass reports itself reusable. Perceptual color is asserted directly.
 
 function caPlanScaled(value: Float, digits: Int) -> Int {
     var scale = 1.0
@@ -291,8 +291,8 @@ construct CaPlanDamageReuse() extends Test {
     }
 }
 
-// Colour interpolates perceptually: the midpoint of black->white in OKLab is a
-// mid-grey around sRGB 0.39 — neither the sRGB midpoint (0.5) nor the linear-RGB
+// Color interpolates perceptually: the midpoint of black->white in OKLab is a
+// mid-gray around sRGB 0.39 — neither the sRGB midpoint (0.5) nor the linear-RGB
 // midpoint (0.735). 1 iff the midpoint lands in the perceptual band.
 construct CaPerceptualColorMidpoint() extends Test {
     test {

@@ -140,7 +140,7 @@ function foundationTextMeasure(content: borrow String, size: Float, weight: Floa
 // which is `ascent + descent` — the two metrics it places the baseline from. The
 // face's reported line height is a different number, and where it is the smaller
 // of the two the rasterizer decides the box is tighter than a line and falls
-// back to centring the run's INK instead. That fallback exists for a leaf
+// back to centering the run's INK instead. That fallback exists for a leaf
 // deliberately sized under a line; reaching it by accident is how "Hide" ends up
 // a point below "Copy" beside it, because one of them has a descender and the
 // other does not. Ask for whichever is larger and the fallback is only ever

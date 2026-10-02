@@ -56,8 +56,8 @@ type UiQuad {
     let borderSpread: Float
     let borderSideOffset: Float
     let borderSideSpread: Float
-    let borderGrey: Float
-    let borderSideGrey: Float
+    let borderGray: Float
+    let borderSideGray: Float
     let innerRimStrength: Float
     let innerRimWidth: Float
     let washBlend: Float
@@ -69,7 +69,7 @@ type UiQuad {
     let materialSpare0: Float
     let materialSpare1: Float
     let materialSpare2: Float
-    // The gradient block: the colour the far end of the quad takes and which
+    // The gradient block: the color the far end of the quad takes and which
     // way far runs. Declared by every shader that pulls this record, because
     // the record's STRIDE is what a pull reads by — a shader that stops one
     // field short reads the next quad from the wrong offset.
@@ -91,13 +91,18 @@ type UiQuad {
     let morphBlend: Float
     // 0 circular, 1 the continuous superellipse a squircle is.
     let shapeKind: Float
-    // The quad turned about its own centre, as cosine and sine — see
+    // The quad turned about its own center, as cosine and sine — see
     // `writeQuadRotation`. Only `UiBatch` acts on it; every other shader
     // declares it because a storage pull reads by the record's STRIDE, and a
     // shader that stops two fields short reads the next quad from the wrong
     // offset.
     let rotCos: Float
     let rotSin: Float
+    // The corner of the rounded box the quad is clipped to, zero for a plain
+    // one, and its kind: one for a continuous corner. Declared by every shader
+    // that pulls this record, for its stride.
+    let clipRadius: Float
+    let clipShapeKind: Float
 }
 
 type VertexIn {
@@ -110,9 +115,12 @@ type VertexOut {
     let clip_position: Float4
 
     let local: Float2
-    let px: Float2
+    // The pixel position (xy), and how far the surface has faded (z): a
+    // `Float2` varying already costs a whole four-component slot, so the fade
+    // rides free in it.
+    let px: Float4
     // Half extent (xy), the anti-aliasing band in the quad's own units (z),
-    // and the grey the edge light adds (w). A `Float2` varying already costs a
+    // and the gray the edge light adds (w). A `Float2` varying already costs a
     // whole four-component slot.
     let hsize: Float4
     // Radius, border width, draw mode and edge refraction in one interpolant.
@@ -127,7 +135,7 @@ type VertexOut {
     let edge: Float4
     let lens: Float4
     // The ring's spread, the side lines' reach and spread, and — in the slot
-    // their grey used to repeat in — the grey the edge light burns.
+    // their gray used to repeat in — the gray the edge light burns.
     let borderStack: Float4
     let borderInk: Float4
     let wash: Float4
@@ -137,10 +145,10 @@ type VertexOut {
     // under the sixteen a fragment stage is guaranteed. A seventeenth does not
     // fail to compile — it fails to LINK, and the pipeline then draws nothing.
     let washMorph: Float4
-    // The second shape this surface fuses with: centre and half extent, in this
+    // The second shape this surface fuses with: center and half extent, in this
     // quad's own space. Its radius and the fusion reach are above.
     let morph: Float4
-    // The touch highlight: centre in this quad's space, and how hard it burns.
+    // The touch highlight: center in this quad's space, and how hard it burns.
     // The touch highlight (xyz) and the surface's corner kind (w). A `Float3`
     // varying already costs a whole four-component slot, so the fourth rides
     // free — and this record has no slot to spare.
@@ -190,7 +198,7 @@ shader UiGlassFull {
                 1.0,
             )
             out.local = Float2(mix(v.localX0, v.localX1, right), mix(v.localY0, v.localY1, bottom))
-            out.px = Float2(mix(v.pxX0, v.pxX1, right), mix(v.pxY0, v.pxY1, bottom))
+            out.px = Float4(mix(v.pxX0, v.pxX1, right), mix(v.pxY0, v.pxY1, bottom), v.materialSpare0, 0.0)
             out.hsize = Float4(v.halfW, v.halfH, v.materialSpare2, v.gradientA)
             out.shape = Float4(v.radius, v.borderWidth, v.mode, v.edgeRefraction)
             out.fill = Float4(v.fillR, v.fillG, v.fillB, v.fillA)
@@ -199,7 +207,7 @@ shader UiGlassFull {
             out.edge = Float4(v.edgeStrokeStrength, v.edgeStrokeDarken, v.edgeStrokePeak, v.edgeStrokeFade)
             out.lens = Float4(v.sheenStrength, v.lensMaxBend, v.refractionReach, v.blurNearSplit)
             out.borderStack = Float4(v.borderSpread, v.borderSideOffset, v.borderSideSpread, v.gradientAxis)
-            out.borderInk = Float4(v.borderGrey, v.borderSideGrey, v.innerRimStrength, v.innerRimWidth)
+            out.borderInk = Float4(v.borderGray, v.borderSideGray, v.innerRimStrength, v.innerRimWidth)
             out.wash = Float4(v.washUpperR, v.washUpperG, v.washUpperB, v.washUpperAlpha)
             out.washMorph = Float4(v.washBlend, v.washUpperBlend, v.morphRadius, v.morphBlend)
             out.morph = Float4(v.morphX, v.morphY, v.morphHalfW, v.morphHalfH)
@@ -259,32 +267,43 @@ shader UiGlassFull {
             let ringSpread = input.borderStack.x
             let sideReach = input.borderStack.y
             let ringDistance = GlassCommon.morphedDistanceInflated(input.local, Float2(input.hsize.x, input.hsize.y), input.shape.x, input.morph, morphR, morphK, ringSpread, corner)
-            let ring = clamp(0.5 - ringDistance / aa, 0.0, 1.0)
+            // The ring burns where the outline faces sideways and fades as it
+            // turns to face up or down, where the specular has the edge
+            // instead: the platform's menu has a dark line down each side and
+            // none along its top or bottom.
+            let edgeNormal = GlassCommon.morphedNormal(input.local, Float2(input.hsize.x, input.hsize.y), input.shape.x, input.morph, morphR, morphK, corner)
+            let ring = clamp(0.5 - ringDistance / aa, 0.0, 1.0) * abs(edgeNormal.x)
             let sideSpread = input.borderStack.z
             let leftDistance = GlassCommon.morphedDistanceInflated(input.local + Float2(sideReach, 0.0), Float2(input.hsize.x, input.hsize.y), input.shape.x, input.morph, morphR, morphK, 0.0 - sideSpread, corner)
             let rightDistance = GlassCommon.morphedDistanceInflated(input.local - Float2(sideReach, 0.0), Float2(input.hsize.x, input.hsize.y), input.shape.x, input.morph, morphR, morphK, 0.0 - sideSpread, corner)
             let leftBand = clamp(0.5 - leftDistance / aa, 0.0, 1.0)
             let rightBand = clamp(0.5 - rightDistance / aa, 0.0, 1.0)
             let stacked = 1.0 - (1.0 - ring) * (1.0 - leftBand) * (1.0 - rightBand)
-            let ringGrey = input.borderInk.x
+            let ringGray = input.borderInk.x
             let pairBand = max(leftBand, rightBand)
             let onlyRing = ring * (1.0 - pairBand)
             let onlyPair = pairBand * (1.0 - ring)
             let bothBands = ring * pairBand
-            // Each line burns in its own grey — the ring in the ring's, the
+            // Each line burns in its own gray — the ring in the ring's, the
             // side lines in theirs — and where they cross, in both.
-            let sideGrey = input.borderInk.y
+            let sideGray = input.borderInk.y
             let hairline = stacked
             shadowAlpha = hairline
             let coveredArea = max(stacked, 0.0001)
-            let inkLevel = (ringGrey * onlyRing + sideGrey * onlyPair + ringGrey * sideGrey * bothBands) / coveredArea
             let gpOutside = input.local / Float2(input.hsize.x, input.hsize.y)
             let uvOutside = Float2(
                 input.border.x + gpOutside.x * input.border.z,
                 input.border.y + gpOutside.y * input.border.w
             )
             let behindEdge = GlassCommon.backdropTap(external, externalSmp, externalSecond, externalSecondSmp, uvOutside, backdropBlend.blend)
-            shadowRgb = Float3(behindEdge.x, behindEdge.y, behindEdge.z) * inkLevel * stacked
+            // A LINEAR burn, as the kit draws these lines: what is behind loses
+            // how far each gray is from white, so a dark backdrop goes to black
+            // at the edge rather than to a fraction of itself.
+            let behind = Float3(behindEdge.x, behindEdge.y, behindEdge.z)
+            let ringBurn = GlassCommon.linearBurn(behind, ringGray)
+            let sideBurn = GlassCommon.linearBurn(behind, sideGray)
+            let bothBurn = GlassCommon.linearBurn(ringBurn, sideGray)
+            shadowRgb = (ringBurn * onlyRing + sideBurn * onlyPair + bothBurn * bothBands) / coveredArea * stacked
             }
 
             if distancePx > 0.5 {
@@ -292,7 +311,8 @@ shader UiGlassFull {
                     out.color = Float4(0.0, 0.0, 0.0, 0.0)
                     return out
                 }
-                out.color = Float4(shadowRgb.x, shadowRgb.y, shadowRgb.z, shadowAlpha)
+                let shown = 1.0 - input.px.z
+                out.color = Float4(shadowRgb.x, shadowRgb.y, shadowRgb.z, shadowAlpha) * shown
                 return out
             }
             let cov = clamp(0.5 - distancePx / aa, 0.0, 1.0)
@@ -362,13 +382,7 @@ shader UiGlassFull {
             rgb = mix(rgb, rgb * input.edge.y, stroke)
             rgb = rgb + Float3(sheen, sheen, sheen)
 
-            let rimWidth = input.borderInk.w
-            let rimInk = input.borderInk.y
-            let rim = 0.0
-            if inside < rimWidth {
-                rim = clamp(rimWidth - inside, 0.0, 1.0) * input.borderInk.z
-            }
-            rgb = mix(rgb, Float3(rimInk, rimInk, rimInk), rim)
+            rgb = GlassCommon.specular(rgb, inside, input.borderInk.w, input.borderInk.z, n)
 
             let lightDodge = input.hsize.w
             let lightBurn = input.borderStack.w
@@ -389,7 +403,10 @@ shader UiGlassFull {
             // full to half across the inner half of the radius, then eased to
             // nothing — matching `motionGlowFalloff` on the Kira side.
             let lit = GlassCommon.touchGlow(input.local, Float3(input.glow.x, input.glow.y, input.glow.z), cov)
-            out.color = Float4(outRgb.x + lit, outRgb.y + lit, outRgb.z + lit, min(outAlpha + lit, 1.0))
+            // The surface fades whole: what it drew, premultiplied, thinned by
+            // how far it has faded, so what is behind shows through it evenly.
+            let shown = 1.0 - input.px.z
+            out.color = Float4(outRgb.x + lit, outRgb.y + lit, outRgb.z + lit, min(outAlpha + lit, 1.0)) * shown
             return out
         }
     }

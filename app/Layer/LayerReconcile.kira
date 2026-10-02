@@ -1,11 +1,11 @@
 import Foundation
 
-// The colour a described layer's fill channel animates to.
+// The color a described layer's fill channel animates to.
 //
-// One channel carries every colour a node draws in: a solid's fill, a run's ink,
+// One channel carries every color a node draws in: a solid's fill, a run's ink,
 // a glyph's tint, glass's tint, a gradient's first stop. A content that states
-// its colour is drawn in it; `backgroundColor` is the fill of a layer whose
-// content states none. Applying the background over the content's own colour
+// its color is drawn in it; `backgroundColor` is the fill of a layer whose
+// content states none. Applying the background over the content's own color
 // is what painted every label, glyph and transparent row in the description's
 // default.
 function caDescribedFill(layer: borrow CALayerDescription) -> CAColor {
@@ -58,62 +58,88 @@ function caDescribedBorderColor(layer: borrow CALayerDescription) -> CAColor {
     }
 }
 
-function caApplyLayerDescription(tree: borrow mut CALayerTree, id: LayerId, layer: borrow CALayerDescription) {
+// `geometryImmediate` puts the layer where the layout says at once while every
+// other property animates as it would: what a live resize asks for.
+function caApplyLayerDescription(tree: borrow mut CALayerTree, id: LayerId, layer: borrow CALayerDescription, geometryImmediate: Bool = false) {
     tree.setContent(id, layer.content)
+    if geometryImmediate {
+        tree.beginTransaction(caImmediateTiming())
+    }
     tree.setPosition(id, layer.position.x, layer.position.y)
     tree.setBounds(id, layer.size.width, layer.size.height)
+    if geometryImmediate {
+        tree.commitTransaction()
+    }
     tree.setOpacity(id, layer.opacity)
     tree.setScale(id, layer.scaleX, layer.scaleY)
     tree.setRotation(id, layer.rotation)
     tree.setAnchor(id, layer.anchorPoint.x, layer.anchorPoint.y)
     tree.setCornerRadius(id, caDescribedCornerRadius(layer))
     tree.setBorderWidth(id, caDescribedBorderWidth(layer))
+    tree.setHoverColor(id, layer.hoverColor)
+    tree.setPressColor(id, layer.pressColor)
     tree.setFillColor(id, caDescribedFill(layer))
     tree.setBorderColor(id, caDescribedBorderColor(layer))
+    tree.setShadow(id, layer.shadow.radius, layer.shadow.color.a > 0.0 ? 1.0 : 0.0, layer.shadow.offset.x, layer.shadow.offset.y)
+    tree.setShadowColor(id, layer.shadow.color)
     tree.setClip(id, layer.clipsChildren)
     tree.setRenderTarget(id, layer.renderTarget, RenderTargetId(0))
+    tree.setBlur(id, layer.blur)
     tree.setCapturesBackdrop(id, layer.capturesBackdrop)
     tree.setHit(id, layer.hittable, layer.interactive, layer.hitKey)
     tree.setLevel(id, layer.level)
+    tree.setRemoval(id, layer.removal)
     return
 }
 
-function caReconcileLayer(tree: borrow mut CALayerTree, parent: LayerId, layer: borrow CALayerDescription) -> LayerId {
+// A layer new to the tree takes its first values where they are, as Core
+// Animation's does: there is nothing on screen for it to move from. Animating
+// them would grow every view that appears out of the top-leading corner, from
+// the zero size and position a fresh layer starts at.
+function caReconcileLayer(tree: borrow mut CALayerTree, parent: LayerId, layer: borrow CALayerDescription, geometryImmediate: Bool = false) -> LayerId {
     var id = tree.matchChild(parent, layer.key)
-    if id == caNoLayer() {
+    let appearing = id == caNoLayer()
+    if appearing {
         id = tree.makeLayer(parent, layer.key, layer.content)
     }
     tree.reuse(id)
-    if layer.disablesActions {
+    if appearing || layer.disablesActions {
         tree.beginTransaction(caImmediateTiming())
         caApplyLayerDescription(tree, id, layer)
         tree.commitTransaction()
     } else {
-        caApplyLayerDescription(tree, id, layer)
+        caApplyLayerDescription(tree, id, layer, geometryImmediate)
     }
     var children: [LayerId] = []
     for child in layer.sublayers {
-        children.append(caReconcileLayer(tree, id, child))
+        children.append(caReconcileLayer(tree, id, child, geometryImmediate))
     }
     tree.setChildren(id, move children)
     return id
 }
 
-function caReconcile(tree: borrow mut CALayerTree, root: borrow CALayerDescription) -> LayerId {
+function caReconcile(tree: borrow mut CALayerTree, root: borrow CALayerDescription, geometryImmediate: Bool = false) -> LayerId {
     tree.beginReconcile()
     var rootId = tree.rootId
     if rootId == caNoLayer() {
         rootId = tree.makeLayer(caNoLayer(), root.key, root.content)
     }
     tree.reuse(rootId)
-    caApplyLayerDescription(tree, rootId, root)
+    caApplyLayerDescription(tree, rootId, root, geometryImmediate)
     var children: [LayerId] = []
     for child in root.sublayers {
-        children.append(caReconcileLayer(tree, rootId, child))
+        children.append(caReconcileLayer(tree, rootId, child, geometryImmediate))
     }
     tree.setChildren(rootId, move children)
     tree.endReconcile()
     return rootId
+}
+
+// A window being resized: every layer takes the new layout's frame at once, as
+// UIKit's content follows a live resize, while a fade, a color or a press that
+// was already running carries on rather than jumping to its end.
+function caReconcileResizing(tree: borrow mut CALayerTree, root: borrow CALayerDescription) -> LayerId {
+    return caReconcile(tree, root, true)
 }
 
 function caReconcileImmediate(tree: borrow mut CALayerTree, root: borrow CALayerDescription) -> LayerId {

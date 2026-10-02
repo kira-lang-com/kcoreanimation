@@ -121,9 +121,9 @@ function caChannelVelocity(ch: borrow CAChannel, now: Float) -> Float {
     return 0.0
 }
 
-// A perceptually-interpolated colour property: two endpoints and a 0..1 progress
+// A perceptually-interpolated color property: two endpoints and a 0..1 progress
 // channel that carries the same ease/spring machinery every scalar does. The
-// presentation colour is the OKLab mix at the progress value, so a colour fade
+// presentation color is the OKLab mix at the progress value, so a color fade
 // is timed exactly like a position and interrupts the same way.
 struct CAColorChannel {
     var from: CAColor = CAColor {}
@@ -143,8 +143,8 @@ function caColorChannelPresentation(ch: borrow CAColorChannel) -> CAColor {
     return caColorLerp(ch.from, ch.model, ch.progress.presentation)
 }
 
-// Retarget the colour: the current presentation becomes the new origin and the
-// progress restarts 0->1 toward the new colour, so an interrupted fade continues
+// Retarget the color: the current presentation becomes the new origin and the
+// progress restarts 0->1 toward the new color, so an interrupted fade continues
 // from where it visibly is rather than snapping to the old endpoint.
 function caColorChannelSet(ch: borrow mut CAColorChannel, target: borrow CAColor, immediate: Bool, spring: Bool, curve: borrow MotionCurveName, duration: Float, easing: MotionEasing, reducedMotion: Bool, now: Float) {
     if immediate {

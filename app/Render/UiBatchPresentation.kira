@@ -6,7 +6,7 @@ extend UiBatch {
     //
     // This is how a program with no window of its own draws: a component whose
     // pixels another process composites renders into shared memory, and the only
-    // thing that differs from presenting to a swapchain is which image the colour
+    // thing that differs from presenting to a swapchain is which image the color
     // attachment names.
     //
     // Texture and swapchain presentation share the same pass graph. Internal

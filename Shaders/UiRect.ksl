@@ -7,6 +7,8 @@
 // same buffer, so a stream can be drawn by either — the specialization is the
 // branches it does *not* take, not a different vertex format.
 
+import GlassCommon
+
 type UiQuad {
     // Clip position and pixel position at the top-left and bottom-right corners.
     let posX0: Float
@@ -17,7 +19,7 @@ type UiQuad {
     let pxY0: Float
     let pxX1: Float
     let pxY1: Float
-    // `local` at the same two corners: the SDF offset from the centre for a
+    // `local` at the same two corners: the SDF offset from the center for a
     // surface, the atlas uv for a glyph.
     let localX0: Float
     let localY0: Float
@@ -54,20 +56,20 @@ type UiQuad {
     let blurNearSplit: Float
     // The border block: the ring's spread (already snapped to a whole device
     // pixel by the host), the offset/spread of the pair that reach past the left
-    // and right extremes, and the grey they are all drawn in.
+    // and right extremes, and the gray they are all drawn in.
     let borderSpread: Float
     let borderSideOffset: Float
     let borderSideSpread: Float
-    let borderGrey: Float
-    // The sides are drawn in their own, darker grey — measured off the reference,
+    let borderGray: Float
+    // The sides are drawn in their own, darker gray — measured off the reference,
     // where the left and right edges are #C7C7C7 at full coverage while the top and
     // bottom are a half-covered #DBDBDB.
-    let borderSideGrey: Float
+    let borderSideGray: Float
     // The inner rim: how strongly it tints, and how far in from the edge it runs.
     let innerRimStrength: Float
     let innerRimWidth: Float
-    // The wash, as the platform authors it: two fills, each with a colour, an
-    // opacity and a blend mode. The LOWER layer's colour is `fill` and its opacity
+    // The wash, as the platform authors it: two fills, each with a color, an
+    // opacity and a blend mode. The LOWER layer's color is `fill` and its opacity
     // is `borderWidth` (mode 3 has no border of its own to describe), so what is
     // carried here is that layer's blend mode and the upper layer whole.
     let washBlend: Float
@@ -79,7 +81,7 @@ type UiQuad {
     let materialSpare0: Float
     let materialSpare1: Float
     let materialSpare2: Float
-    // The gradient block: the colour the far end of the quad takes and which
+    // The gradient block: the color the far end of the quad takes and which
     // way far runs. Declared by every shader that pulls this record, because
     // the record's STRIDE is what a pull reads by — a shader that stops one
     // field short reads every quad after the first from the wrong offset.
@@ -101,13 +103,18 @@ type UiQuad {
     let morphBlend: Float
     // 0 circular, 1 the continuous superellipse a squircle is.
     let shapeKind: Float
-    // The quad turned about its own centre, as cosine and sine — see
+    // The quad turned about its own center, as cosine and sine — see
     // `writeQuadRotation`. Only `UiBatch` acts on it; every other shader
     // declares it because a storage pull reads by the record's STRIDE, and a
     // shader that stops two fields short reads the next quad from the wrong
     // offset.
     let rotCos: Float
     let rotSin: Float
+    // The corner of the rounded box the quad is clipped to, zero for a plain
+    // one, and its kind: one for a continuous corner. Declared by every shader
+    // that pulls this record, for its stride.
+    let clipRadius: Float
+    let clipShapeKind: Float
 }
 
 type VertexIn {
@@ -126,7 +133,9 @@ type VertexOut {
     let fill: Float4
     let border: Float4
     let clip: Float4
-    // The touch highlight: where it is centred in this quad's own space, and
+    // The corner of that clip when it is a rounded box: radius, then kind.
+    let clipCorner: Float2
+    // The touch highlight: where it is centered in this quad's own space, and
     // how strongly it burns. Zero strength is no highlight and costs the
     // fragment one comparison.
     let glow: Float3
@@ -136,16 +145,24 @@ type FragmentOut {
     let color: Float4
 }
 
-function sdRound(point: Float2, halfSize: Float2, radius: Float) -> Float {
-    let q = Float2(
-        abs(point.x) - halfSize.x + radius,
-        abs(point.y) - halfSize.y + radius
-    )
-    let outside = Float2(max(q.x, 0.0), max(q.y, 0.0))
-    return min(max(q.x, q.y), 0.0) + length(outside)
+// How much of a fragment the clip leaves: all of it inside a plain box, and
+// inside a rounded one all but what falls past its corners, eased across a
+// pixel as a surface's own edge is.
+function clipCoverage(input: VertexOut) -> Float {
+    if input.clipCorner.x <= 0.0 {
+        return 1.0
+    }
+    let extent = Float2((input.clip.z - input.clip.x) * 0.5, (input.clip.w - input.clip.y) * 0.5)
+    let center = Float2((input.clip.x + input.clip.z) * 0.5, (input.clip.y + input.clip.w) * 0.5)
+    let radius = min(input.clipCorner.x, min(extent.x, extent.y))
+    let point = Float2(input.px.x - center.x, input.px.y - center.y)
+    if input.clipCorner.y > 0.5 {
+        return clamp(0.5 - GlassCommon.sdSquircle(point, extent, radius), 0.0, 1.0)
+    }
+    return clamp(0.5 - GlassCommon.sdRound(point, extent, radius), 0.0, 1.0)
 }
 
-// How strongly the touch highlight lights a point `distance` from its centre.
+// How strongly the touch highlight lights a point `distance` from its center.
 //
 // Two halves, matching `motionGlowFalloff` on the Kira side exactly. The inner
 // half runs straight from full strength down to half; the outer half eases the
@@ -208,7 +225,7 @@ shader UiRect {
             out.hsize = Float2(v.halfW, v.halfH)
             out.radius = v.radius
             out.borderWidth = v.borderWidth
-            // The corner's own fill: the near colour, or its mix with the far
+            // The corner's own fill: the near color, or its mix with the far
             // one at this corner's position along the gradient's axis. The
             // rasterizer interpolates between the corners, so a gradient is one
             // quad and costs a surface nothing when its axis is none.
@@ -227,6 +244,7 @@ shader UiRect {
             )
             out.border = Float4(v.borderR, v.borderG, v.borderB, v.borderA)
             out.clip = Float4(v.clipMinX, v.clipMinY, v.clipMaxX, v.clipMaxY)
+            out.clipCorner = Float2(v.clipRadius, v.clipShapeKind)
             out.glow = Float3(v.materialSpare0, v.materialSpare1, v.materialSpare2)
             return out
         }
@@ -254,15 +272,15 @@ shader UiRect {
                 result.color = Float4(0.0, 0.0, 0.0, 0.0)
                 return result
             }
-            let d = sdRound(input.local, input.hsize, input.radius)
-            let fillCov = clamp(0.5 - d, 0.0, 1.0)
+            let d = GlassCommon.sdRound(input.local, input.hsize, input.radius)
+            let fillCov = clamp(0.5 - d, 0.0, 1.0) * clipCoverage(input)
             if input.borderWidth > 0.0 {
                 if input.border.w > 0.0 {
                     let ih = Float2(
                         input.hsize.x - input.borderWidth,
                         input.hsize.y - input.borderWidth
                     )
-                    let di = sdRound(input.local, ih, max(input.radius - input.borderWidth, 0.0))
+                    let di = GlassCommon.sdRound(input.local, ih, max(input.radius - input.borderWidth, 0.0))
                     let inner = clamp(0.5 - di, 0.0, 1.0)
                     let rgb = mix(input.border.xyz, input.fill.xyz, inner)
                     let a = mix(input.border.w, input.fill.w, inner) * fillCov

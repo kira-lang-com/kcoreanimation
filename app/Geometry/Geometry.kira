@@ -135,10 +135,10 @@ function caInvert(t: borrow CAAffineTransform) -> CAAffineTransform {
     }
 }
 
-// A layer's world quad as the batch draws it: a centre, half extents along the
+// A layer's world quad as the batch draws it: a center, half extents along the
 // layer's own axes, and a rotation. Decomposed from the world transform, so a
 // rotated/scaled layer becomes an EXACT oriented quad (the batch rotates it
-// about its centre in the vertex stage) rather than an axis-aligned bounding box.
+// about its center in the vertex stage) rather than an axis-aligned bounding box.
 // Assumes a shear-free transform (translate/rotate/scale), which UI composition
 // produces.
 @Derive(Copy)

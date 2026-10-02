@@ -237,7 +237,7 @@ extend UiBatch {
     // loop -- a blur wants the window's backdrop, and a texture composited into
     // somebody else's window has not got one -- so a tree that split its quads
     // across streams had every stream but the last silently dropped, and the
-    // surface carried its clear colour and nothing else.
+    // surface carried its clear color and nothing else.
     function flushStreams(graphics: borrow Graphics, encoder: borrow mut RenderEncoder) {
         var state = nativeRecover<UiBatchState>(self.storage)
         var target = encoder

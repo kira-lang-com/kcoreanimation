@@ -1,6 +1,6 @@
 // The UI compositor's single shader. Every primitive the UI Foundation draws goes
 // through it, selected per vertex by `mode`:
-//   0 — SDF rounded-rect / border surface (local = pixel offset from the centre)
+//   0 — SDF rounded-rect / border surface (local = pixel offset from the center)
 //   0.25 — SDF squircle / border surface (a fourth-power superellipse corner)
 //   1 — glyph or icon coverage from the atlas (local = uv)
 //   2 — an external texture (a TextureView), `local` carrying its uv
@@ -23,9 +23,9 @@
 // wrote — the change is invisible in the framebuffer rather than merely close.
 //
 // Field reuse per mode is the price of one shader: mode 3 carries the glass rect's
-// uv transform in `border` (rg = centre, ba = half-size) and its wash strength in
+// uv transform in `border` (rg = center, ba = half-size) and its wash strength in
 // `borderWidth`; mode 4 carries the run's sample point in `border.rg`, the wash in
-// `borderWidth` and the wash colour's luminance in `edgeRefraction`.
+// `borderWidth` and the wash color's luminance in `edgeRefraction`.
 
 import GlassCommon
 
@@ -39,7 +39,7 @@ type UiQuad {
     let pxY0: Float
     let pxX1: Float
     let pxY1: Float
-    // `local` at the same two corners: the SDF offset from the centre for a
+    // `local` at the same two corners: the SDF offset from the center for a
     // surface, the atlas uv for a glyph.
     let localX0: Float
     let localY0: Float
@@ -76,20 +76,20 @@ type UiQuad {
     let blurNearSplit: Float
     // The border block: the ring's spread (already snapped to a whole device
     // pixel by the host), the offset/spread of the pair that reach past the left
-    // and right extremes, and the grey they are all drawn in.
+    // and right extremes, and the gray they are all drawn in.
     let borderSpread: Float
     let borderSideOffset: Float
     let borderSideSpread: Float
-    let borderGrey: Float
-    // The sides are drawn in their own, darker grey — measured off the reference,
+    let borderGray: Float
+    // The sides are drawn in their own, darker gray — measured off the reference,
     // where the left and right edges are #C7C7C7 at full coverage while the top and
     // bottom are a half-covered #DBDBDB.
-    let borderSideGrey: Float
+    let borderSideGray: Float
     // The inner rim: how strongly it tints, and how far in from the edge it runs.
     let innerRimStrength: Float
     let innerRimWidth: Float
-    // The wash, as the platform authors it: two fills, each with a colour, an
-    // opacity and a blend mode. The LOWER layer's colour is `fill` and its opacity
+    // The wash, as the platform authors it: two fills, each with a color, an
+    // opacity and a blend mode. The LOWER layer's color is `fill` and its opacity
     // is `borderWidth` (mode 3 has no border of its own to describe), so what is
     // carried here is that layer's blend mode and the upper layer whole.
     let washBlend: Float
@@ -101,12 +101,12 @@ type UiQuad {
     let materialSpare0: Float
     let materialSpare1: Float
     let materialSpare2: Float
-    // A gradient fill: the colour the far end of the quad takes, and which way
+    // A gradient fill: the color the far end of the quad takes, and which way
     // "far" runs — 0 none, 1 down, 2 across, 3 corner to corner. The near end is
     // `fill`, so a flat surface is a gradient whose axis is none and costs the
     // same quad it always did.
     //
-    // The blend happens in the VERTEX stage: a corner's colour is the mix at
+    // The blend happens in the VERTEX stage: a corner's color is the mix at
     // that corner, and the rasterizer interpolates between them for free. A
     // gradient drawn as a stack of strips — which is what a UI layer without
     // this has to do — is a dozen quads, a dozen draw records, and visible bands
@@ -129,13 +129,18 @@ type UiQuad {
     let morphBlend: Float
     // 0 circular, 1 the continuous superellipse a squircle is.
     let shapeKind: Float
-    // The quad turned about its own centre, as cosine and sine — see
+    // The quad turned about its own center, as cosine and sine — see
     // `writeQuadRotation`. Only `UiBatch` acts on it; every other shader
     // declares it because a storage pull reads by the record's STRIDE, and a
     // shader that stops two fields short reads the next quad from the wrong
     // offset.
     let rotCos: Float
     let rotSin: Float
+    // The corner of the rounded box the quad is clipped to, zero for a plain
+    // one, and its kind: one for a continuous corner. Declared by every shader
+    // that pulls this record, for its stride.
+    let clipRadius: Float
+    let clipShapeKind: Float
 }
 
 type VertexIn {
@@ -156,24 +161,26 @@ type VertexOut {
     // sixteen a fragment stage is guaranteed. A seventeenth did not fail to
     // compile — it failed to LINK, and the pipeline drew nothing at all, which
     // is a much worse way to find out. The three slots freed here are what the
-    // touch highlight and the morph are carried in.
+    // touch highlight, the morph and the clip's corner are carried in.
     let shape: Float4
     let fill: Float4
     let border: Float4
     let clip: Float4
+    // The corner of that clip when it is a rounded box: radius, then kind.
+    let clipCorner: Float2
     // The material block, packed as three vectors: stroke strength / darken /
     // peak / fade, sheen / lens bend / refraction reach / blur split, and the
-    // border's ring spread / side offset / side spread / grey.
+    // border's ring spread / side offset / side spread / gray.
     let edge: Float4
     let lens: Float4
     let borderStack: Float4
-    // Ring grey in x, side grey in y, then the inner rim's strength and width.
+    // Ring gray in x, side gray in y, then the inner rim's strength and width.
     let borderInk: Float4
-    // The wash's upper layer: colour in xyz, opacity in w.
+    // The wash's upper layer: color in xyz, opacity in w.
     let wash: Float4
     // The two layers' blend modes: lower in x, upper in y.
     let washBlend: Float2
-    // The touch highlight: where it is centred in this quad's own space, and
+    // The touch highlight: where it is centered in this quad's own space, and
     // how strongly it burns. Zero strength is no highlight.
     let glow: Float3
 }
@@ -182,7 +189,7 @@ type FragmentOut {
     let color: Float4
 }
 
-// How strongly the touch highlight lights a point `distance` from its centre.
+// How strongly the touch highlight lights a point `distance` from its center.
 //
 // The same two halves as `motionGlowFalloff` on the Kira side: straight from
 // full strength to half across the inner half of the radius, then eased away
@@ -257,12 +264,131 @@ function inkCoverageGamma(inkLuma: Float) -> Float {
 // Luminance weights (Rec. 601), used for the wash and for the ink decision.
 function lumaWeights() -> Float3 { return Float3(0.299, 0.587, 0.114) }
 
+// A shadow is its shape under a Gaussian blur, as a design tool draws one, and
+// not a ramp off the shape's outline: a ramp keeps the box's corners at every
+// distance, where a blur rounds them more the farther it spreads. Evan Wallace's
+// closed form -- exact across, through the error function, and four samples of
+// the Gaussian down. A continuous corner is taken as a circular one of its
+// radius; under a blur the two cannot be told apart.
+function shadowErf(x: Float) -> Float {
+    let a = abs(x)
+    let t = 1.0 + (0.278393 + (0.230389 + 0.078108 * a * a) * a) * a
+    let t2 = t * t
+    let r = 1.0 - 1.0 / (t2 * t2)
+    if x < 0.0 {
+        return 0.0 - r
+    }
+    return r
+}
+
+// How much of one row of the rounded box, `y` off its center, the blur
+// carries to `x`.
+function shadowRow(x: Float, y: Float, sigma: Float, corner: Float, halfSize: Float2) -> Float {
+    let delta = min(halfSize.y - corner - abs(y), 0.0)
+    let curved = halfSize.x - corner + sqrt(max(0.0, corner * corner - delta * delta))
+    let k = 0.70710678 / sigma
+    return 0.5 * (shadowErf((x + curved) * k) - shadowErf((x - curved) * k))
+}
+
+function shadowGaussian(x: Float, sigma: Float) -> Float {
+    return exp(0.0 - (x * x) / (2.0 * sigma * sigma)) / (2.50662827 * sigma)
+}
+
+function shadowSample(point: Float2, y: Float, sigma: Float, corner: Float, halfSize: Float2, step: Float) -> Float {
+    return shadowRow(point.x, point.y - y, sigma, corner, halfSize) * shadowGaussian(y, sigma) * step
+}
+
+// The blurred box's coverage at `point`, measured from its center.
+function blurredBoxCoverage(point: Float2, halfSize: Float2, radius: Float, sigma: Float) -> Float {
+    let corner = min(radius, min(halfSize.x, halfSize.y))
+    let low = point.y - halfSize.y
+    let high = point.y + halfSize.y
+    let start = clamp(-3.0 * sigma, low, high)
+    let end = clamp(3.0 * sigma, low, high)
+    let step = (end - start) / 4.0
+    let y = start + step * 0.5
+    return shadowSample(point, y, sigma, corner, halfSize, step)
+        + shadowSample(point, y + step, sigma, corner, halfSize, step)
+        + shadowSample(point, y + step * 2.0, sigma, corner, halfSize, step)
+        + shadowSample(point, y + step * 3.0, sigma, corner, halfSize, step)
+}
+
 function surfaceDistance(point: Float2, halfSize: Float2, radius: Float, mode: Float) -> Float {
     if mode > 0.1 && mode < 0.5 {
         return GlassCommon.sdSquircle(point, halfSize, radius)
     }
     return GlassCommon.sdRound(point, halfSize, radius)
 }
+
+// How much of a fragment the clip leaves: all of it inside a plain box, and
+// inside a rounded one all but what falls past its corners, eased across a
+// pixel as a surface's own edge is.
+function clipCoverage(input: VertexOut) -> Float {
+    if input.clipCorner.x <= 0.0 {
+        return 1.0
+    }
+    let extent = Float2((input.clip.z - input.clip.x) * 0.5, (input.clip.w - input.clip.y) * 0.5)
+    let center = Float2((input.clip.x + input.clip.z) * 0.5, (input.clip.y + input.clip.w) * 0.5)
+    let radius = min(input.clipCorner.x, min(extent.x, extent.y))
+    let point = Float2(input.px.x - center.x, input.px.y - center.y)
+    if input.clipCorner.y > 0.5 {
+        return clamp(0.5 - GlassCommon.sdSquircle(point, extent, radius), 0.0, 1.0)
+    }
+    return clamp(0.5 - GlassCommon.sdRound(point, extent, radius), 0.0, 1.0)
+}
+// A layer's gaussian blur, read off the texture its tree was drawn into:
+// the center and three rings of taps out to `reach` -- the blur's radius in
+// the texture's own coordinates -- weighted by a gaussian whose sigma is a
+// little under half of it. A tap past the texture's edge reads clear rather
+// than the edge again: the texture was held open by the reach, and what lies
+// past it is nothing.
+function blurTap(tex: Texture2d, smp: Sampler, uv: Float2, at: Float2, reach: Float2) -> Float4 {
+    let p = uv + at * reach
+    let inside = clamp(p.x * 4096.0, 0.0, 1.0) * clamp((1.0 - p.x) * 4096.0, 0.0, 1.0) * clamp(p.y * 4096.0, 0.0, 1.0) * clamp((1.0 - p.y) * 4096.0, 0.0, 1.0)
+    return sample(tex, smp, p) * inside
+}
+
+function blurredSample(tex: Texture2d, smp: Sampler, uv: Float2, reach: Float2) -> Float4 {
+    let s0 = blurTap(tex, smp, uv, Float2(0.0, 0.0), reach) * 0.090178446
+    let s1 = s0 + blurTap(tex, smp, uv, Float2(0.333333, 0.000000), reach) * 0.068541679
+    let s2 = s1 + blurTap(tex, smp, uv, Float2(0.166667, 0.288675), reach) * 0.068541679
+    let s3 = s2 + blurTap(tex, smp, uv, Float2(-0.166667, 0.288675), reach) * 0.068541679
+    let s4 = s3 + blurTap(tex, smp, uv, Float2(-0.333333, 0.000000), reach) * 0.068541679
+    let s5 = s4 + blurTap(tex, smp, uv, Float2(-0.166667, -0.288675), reach) * 0.068541679
+    let s6 = s5 + blurTap(tex, smp, uv, Float2(0.166667, -0.288675), reach) * 0.068541679
+    let s7 = s6 + blurTap(tex, smp, uv, Float2(0.643951, 0.172546), reach) * 0.030096135
+    let s8 = s7 + blurTap(tex, smp, uv, Float2(0.471405, 0.471405), reach) * 0.030096135
+    let s9 = s8 + blurTap(tex, smp, uv, Float2(0.172546, 0.643951), reach) * 0.030096135
+    let s10 = s9 + blurTap(tex, smp, uv, Float2(-0.172546, 0.643951), reach) * 0.030096135
+    let s11 = s10 + blurTap(tex, smp, uv, Float2(-0.471405, 0.471405), reach) * 0.030096135
+    let s12 = s11 + blurTap(tex, smp, uv, Float2(-0.643951, 0.172546), reach) * 0.030096135
+    let s13 = s12 + blurTap(tex, smp, uv, Float2(-0.643951, -0.172546), reach) * 0.030096135
+    let s14 = s13 + blurTap(tex, smp, uv, Float2(-0.471405, -0.471405), reach) * 0.030096135
+    let s15 = s14 + blurTap(tex, smp, uv, Float2(-0.172546, -0.643951), reach) * 0.030096135
+    let s16 = s15 + blurTap(tex, smp, uv, Float2(0.172546, -0.643951), reach) * 0.030096135
+    let s17 = s16 + blurTap(tex, smp, uv, Float2(0.471405, -0.471405), reach) * 0.030096135
+    let s18 = s17 + blurTap(tex, smp, uv, Float2(0.643951, -0.172546), reach) * 0.030096135
+    let s19 = s18 + blurTap(tex, smp, uv, Float2(0.984808, 0.173648), reach) * 0.007634326
+    let s20 = s19 + blurTap(tex, smp, uv, Float2(0.866025, 0.500000), reach) * 0.007634326
+    let s21 = s20 + blurTap(tex, smp, uv, Float2(0.642788, 0.766044), reach) * 0.007634326
+    let s22 = s21 + blurTap(tex, smp, uv, Float2(0.342020, 0.939693), reach) * 0.007634326
+    let s23 = s22 + blurTap(tex, smp, uv, Float2(0.000000, 1.000000), reach) * 0.007634326
+    let s24 = s23 + blurTap(tex, smp, uv, Float2(-0.342020, 0.939693), reach) * 0.007634326
+    let s25 = s24 + blurTap(tex, smp, uv, Float2(-0.642788, 0.766044), reach) * 0.007634326
+    let s26 = s25 + blurTap(tex, smp, uv, Float2(-0.866025, 0.500000), reach) * 0.007634326
+    let s27 = s26 + blurTap(tex, smp, uv, Float2(-0.984808, 0.173648), reach) * 0.007634326
+    let s28 = s27 + blurTap(tex, smp, uv, Float2(-0.984808, -0.173648), reach) * 0.007634326
+    let s29 = s28 + blurTap(tex, smp, uv, Float2(-0.866025, -0.500000), reach) * 0.007634326
+    let s30 = s29 + blurTap(tex, smp, uv, Float2(-0.642788, -0.766044), reach) * 0.007634326
+    let s31 = s30 + blurTap(tex, smp, uv, Float2(-0.342020, -0.939693), reach) * 0.007634326
+    let s32 = s31 + blurTap(tex, smp, uv, Float2(-0.000000, -1.000000), reach) * 0.007634326
+    let s33 = s32 + blurTap(tex, smp, uv, Float2(0.342020, -0.939693), reach) * 0.007634326
+    let s34 = s33 + blurTap(tex, smp, uv, Float2(0.642788, -0.766044), reach) * 0.007634326
+    let s35 = s34 + blurTap(tex, smp, uv, Float2(0.866025, -0.500000), reach) * 0.007634326
+    let s36 = s35 + blurTap(tex, smp, uv, Float2(0.984808, -0.173648), reach) * 0.007634326
+    return s36
+}
+
 shader UiBatch {
     // The first seven of the batch family's bindings, which are the ones this
     // shader reads: a rect, a glyph, an external-texture quad and an adaptive
@@ -300,7 +426,7 @@ shader UiBatch {
             let pxX = mix(v.pxX0, v.pxX1, right)
             let pxY = mix(v.pxY0, v.pxY1, bottom)
 
-            // Turned about its own centre.
+            // Turned about its own center.
             //
             // The rotation happens in PIXELS and is carried back into clip space
             // through this quad's own scale, because clip space is not square:
@@ -344,7 +470,7 @@ shader UiBatch {
             out.px = Float2(pxX, pxY)
             out.hsize = Float2(v.halfW, v.halfH)
             out.shape = Float4(v.radius, v.borderWidth, v.mode, v.edgeRefraction)
-            // The corner's own fill: the near colour, or its mix with the far
+            // The corner's own fill: the near color, or its mix with the far
             // one at this corner's position along the gradient's axis.
             let mixT = 0.0
             if v.gradientAxis > 2.5 {
@@ -361,10 +487,11 @@ shader UiBatch {
             )
             out.border = Float4(v.borderR, v.borderG, v.borderB, v.borderA)
             out.clip = Float4(v.clipMinX, v.clipMinY, v.clipMaxX, v.clipMaxY)
+            out.clipCorner = Float2(v.clipRadius, v.clipShapeKind)
             out.edge = Float4(v.edgeStrokeStrength, v.edgeStrokeDarken, v.edgeStrokePeak, v.edgeStrokeFade)
             out.lens = Float4(v.sheenStrength, v.lensMaxBend, v.refractionReach, v.blurNearSplit)
-            out.borderStack = Float4(v.borderSpread, v.borderSideOffset, v.borderSideSpread, v.borderGrey)
-            out.borderInk = Float4(v.borderGrey, v.borderSideGrey, v.innerRimStrength, v.innerRimWidth)
+            out.borderStack = Float4(v.borderSpread, v.borderSideOffset, v.borderSideSpread, v.borderGray)
+            out.borderInk = Float4(v.borderGray, v.borderSideGray, v.innerRimStrength, v.innerRimWidth)
             out.wash = Float4(v.washUpperR, v.washUpperG, v.washUpperB, v.washUpperAlpha)
             out.washBlend = Float2(v.washBlend, v.washUpperBlend)
             out.glow = Float3(v.materialSpare0, v.materialSpare1, v.materialSpare2)
@@ -409,8 +536,14 @@ shader UiBatch {
                 let d = surfaceDistance(input.local, input.hsize, input.shape.x, shadowShape)
                 let blur = max(input.shape.y, 0.0)
                 let coverage = clamp(0.5 - d, 0.0, 1.0)
-                if blur > 0.001 {
-                    coverage = 1.0 - smoothstep(0.0, blur, max(d, 0.0))
+                // A design tool's blur is two of the Gaussian's deviations.
+                if blur > 0.5 {
+                    coverage = blurredBoxCoverage(input.local, input.hsize, input.shape.x, blur * 0.5)
+                }
+                // Under glass, none of it inside the caster's own outline.
+                if input.border.z > 0.5 {
+                    let caster = surfaceDistance(input.local + Float2(input.border.x, input.border.y), input.hsize, input.shape.x, shadowShape)
+                    coverage = coverage * clamp(0.5 + caster, 0.0, 1.0)
                 }
                 let alpha = input.fill.w * coverage
                 out.color = Float4(input.fill.x * alpha, input.fill.y * alpha, input.fill.z * alpha, alpha)
@@ -458,15 +591,21 @@ shader UiBatch {
             if input.shape.z > 1.5 {
                 let transition = clamp(input.shape.w, 0.0, 1.0)
                 // TextureView's local coordinates are UVs, while the shared SDF
-                // expects point-space offsets from the quad centre. Keep the
+                // expects point-space offsets from the quad center. Keep the
                 // engine target's corners inside the same self-contained mask as
                 // every other Foundation surface.
                 let textureLocal = (input.local - Float2(0.5, 0.5)) * Float2(input.hsize.x * 2.0, input.hsize.y * 2.0)
                 let textureDistance = surfaceDistance(textureLocal, input.hsize, input.shape.x, 0.0)
-                let textureCoverage = clamp(0.5 - textureDistance, 0.0, 1.0)
+                let textureCoverage = clamp(0.5 - textureDistance, 0.0, 1.0) * clipCoverage(input)
                 // Steady light/dark mode samples exactly one 4K source. Sampling
                 // both and mixing by a compile-time-unknown 0 or 1 doubled the
                 // dominant fullscreen bandwidth forever after the 350ms crossfade.
+                if input.border.x > 0.0 || input.border.y > 0.0 {
+                    let texel = blurredSample(external, externalSmp, input.local, Float2(input.border.x, input.border.y))
+                    let alpha = texel.w * input.fill.w * textureCoverage
+                    out.color = Float4(texel.x * input.fill.w * textureCoverage, texel.y * input.fill.w * textureCoverage, texel.z * input.fill.w * textureCoverage, alpha)
+                    return out
+                }
                 if transition <= 0.001 {
                     let texel = sample(external, externalSmp, input.local)
                     let alpha = texel.w * input.fill.w * textureCoverage
@@ -499,7 +638,7 @@ shader UiBatch {
 
             // --- mode 0 / 0.25: SDF surface with an optional border ---
             let d = surfaceDistance(input.local, input.hsize, input.shape.x, input.shape.z)
-            let fillCov = clamp(0.5 - d, 0.0, 1.0)
+            let fillCov = clamp(0.5 - d, 0.0, 1.0) * clipCoverage(input)
             if input.shape.y > 0.0 {
                 if input.border.w > 0.0 {
                     let innerHalf = input.hsize - Float2(input.shape.y, input.shape.y)

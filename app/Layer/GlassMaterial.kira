@@ -19,9 +19,10 @@ struct CAGlassMaterial {
     let borderSpread: Float = 1.0
     let borderSideOffset: Float = 2.5
     let borderSideSpread: Float = 1.5
-    let borderGrey: Float = 0.859
-    let borderSideGrey: Float = 0.859
-    let innerRimStrength: Float = 0.48
+    let borderGray: Float = 0.859
+    let borderSideGray: Float = 0.859
+    // The kit's specular: its intensity, over its one-point bevel.
+    let innerRimStrength: Float = 0.25
     let innerRimWidth: Float = 2.0
 
     // Two-layer material wash. The lower layer's color/alpha is the layer tint;
@@ -34,7 +35,7 @@ struct CAGlassMaterial {
     let washUpperBlend: Float = 0.0
 
     // The light along the top and bottom edges: two soft bands hugging those
-    // edges, added in `edgeLightDodge`'s grey, and a broader one under the top
+    // edges, added in `edgeLightDodge`'s gray, and a broader one under the top
     // edge burned in `edgeLightBurn`'s. Black adds nothing and white burns
     // nothing, so the defaults are glass without it.
     let edgeLightDodge: Float = 0.0

@@ -84,7 +84,7 @@ function caColorSame(a: borrow CAColor, b: borrow CAColor) -> Bool {
     return a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a
 }
 
-// The same, for a perceptually-interpolated colour channel.
+// The same, for a perceptually-interpolated color channel.
 function caColorApplyTiming(ch: borrow mut CAColorChannel, timing: borrow CATiming, target: borrow CAColor, now: Float) -> Bool {
     let immediate = timing.disableActions || timing.mode == .Immediate
     if immediate {

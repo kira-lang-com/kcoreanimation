@@ -80,7 +80,7 @@ extend UiBatch {
             return
         }
         // Out of layers: the surface joins the last one, refracting the content below
-        // that layer rather than the glass beside it — the pre-stacking behaviour, and
+        // that layer rather than the glass beside it — the pre-stacking behavior, and
         // the only alternative to allocating capture chains without bound.
         if state.streamIndex.raw + 1 > maxDrawStreams() - 1 {
             return
@@ -149,8 +149,10 @@ extend UiBatch {
         // axis-aligned surface.
         rotCos: Float = 1.0,
         rotSin: Float = 0.0,
+        // How much of the finished glass shows over what is behind it.
+        opacity: Float = 1.0,
     ) {
-        if w <= 0.0 || h <= 0.0 {
+        if w <= 0.0 || h <= 0.0 || opacity <= 0.0 {
             return
         }
         var state = nativeRecover<UiBatchState>(self.storage)
@@ -258,20 +260,25 @@ extend UiBatch {
         if clampedRadius > halfH {
             clampedRadius = halfH
         }
-        // Morphing and rotated surfaces use one full exact patch. The optimized
-        // region split below relies on axis-aligned rectangular insets; once the
-        // surface is fused or turned, those rectangles no longer bound regions
-        // with the same shader preconditions.
-        if morphActive || rotated {
+        // Morphing, rotated and fading surfaces use one full exact patch. The
+        // optimized region split below relies on axis-aligned rectangular
+        // insets; once the surface is fused or turned, those rectangles no
+        // longer bound regions with the same shader preconditions. And the
+        // interior pipelines write opaquely, blending off, so only the full
+        // one -- which blends by its coverage -- can let what is behind a
+        // fading surface through. Its first spare carries how far it has faded,
+        // so the zero every other full patch carries is a surface fully there.
+        let fading = opacity < 1.0
+        if morphActive || rotated || fading {
             self.glassEmitPatch(
                 cx, cy, vw, vh, halfW, halfH, clampedRadius, 3.0,
                 -lhx, -lhy, lhx, lhy,
                 tint, blur, edgeRefraction,
                 clipMinX, clipMinY, clipMaxX, clipMaxY, material,
                 borderSpread, borderSideOffset, borderSideSpread, rimWidth, edgeBand,
-                0.0, 0.0, glowX, glowY, glowStrength,
-                // Centre-relative from here down: the shader measures `local`
-                // from the quad's centre, and the caller stated a rectangle.
+                1.0 - min(opacity, 1.0), 0.0, glowX, glowY, glowStrength,
+                // Center-relative from here down: the shader measures `local`
+                // from the quad's center, and the caller stated a rectangle.
                 (morphX + morphW * 0.5) - cx,
                 (morphY + morphH * 0.5) - cy,
                 morphW * 0.5,
@@ -369,8 +376,8 @@ extend UiBatch {
                     glowX: glowX,
                     glowY: glowY,
                     glowStrength: glowStrength,
-                    centreX: cx,
-                    centreY: cy,
+                    centerX: cx,
+                    centerY: cy,
                     halfWidth: halfW,
                     halfHeight: halfH,
                     radius: clampedRadius,
@@ -525,7 +532,7 @@ extend UiBatch {
         glowY: Float = 0.0,
         glowStrength: Float = 0.0,
         // The second shape this surface fuses with, already in the surface's
-        // own centre-relative space — the same origin `local` is measured from,
+        // own center-relative space — the same origin `local` is measured from,
         // so it travels to the shader unchanged.
         morphX: Float = 0.0,
         morphY: Float = 0.0,
@@ -540,7 +547,7 @@ extend UiBatch {
     ) {
         // Put every CUT between patches on a whole device pixel — see
         // `glassSnapToDevicePixel` for what goes wrong when one lands on a pixel
-        // centre instead. A cut is an edge two patches share, and every one of
+        // center instead. A cut is an edge two patches share, and every one of
         // them is an inset measured from the shape's own rectangular extent, so
         // an edge at or beyond that extent is not a cut: it is the outer boundary
         // of the surface's skirt, which borders nothing, is drawn by one pipeline
@@ -569,7 +576,7 @@ extend UiBatch {
         // out by returning transparent the way the blended path could — a patch
         // must simply never rasterize outside its clip. The rectangles are both
         // axis-aligned, so the intersection is exact; `local` follows because it
-        // is the pixel position minus the centre.
+        // is the pixel position minus the center.
         var px0 = cx + lx0
         var py0 = cy + ly0
         var px1 = cx + lx1
@@ -607,8 +614,8 @@ extend UiBatch {
             // 0.6 of a pixel — a fainter line, not the same one.
             borderSpread,
             borderSideOffset,
-            borderSideSpread, material.borderGrey,
-            material.borderSideGrey,
+            borderSideSpread, material.borderGray,
+            material.borderSideGray,
             material.innerRimStrength,
             rimWidth,
             // The wash: how `fill` blends (the lower layer), then the upper layer whole.
@@ -617,8 +624,9 @@ extend UiBatch {
             material.washUpperAlpha, material.washUpperBlend,
             // Spares: the copy patches carry 1/drawable-size in the first two
             // (UiGlassCopy turns its device position into the cache texel through
-            // them); the third is the anti-aliasing band every glass pipeline
-            // ramps its coverage over.
+            // them), and a full patch carries in the first how far its surface
+            // has faded; the third is the anti-aliasing band every glass
+            // pipeline ramps its coverage over.
             spare0, spare1, edgeBand,
             glowX - cx, glowY - cy, glowStrength,
             material.edgeLightDodge, material.edgeLightBurn,

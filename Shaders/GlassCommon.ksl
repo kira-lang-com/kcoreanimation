@@ -20,6 +20,24 @@
 // The wash ceiling — how opaque a frost step may ever make the surface.
 const washCeiling: Float = 0.9
 
+// The light along the inside of the rim: the kit's specular, one light in both
+// appearances, ADDED where the rim faces it -- full along the top and bottom
+// edges, a fifth of that down the sides, as the platform's dark menu measures
+// (+65 against +13). On light glass it has nowhere to go; on dark glass it is
+// the thin highlight that edges the panel. It is not a gray the rim is mixed
+// toward: mixed toward the edge's burn gray, a dark panel gets a flat gray
+// outline.
+const specularSideShare: Float = 0.2
+
+function specular(rgb: Float3, inside: Float, width: Float, intensity: Float, normal: Float2) -> Float3 {
+    if inside >= width {
+        return rgb
+    }
+    let facing = specularSideShare + (1.0 - specularSideShare) * abs(normal.y)
+    let lit = clamp(width - inside, 0.0, 1.0) * intensity * facing
+    return rgb + Float3(lit, lit, lit)
+}
+
 // The band inside the stroke over which the sheen falls off, and the band at
 // the edge over which blur fades in (the rim stays crisp). Shape, not amount:
 // how much sheen and how much blur are per-surface numbers a control can move,
@@ -34,7 +52,7 @@ const blurEdgeEnd: Float = 3.0
 // `edgeLightOffset` toward the opposite edge, so the hole each leaves lines up
 // with the near edge and only its blur reaches in — a soft band under the top
 // edge and another over the bottom. How bright and how dark are per-surface
-// greys carried in the vertex; this is the shape. `UiBatchGlass.kira`'s
+// grays carried in the vertex; this is the shape. `UiBatchGlass.kira`'s
 // `glassEdgeLightReach` mirrors the two blurs.
 const edgeLightOffset: Float = 40.0
 const edgeLightSpread: Float = 40.0
@@ -48,7 +66,7 @@ const edgeLightBurnBlur: Float = 30.0
 // crossfade into a full-resolution capture for the glass to read back. At rest
 // the second image is not read at all, on the same threshold
 // `UiBackground.ksl` settles on — so the tap is one fetch except during the
-// 350ms a scheme takes to arrive, and it is the same colour the background pass
+// 350ms a scheme takes to arrive, and it is the same color the background pass
 // writes beside it.
 function backdropTap(first: Texture2d, firstSmp: Sampler, second: Texture2d, secondSmp: Sampler, uv: Float2, blend: Float) -> Float4 {
     if blend <= 0.001 {
@@ -70,7 +88,7 @@ function innerShadow(distance: Float, blur: Float) -> Float {
 }
 
 // `rgb` lit along its top and bottom edges, given the distances to the holes
-// the light's two inner shadows leave: both bands added in `dodge`'s grey, and
+// the light's two inner shadows leave: both bands added in `dodge`'s gray, and
 // the top one, wider, burned in `burn`'s.
 function edgeLight(rgb: Float3, topHole: Float, bottomHole: Float, dodge: Float, burn: Float) -> Float3 {
     let lit = dodge * (innerShadow(topHole, edgeLightDodgeBlur) + innerShadow(bottomHole, edgeLightDodgeBlur))
@@ -101,9 +119,44 @@ function blendChannel(base: Float, layer: Float, mode: Float) -> Float {
     return base * layer
 }
 
+// Luminosity: the backdrop's hue and saturation at the layer's luminance --
+// the W3C `SetLum`, with its clip back into gamut. It is not separable per
+// channel, so it is its own function rather than a case of `blendChannel`. Dark
+// glass is this: a dark gray at luminosity darkens what is behind it without
+// draining its color, where the same gray at Normal is a neutral slab.
+function luminance(color: Float3) -> Float {
+    return 0.3 * color.x + 0.59 * color.y + 0.11 * color.z
+}
+
+function luminosity(base: Float3, layer: Float3) -> Float3 {
+    let target = luminance(layer)
+    let moved = base + Float3(target - luminance(base), target - luminance(base), target - luminance(base))
+    let lum = luminance(moved)
+    let low = min(min(moved.x, moved.y), moved.z)
+    let high = max(max(moved.x, moved.y), moved.z)
+    let clipped = moved
+    if low < 0.0 {
+        clipped = Float3(lum, lum, lum) + (moved - Float3(lum, lum, lum)) * (lum / max(lum - low, 0.000001))
+    }
+    if high > 1.0 {
+        clipped = Float3(lum, lum, lum) + (clipped - Float3(lum, lum, lum)) * ((1.0 - lum) / max(high - lum, 0.000001))
+    }
+    return clipped
+}
+
+// What is behind darkened by how far `gray` is from white, floored at black.
+function linearBurn(behind: Float3, gray: Float) -> Float3 {
+    return Float3(
+        max(behind.x + gray - 1.0, 0.0),
+        max(behind.y + gray - 1.0, 0.0),
+        max(behind.z + gray - 1.0, 0.0)
+    )
+}
+
 function blendLayer(base: Float3, layer: Float3, alpha: Float, mode: Float) -> Float3 {
     if alpha <= 0.0 { return base }
     if mode < 0.5 { return mix(base, layer, alpha) }
+    if mode > 7.5 && mode < 8.5 { return mix(base, luminosity(base, layer), alpha) }
     if mode < 1.5 {
         let added = Float3(
             clamp(base.x + layer.x, 0.0, 1.0),
@@ -186,7 +239,16 @@ function sdSquircle(point: Float2, halfSize: Float2, radius: Float) -> Float {
     let gx = pow(nx, squircleExponent - 1.0)
     let gy = pow(ny, squircleExponent - 1.0)
     let gradient = max(length(Float2(gx, gy)), 0.000001)
-    return ((radial - 1.0) * safeRadius) / gradient
+    let estimate = ((radial - 1.0) * safeRadius) / gradient
+    // Past the outline the gradient outgrows the radial term, and the estimate
+    // falls back toward zero the farther out it goes -- harmless one pixel off
+    // the edge, but a shadow blurred across forty points read its corners as
+    // touching the shape and drew them as dark squares. The shape lies inside
+    // its box, so the box's distance is a floor that grows as it should.
+    if estimate > 0.0 {
+        return max(estimate, length(max(abs(point) - halfSize, Float2(0.0, 0.0))))
+    }
+    return estimate
 }
 
 function sdRoundNormal(point: Float2, halfSize: Float2, radius: Float) -> Float2 {
@@ -220,7 +282,7 @@ function refractionCurve(value: Float) -> Float {
     return 1.0 - 2.3 * pow(5.2 * e, -6.9 * value - 0.7)
 }
 
-// The touch highlight's falloff: full at the centre, straight down to half
+// The touch highlight's falloff: full at the center, straight down to half
 // across the inner half of the radius, then eased to nothing at the rim. The
 // same two halves as `motionGlowFalloff` on the Kira side, and the radius is
 // pinned to `motionGlowDiameter()` — the two must move together.
@@ -240,7 +302,7 @@ function glowFalloff(distance: Float) -> Float {
     return 0.5 * (inv * inv * inv * 0.5)
 }
 
-// What the highlight adds at a point. `glow` carries its centre in the quad's
+// What the highlight adds at a point. `glow` carries its center in the quad's
 // own space (xy) and its strength (z); zero strength costs one comparison.
 function touchGlow(local: Float2, glow: Float3, coverage: Float) -> Float {
     if glow.z <= 0.0 {
@@ -267,7 +329,7 @@ function smoothUnion(first: Float, second: Float, k: Float) -> Float {
 // The fused surface: this quad's own rounded rectangle smooth-unioned with the
 // second shape it is morphing into.
 //
-// `morph` carries that shape's centre in the quad's own space (xy) and its half
+// `morph` carries that shape's center in the quad's own space (xy) and its half
 // extent (zw); `morphRadius` its corner and `k` the reach. At zero reach the
 // second shape is not evaluated at all, which is every glass surface on screen
 // but the one or two in a morph.
@@ -360,7 +422,7 @@ function morphedNormal(local: Float2, hsize: Float2, radius: Float, morph: Float
     let dy = morphedDistance(local + Float2(0.0, e), hsize, radius, morph, morphRadius, k, kind)
         - morphedDistance(local - Float2(0.0, e), hsize, radius, morph, morphRadius, k, kind)
     let gradient = Float2(dx, dy)
-    // Dead centre of a shape the field is flat, and a normalized zero is a NaN
+    // Dead center of a shape the field is flat, and a normalized zero is a NaN
     // that shows up as a black pixel. Nothing is lit there anyway.
     if length(gradient) < 0.00001 {
         return Float2(0.0, -1.0)

@@ -34,7 +34,7 @@ struct MotionPullState {
     var anchorY: Float = 0.0
 
     var held: Bool = false
-    // Whether the pointer has travelled far enough to be a drag rather than a
+    // Whether the pointer has traveled far enough to be a drag rather than a
     // press that has not moved yet.
     var dragging: Bool = false
 
@@ -107,7 +107,7 @@ struct MotionDeformation {
     let y: Float = 0.0
     // The lean: the element's extent on each axis, relative to its size,
     // greater than one along the way it is pulled and less across it. It is
-    // applied last, about the element's centre, to the whole element as it was
+    // applied last, about the element's center, to the whole element as it was
     // drawn — what it holds included — while its box stays where layout put
     // it, so nothing around it moves.
     let scaleX: Float = 1.0
@@ -147,7 +147,7 @@ function motionPullPressTarget(state: borrow mut MotionPullState, target: Float,
     return
 }
 
-// A spring honouring the viewer's motion preference, for one built by hand
+// A spring honoring the viewer's motion preference, for one built by hand
 // rather than picked by name.
 function motionCurveShape(spring: MotionSpring, reducedMotion: Bool) -> MotionSpring {
     if reducedMotion {
@@ -179,7 +179,7 @@ function motionPullMove(state: borrow mut MotionPullState, pointerX: Float, poin
 
     // Every point of this pull is resisted, against the element's own reach
     // rather than a viewport: the control is anchored, so there is no distance
-    // at which it stops resisting and starts travelling freely.
+    // at which it stops resisting and starts traveling freely.
     let constant = motionRubberBandConstant()
     state.x = motionPullResisted(state.rawX, state.reach, constant)
     state.y = motionPullResisted(state.rawY, state.reach, constant)

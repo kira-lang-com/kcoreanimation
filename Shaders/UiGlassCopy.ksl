@@ -4,7 +4,7 @@
 // the cache pass rendered it, the interior is a static image, and this
 // pipeline re-presents it as an opaque texel-aligned copy. The cache holds
 // the exact quantized bytes the live pipelines produced, and a nearest-texel
-// fetch at pixel centres returns them unchanged, so a cached frame is
+// fetch at pixel centers returns them unchanged, so a cached frame is
 // byte-identical to a live one at a fraction of the shading cost.
 //
 // The cache texture rides the ATLAS bind slot: the draw loop swaps the
@@ -57,8 +57,8 @@ type UiQuad {
     let borderSpread: Float
     let borderSideOffset: Float
     let borderSideSpread: Float
-    let borderGrey: Float
-    let borderSideGrey: Float
+    let borderGray: Float
+    let borderSideGray: Float
     let innerRimStrength: Float
     let innerRimWidth: Float
     let washBlend: Float
@@ -70,7 +70,7 @@ type UiQuad {
     let materialSpare0: Float
     let materialSpare1: Float
     let materialSpare2: Float
-    // The gradient block: the colour the far end of the quad takes and which
+    // The gradient block: the color the far end of the quad takes and which
     // way far runs. Declared by every shader that pulls this record, because
     // the record's STRIDE is what a pull reads by — a shader that stops one
     // field short reads every quad after the first from the wrong offset.
@@ -92,13 +92,18 @@ type UiQuad {
     let morphBlend: Float
     // 0 circular, 1 the continuous superellipse a squircle is.
     let shapeKind: Float
-    // The quad turned about its own centre, as cosine and sine — see
+    // The quad turned about its own center, as cosine and sine — see
     // `writeQuadRotation`. Only `UiBatch` acts on it; every other shader
     // declares it because a storage pull reads by the record's STRIDE, and a
     // shader that stops two fields short reads the next quad from the wrong
     // offset.
     let rotCos: Float
     let rotSin: Float
+    // The corner of the rounded box the quad is clipped to, zero for a plain
+    // one, and its kind: one for a continuous corner. Declared by every shader
+    // that pulls this record, for its stride.
+    let clipRadius: Float
+    let clipShapeKind: Float
 }
 
 type VertexIn {
@@ -175,7 +180,7 @@ shader UiGlassCopy {
             }
 
             // The cache pass rendered this pixel at this same device
-            // position; position times 1/size is its texel centre. The atlas
+            // position; position times 1/size is its texel center. The atlas
             // slot holds the cache texture around copy runs.
             let uv = Float2(
                 input.clip_position.x * input.invSize.x,

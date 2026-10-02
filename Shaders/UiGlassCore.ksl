@@ -60,8 +60,8 @@ type UiQuad {
     let borderSpread: Float
     let borderSideOffset: Float
     let borderSideSpread: Float
-    let borderGrey: Float
-    let borderSideGrey: Float
+    let borderGray: Float
+    let borderSideGray: Float
     let innerRimStrength: Float
     let innerRimWidth: Float
     let washBlend: Float
@@ -73,7 +73,7 @@ type UiQuad {
     let materialSpare0: Float
     let materialSpare1: Float
     let materialSpare2: Float
-    // The gradient block: the colour the far end of the quad takes and which
+    // The gradient block: the color the far end of the quad takes and which
     // way far runs. Declared by every shader that pulls this record, because
     // the record's STRIDE is what a pull reads by — a shader that stops one
     // field short reads every quad after the first from the wrong offset.
@@ -95,13 +95,18 @@ type UiQuad {
     let morphBlend: Float
     // 0 circular, 1 the continuous superellipse a squircle is.
     let shapeKind: Float
-    // The quad turned about its own centre, as cosine and sine — see
+    // The quad turned about its own center, as cosine and sine — see
     // `writeQuadRotation`. Only `UiBatch` acts on it; every other shader
     // declares it because a storage pull reads by the record's STRIDE, and a
     // shader that stops two fields short reads the next quad from the wrong
     // offset.
     let rotCos: Float
     let rotSin: Float
+    // The corner of the rounded box the quad is clipped to, zero for a plain
+    // one, and its kind: one for a continuous corner. Declared by every shader
+    // that pulls this record, for its stride.
+    let clipRadius: Float
+    let clipShapeKind: Float
 }
 
 type VertexIn {
@@ -123,11 +128,11 @@ type VertexOut {
     let clip: Float4
     // x: blur dial, y: near/far split, z: lower wash alpha, w: upper wash alpha
     let dials: Float4
-    // Lower wash colour, and its blend mode in w.
+    // Lower wash color, and its blend mode in w.
     let fillWash: Float4
-    // Upper wash colour, and its blend mode in w.
+    // Upper wash color, and its blend mode in w.
     let upperWash: Float4
-    // The quad's own coordinates, and the touch highlight: centre in xy of that
+    // The quad's own coordinates, and the touch highlight: center in xy of that
     // same space, strength in z.
     let local: Float2
     // The touch highlight (xyz) and the surface's corner kind (w). A `Float3`

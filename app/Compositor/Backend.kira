@@ -57,7 +57,7 @@ class KiraGraphicsFoundationBackend {
         return
     }
 
-    // Emit one liquid-glass quad. `fill` is the already-resolved wash colour;
+    // Emit one liquid-glass quad. `fill` is the already-resolved wash color;
     // the surface's own local extent and rotation come from the plan, the
     // refraction dials and touch/morph state from the glass content.
     function drawRetainedGlass(
@@ -71,6 +71,8 @@ class KiraGraphicsFoundationBackend {
         clipMinY: Float,
         clipMaxX: Float,
         clipMaxY: Float,
+        // How much of the finished glass shows over what is behind it.
+        opacity: Float = 1.0,
     ) {
         self.drewVisibleUi = true
         // The surface is drawn at the size it takes on screen, so a layer that
@@ -112,13 +114,15 @@ class KiraGraphicsFoundationBackend {
             glass.morphBlend,
             Float(glass.shapeKind),
             quad.rotCos,
-            quad.rotSin
+            quad.rotSin,
+            opacity
         )
         return
     }
 
     // Composite an isolated pass's texture (or any external texture) over its
-    // bounds — the group-opacity / isolated-pass path.
+    // bounds — the group-opacity / isolated-pass path — blurred by `blur`
+    // points.
     function drawTextureFields(
         bounds: borrow Rect,
         texture: TextureHandle,
@@ -126,8 +130,12 @@ class KiraGraphicsFoundationBackend {
         transition: Float,
         opacity: Float,
         radius: Float,
+        blur: Float = 0.0,
+        clip: Rect = Rect { x: 0.0 - 1000000.0, y: 0.0 - 1000000.0, width: 2000000.0, height: 2000000.0 },
+        clipRadius: Float = 0.0,
+        clipShapeKind: Float = 0.0,
     ) {
-        if opacity <= 0.0 || bounds.width <= 0.0 || bounds.height <= 0.0 {
+        if opacity <= 0.0 || bounds.width <= 0.0 || bounds.height <= 0.0 || clip.width <= 0.0 || clip.height <= 0.0 {
             return
         }
         self.drewVisibleUi = true
@@ -144,10 +152,13 @@ class KiraGraphicsFoundationBackend {
             opacity,
             transition,
             radius,
-            bounds.x,
-            bounds.y,
-            bounds.x + bounds.width,
-            bounds.y + bounds.height
+            max(bounds.x, clip.x),
+            max(bounds.y, clip.y),
+            min(bounds.x + bounds.width, clip.x + clip.width),
+            min(bounds.y + bounds.height, clip.y + clip.height),
+            blur,
+            clipRadius,
+            clipShapeKind
         )
         return
     }

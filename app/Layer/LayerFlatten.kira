@@ -3,10 +3,10 @@ import Foundation
 // Flattening the retained tree into the presentation draw list the hit tester
 // walks and the simple compositor path consumes.
 //
-// Each item carries the layer's EXACT oriented quad (centre, half extents,
+// Each item carries the layer's EXACT oriented quad (center, half extents,
 // rotation, decomposed from the world transform — not an axis-aligned box), the
 // axis-aligned clip it inherited, its resolved presentation appearance
-// (perceptual fill/border colour, corner radius, border width), and the
+// (perceptual fill/border color, corner radius, border width), and the
 // effective opacity folded down the tree. Items come out in paint order: a
 // parent before its children, siblings in order, hoisted overlays last (by
 // level), each walked from the canvas root so it escapes ancestor clips.
@@ -34,6 +34,7 @@ struct CADrawItem {
     var clipMaxX: Float = 1000000.0
     var clipMaxY: Float = 1000000.0
     var clipRadius: Float = 0.0
+    var clipShapeKind: Int = 0
     var clips: Bool = false
     var groupOpacity: Bool = false
     var hit: Bool = false
@@ -51,6 +52,7 @@ struct CAWalkFrame {
     var clipMaxX: Float = 1000000.0
     var clipMaxY: Float = 1000000.0
     var clipRadius: Float = 0.0
+    var clipShapeKind: Int = 0
     var glassWash: Float = 0.0
     var glassWashLuma: Float = 1.0
 }
@@ -100,6 +102,7 @@ function caDrawItemFor(node: borrow CALayerNode, frame: borrow CAWalkFrame, worl
         clipMaxX: frame.clipMaxX,
         clipMaxY: frame.clipMaxY,
         clipRadius: frame.clipRadius,
+        clipShapeKind: frame.clipShapeKind,
         clips: node.clip,
         groupOpacity: node.groupOpacity,
         hit: node.hit,
@@ -121,6 +124,7 @@ function caChildFrame(node: borrow CALayerNode, frame: borrow CAWalkFrame, world
         out.clipMaxX = min(frame.clipMaxX, box.x + box.width)
         out.clipMaxY = min(frame.clipMaxY, box.y + box.height)
         out.clipRadius = node.cornerRadius.presentation * caLengthScale(world)
+        out.clipShapeKind = caContentShapeKind(node.content)
     }
     match node.content {
         Glass(glass) -> {

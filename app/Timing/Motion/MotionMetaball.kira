@@ -130,16 +130,16 @@ function motionMetaballAdvance(state: borrow mut MotionMetaballState, delta: Flo
 function motionMetaballFrameAt(from: borrow MotionShape, to: borrow MotionShape, amount: Float) -> MotionMetaballFrame {
     let t = clamp(amount, 0.0, 1.0)
     return MotionMetaballFrame {
-        // The source travels to the destination's centre while collapsing to
+        // The source travels to the destination's center while collapsing to
         // nothing, so it is gone exactly when the morph completes.
         source: motionShapeBetween(from, motionShapeCollapsed(to, from), t),
-        // The destination grows from the source's centre to its own full size.
+        // The destination grows from the source's center to its own full size.
         target: motionShapeBetween(motionShapeCollapsed(from, to), to, t),
         blend: motionMetaballReach(t)
     }
 }
 
-// A shape reduced to a point at another shape's centre — what the destination
+// A shape reduced to a point at another shape's center — what the destination
 // has grown from, and what the source collapses to.
 function motionShapeCollapsed(at: borrow MotionShape, like: borrow MotionShape) -> MotionShape {
     let cx = at.x + at.width * 0.5

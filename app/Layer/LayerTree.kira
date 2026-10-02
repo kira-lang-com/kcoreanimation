@@ -39,6 +39,11 @@ struct CALayerTree {
     // Absolute clock, in seconds. Sets stamp channels with it; a frame samples
     // every channel at it. Fed from the graphics monotonic clock by the runner.
     var clock: Float = 0.0
+    // The layer the pointer is over, or none. Its fill shows its hover wash.
+    var hoveredId: LayerId = LayerId(0)
+    // The layer held down, or none. Its fill shows its press wash while the
+    // pointer is on it.
+    var pressedId: LayerId = LayerId(0)
     function nodeSlot(id: LayerId) -> Option<LayerSlot> {
         if id.raw <= 0 || id.raw >= self.indexOfId.count { return .None }
         return self.indexOfId[id.raw]
@@ -224,7 +229,80 @@ struct CALayerTree {
     }
         let timing = self.currentTiming()
         var node = self.nodes[idx.raw]
-        if caColorApplyTiming(node.fillColor, timing, color, self.clock) {
+        node.restingFill = color
+        if caColorApplyTiming(node.fillColor, timing, caShownFill(node, id == self.hoveredId, id == self.pressedId), self.clock) {
+            node.damaged = true
+        }
+        self.nodes[idx.raw] = node
+        return
+    }
+
+    function setHoverColor(id: LayerId, color: CAColor) {
+        var idx = LayerSlot(0)
+        match self.nodeSlot(id) {
+            None -> { return }
+            Some(slot) -> { idx = slot }
+        }
+        var node = self.nodes[idx.raw]
+        if caColorSame(node.hoverColor, color) {
+            return
+        }
+        node.hoverColor = color
+        self.nodes[idx.raw] = node
+        self.relight(id)
+        return
+    }
+
+    function setPressColor(id: LayerId, color: CAColor) {
+        var idx = LayerSlot(0)
+        match self.nodeSlot(id) {
+            None -> { return }
+            Some(slot) -> { idx = slot }
+        }
+        var node = self.nodes[idx.raw]
+        if caColorSame(node.pressColor, color) {
+            return
+        }
+        node.pressColor = color
+        self.nodes[idx.raw] = node
+        self.relight(id)
+        return
+    }
+
+    // This layer is now held down, or none is.
+    function setPressed(id: LayerId) {
+        if id == self.pressedId {
+            return
+        }
+        let left = self.pressedId
+        self.pressedId = id
+        self.relight(left)
+        self.relight(id)
+        return
+    }
+
+    // The pointer is now over this layer, or over none. The layer it left
+    // fades back to its fill and the one it came to up to its wash, on the
+    // transaction's timing like any other change.
+    function setHovered(id: LayerId) {
+        if id == self.hoveredId {
+            return
+        }
+        let left = self.hoveredId
+        self.hoveredId = id
+        self.relight(left)
+        self.relight(id)
+        return
+    }
+
+    function relight(id: LayerId) {
+        var idx = LayerSlot(0)
+        match self.nodeSlot(id) {
+            None -> { return }
+            Some(slot) -> { idx = slot }
+        }
+        var node = self.nodes[idx.raw]
+        if caColorApplyTiming(node.fillColor, self.currentTiming(), caShownFill(node, id == self.hoveredId, id == self.pressedId), self.clock) {
             node.damaged = true
         }
         self.nodes[idx.raw] = node
@@ -392,6 +470,21 @@ struct CALayerTree {
         return
     }
 
+    function setBlur(id: LayerId, radius: Float) {
+        var idx = LayerSlot(0)
+        match self.nodeSlot(id) {
+            None -> { return }
+            Some(slot) -> { idx = slot }
+        }
+        var node = self.nodes[idx.raw]
+        if node.blur != radius {
+            node.blur = radius
+            node.damaged = true
+            self.nodes[idx.raw] = node
+        }
+        return
+    }
+
     function setCapturesBackdrop(id: LayerId, captures: Bool) {
         var idx = LayerSlot(0)
         match self.nodeSlot(id) {
@@ -477,8 +570,70 @@ struct CALayerTree {
                 self.nodes[i] = node
             }
         }
+        if self.finishLeaving() {
+            anyMoving = true
+        }
         self.moving = anyMoving
         return anyMoving
+    }
+
+    // A layer whose removal has run goes on the frame it ends, not at the next
+    // reconcile: it and everything it holds come out of the tree, and the
+    // parent that was still drawing it stops. Whether anything went, so the
+    // frame that shows it gone is drawn.
+    function finishLeaving() -> Bool {
+        var finished = false
+        for i in 0..self.nodes.count {
+            let node = self.nodes[i]
+            if node.mounted && !node.reused && node.leavingUntil >= 0.0 && self.clock >= node.leavingUntil {
+                self.dropFromParent(node.parentId, node.id)
+                self.unmountSubtree(node.id)
+                finished = true
+            }
+        }
+        return finished
+    }
+
+    function dropFromParent(parent: LayerId, id: LayerId) {
+        match self.nodeSlot(parent) {
+            None -> { return }
+            Some(slot) -> {
+                var node = self.nodes[slot.raw]
+                var kept: [LayerId] = []
+                for child in node.childIds {
+                    if child != id {
+                        kept.append(child)
+                    }
+                }
+                node.childIds = move kept
+                node.damaged = true
+                self.nodes[slot.raw] = node
+            }
+        }
+        return
+    }
+
+    // A child the last reconcile described again has moved on to the parent
+    // that holds it now, and stays.
+    function unmountSubtree(id: LayerId) {
+        match self.nodeSlot(id) {
+            None -> { return }
+            Some(slot) -> {
+                var node = self.nodes[slot.raw]
+                if !node.mounted || node.reused {
+                    return
+                }
+                node.mounted = false
+                node.leavingUntil = -1.0
+                let children = copy node.childIds
+                self.nodes[slot.raw] = node
+                self.teardownCount += 1
+                for child in children {
+                    self.unmountSubtree(child)
+                }
+            }
+        }
+        return
     }
 
     // Set the absolute clock and sample. Drift-free: the result depends only on
@@ -514,12 +669,28 @@ struct CALayerTree {
         return
     }
 
+    // A layer described again. One that was leaving stays: it is matched
+    // back, and what the description says now retargets it from wherever its
+    // removal had taken it.
     function reuse(id: LayerId) {
         match self.nodeSlot(id) {
             None -> { return }
             Some(slot) -> {
                 var node = self.nodes[slot.raw]
                 node.reused = true
+                node.leavingUntil = -1.0
+                self.nodes[slot.raw] = node
+            }
+        }
+        return
+    }
+
+    function setRemoval(id: LayerId, removal: CARemoval) {
+        match self.nodeSlot(id) {
+            None -> { return }
+            Some(slot) -> {
+                var node = self.nodes[slot.raw]
+                node.removal = removal
                 self.nodes[slot.raw] = node
             }
         }
@@ -540,7 +711,9 @@ struct CALayerTree {
                 Some(slot) -> { cidx = slot }
             }
             let child = self.nodes[cidx.raw]
-            if child.mounted && !child.reused && child.key == key {
+            // A leaving layer comes back only to its own key: an unkeyed
+            // sibling matched by order is some other layer.
+            if child.mounted && !child.reused && child.key == key && (key != 0 || child.leavingUntil < 0.0) {
                 self.reuse(childId)
                 return childId
             }
@@ -563,18 +736,103 @@ struct CALayerTree {
         return
     }
 
+    // Takes out every layer the description no longer has, unless it leaves
+    // with a removal: then it begins leaving, where it stood under the parent
+    // that still holds it, and goes once its removal has run. Whatever it
+    // holds leaves with it.
     function endReconcile() -> Int {
+        for i in 0..self.nodes.count {
+            let node = self.nodes[i]
+            if node.mounted && !node.reused && node.leavingUntil < 0.0 && node.removal.duration > 0.0 && self.isReused(node.parentId) {
+                self.beginLeaving(node.id)
+            }
+        }
         var torn = 0
         for i in 0..self.nodes.count {
             var node = self.nodes[i]
             if node.mounted && !node.reused && node.id != self.rootId {
+                if self.stillLeaving(node.id) {
+                    if node.leavingUntil >= 0.0 {
+                        self.keepUnder(node.parentId, node.id)
+                    }
+                    continue
+                }
                 node.mounted = false
                 torn += 1
+                self.nodes[i] = node
             }
-            self.nodes[i] = node
         }
         self.teardownCount += torn
         return torn
+    }
+
+    function isReused(id: LayerId) -> Bool {
+        match self.nodeSlot(id) {
+            None -> return false
+            Some(slot) -> return self.nodes[slot.raw].mounted && self.nodes[slot.raw].reused
+        }
+    }
+
+    // The layer eases to its removal's scale and opacity and stops answering
+    // presses.
+    function beginLeaving(id: LayerId) {
+        var idx = LayerSlot(0)
+        match self.nodeSlot(id) {
+            None -> { return }
+            Some(slot) -> { idx = slot }
+        }
+        var node = self.nodes[idx.raw]
+        let removal = node.removal
+        node.leavingUntil = self.clock + removal.duration
+        node.hit = false
+        node.interactive = false
+        self.nodes[idx.raw] = node
+        self.beginTransaction(caEaseTiming(removal.duration, .EaseOut))
+        self.setOpacity(id, removal.opacity)
+        self.setScale(id, removal.scale, removal.scale)
+        self.commitTransaction()
+        return
+    }
+
+    // Whether this layer, or one it sits in, is leaving and not yet gone.
+    function stillLeaving(id: LayerId) -> Bool {
+        var current = id
+        while current != caNoLayer() {
+            var idx = LayerSlot(0)
+            match self.nodeSlot(current) {
+                None -> { return false }
+                Some(slot) -> { idx = slot }
+            }
+            let node = self.nodes[idx.raw]
+            if node.reused {
+                return false
+            }
+            if node.leavingUntil >= 0.0 {
+                return self.clock < node.leavingUntil
+            }
+            current = node.parentId
+        }
+        return false
+    }
+
+    // A leaving layer is no longer among the children its parent was just
+    // given, so it is put back, last, to be drawn until it is gone.
+    function keepUnder(parent: LayerId, id: LayerId) {
+        match self.nodeSlot(parent) {
+            None -> { return }
+            Some(slot) -> {
+                var node = self.nodes[slot.raw]
+                for child in node.childIds {
+                    if child == id {
+                        return
+                    }
+                }
+                node.childIds.append(id)
+                node.damaged = true
+                self.nodes[slot.raw] = node
+            }
+        }
+        return
     }
 
     // --- queries (presentation is what is on screen this frame) ------------
@@ -632,6 +890,25 @@ struct CALayerTree {
         match self.nodeSlot(id) { None -> { return false } Some(idx) -> { return self.nodes[idx.raw].mounted } }
     }
 
+    // The key a layer answers presses under as the tree stands now: zero for a
+    // layer that is gone or answers none.
+    function hitKeyOf(id: LayerId) -> Int {
+        match self.nodeSlot(id) {
+            None -> { return 0 }
+            Some(idx) -> {
+                let node = self.nodes[idx.raw]
+                if !node.mounted {
+                    return 0
+                }
+                return node.hitKey
+            }
+        }
+    }
+
+    function pressed() -> LayerId {
+        return self.pressedId
+    }
+
 }
 
 function caLayerTree() -> CALayerTree {
@@ -659,3 +936,29 @@ function caLayerIdsEqual(a: borrow [LayerId], b: borrow [LayerId]) -> Bool {
     return true
 }
 
+
+// What a layer's fill shows: its fill, with its hover wash laid over it while
+// the pointer is on it.
+function caShownFill(node: borrow CALayerNode, hovered: Bool, pressed: Bool) -> CAColor {
+    let fill = node.restingFill
+    var wash = CAColor { a: 0.0 }
+    if hovered && pressed && node.pressColor.a > 0.0 {
+        wash = node.pressColor
+    } else if hovered {
+        wash = node.hoverColor
+    }
+    if wash.a <= 0.0 {
+        return fill
+    }
+    let a = wash.a + fill.a * (1.0 - wash.a)
+    if a <= 0.0 {
+        return fill
+    }
+    let under = fill.a * (1.0 - wash.a)
+    return CAColor {
+        r: (wash.r * wash.a + fill.r * under) / a,
+        g: (wash.g * wash.a + fill.g * under) / a,
+        b: (wash.b * wash.a + fill.b * under) / a,
+        a: a
+    }
+}

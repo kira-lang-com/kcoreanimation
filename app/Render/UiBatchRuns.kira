@@ -6,7 +6,7 @@ import KiraGraphics
 // append one quad each to the current stream. Text carries the extra decision an
 // icon does not: whether the run inks itself dark or light, which mode 4 defers to
 // the shader by reading the blurred capture under the run rather than deciding on
-// the CPU from a colour nobody has composited yet.
+// the CPU from a color nobody has composited yet.
 
 // Append a vector icon: rasterize the SVG once per (icon, physical size) into
 // the glyph atlas (coverage-only) and emit one tinted mode-1 quad. Cache keys
@@ -23,12 +23,12 @@ extend UiBatch {
         // outward growth. It is the symbol's weight, and it is part of the atlas
         // key: the same folder at two weights is two different pictures.
         weightGrowth: Float = 0.0,
-        // Turned about its own centre, as cosine and sine.
+        // Turned about its own center, as cosine and sine.
         rotCos: Float = 1.0,
         rotSin: Float = 0.0,
         // How the ink meets what is under it. A burn draws through a pipeline
-        // that takes its colour AWAY from the target, so it carries the ink's
-        // distance from white — `1 - colour` — rather than the colour.
+        // that takes its color AWAY from the target, so it carries the ink's
+        // distance from white — `1 - color` — rather than the color.
         blend: CABlendMode = .Normal,
         // The ink's own width over its height, where the box it is drawn in has
         // been stretched away from it. Zero when the box is the ink's.
@@ -148,14 +148,18 @@ extend UiBatch {
                     }
                 } else {
                     newSlot.valid = false
+                    state.atlasExhausted = true
                 }
             } else {
                 newSlot.valid = false
             }
             freeBytes(buf)
+            // An icon that does not rasterize never will, so that is cached; one that
+            // found no room waits for the atlas to start over.
+            let cached = (rendered == 0 || newSlot.valid) && glyphCacheHasRoom(state, homeSlot)
             state.glyphs.append(move newSlot)
             slotIdx = state.glyphs.count - 1
-            if homeSlot >= 0 {
+            if cached {
                 state.glyphHashKeys[homeSlot] = key
                 state.glyphHashVals[homeSlot] = slotIdx
             }
@@ -168,7 +172,7 @@ extend UiBatch {
                 let hpx = state.glyphs[slotIdx].h
                 let atlasW = Float(glyphAtlasSize())
                 // The ink fills the box it was given, so it is drawn AT that box —
-                // no centring, because there is no margin left to centre. It is
+                // no centering, because there is no margin left to center. It is
                 // still landed on whole device pixels the way a glyph is, grown
                 // outward with the slack drawn from the atlas's transparent
                 // gutter: a coverage bitmap read at a fractional offset is
@@ -231,9 +235,9 @@ extend UiBatch {
 }
 
 
-// Lay out and append a UTF-8 string left-to-right, vertically centred in the
+// Lay out and append a UTF-8 string left-to-right, vertically centered in the
 // (x,y,w,h) box. Each glyph is a textured quad sampling its atlas coverage.
-// `adaptive` text derives its colour per pixel from the backdrop capture instead of
+// `adaptive` text derives its color per pixel from the backdrop capture instead of
 // using `color`: mode-4 glyphs sample the blurred capture at their own screen
 // position and land on dark ink over light content, light ink over dark. It needs a
 // capture to read, which only exists from the first glass layer on — text below all
@@ -241,7 +245,7 @@ extend UiBatch {
 //
 // What the capture holds is the content UNDER the glass, not the glass itself, so
 // the surface's wash is mixed back in before the decision — `wash` is its strength
-// and `washLuma` the luminance of its colour, which is not assumed white: a grey
+// and `washLuma` the luminance of its color, which is not assumed white: a gray
 // wash lands the composite somewhere else entirely. Without this, dark photo behind
 // heavy frost reads as dark and the text picks white on a near-white surface.
 extend UiBatch {
@@ -305,7 +309,7 @@ extend UiBatch {
         //
         // A run given room for the font's line box sits on the baseline that box
         // implies — the font's own ascent and descent, not this string's ink. It
-        // has to be the font's, because ink is a property of the LETTERS: centre
+        // has to be the font's, because ink is a property of the LETTERS: center
         // the ink instead and "editornext-test" (ascenders, no descenders) sits
         // on a different line from "main.kworld", every label in a column moves
         // as its text changes, and a glyph beside any of them can only agree
@@ -338,7 +342,7 @@ extend UiBatch {
         // must NOT have, or the whole thing reads as blurry rather than as smooth.
         let baselineDevice = Float(Int(baseline * scale + 0.5))
         // Adaptive only where a capture exists to read (from the first glass layer on).
-        // The sample point is the RUN's centre, carried on every glyph of the run, so a
+        // The sample point is the RUN's center, carried on every glyph of the run, so a
         // string picks ONE ink and reads as one piece of text — sampling per glyph would
         // let a word straddling an edge in the backdrop come out half dark, half light.
         var glyphMode = 1.0
@@ -460,12 +464,17 @@ extend UiBatch {
                                     }
                                 } else {
                                     newSlot.valid = false
+                                    state.atlasExhausted = true
                                 }
                             }
+                            // A glyph that found no room is still appended, for its
+                            // advance, but left out of the hash so the started-over
+                            // atlas rasterizes it again.
+                            let cached = newSlot.valid && glyphCacheHasRoom(state, homeSlot)
                             state.glyphs.append(move newSlot)
                             slotIdx = state.glyphs.count - 1
                             glyphSlots = state.glyphs
-                            if homeSlot >= 0 {
+                            if cached {
                                 state.glyphHashKeys[homeSlot] = key
                                 state.glyphHashVals[homeSlot] = slotIdx
                                 // The write above gave the state's hash a block of its
@@ -504,7 +513,7 @@ extend UiBatch {
                             let bottomDev = topDev + Float(ghpx) / overs
                             // Grown to whole device pixels.
                             //
-                            // A quad edge sitting exactly on a pixel CENTRE is decided by
+                            // A quad edge sitting exactly on a pixel CENTER is decided by
                             // the rasterizer's fill rule, and the two sides of a glyph do
                             // not fall the same way: one edge keeps its pixel and the
                             // other loses it. The coverage in that column is not spread,
@@ -561,7 +570,7 @@ extend UiBatch {
                                 }
                                 // Mode 4 reuses the fields it has no other use for:
                                 // borderWidth is the wash strength, edgeRefraction its
-                                // colour's luminance, border.rg the run's sample point
+                                // color's luminance, border.rg the run's sample point
                                 // in capture uv.
                                 writeQuadRecord(
                                     state.contentsPtr, base,

@@ -22,8 +22,17 @@ struct CAHitResult {
     // wants the local position (a slider thumb, a canvas).
     var localX: Float = 0.0
     var localY: Float = 0.0
+    // The layer's box in window coordinates, the smallest upright rectangle
+    // holding it however it is transformed: what a control that opens
+    // something anchors that thing to.
+    var boundsX: Float = 0.0
+    var boundsY: Float = 0.0
+    var boundsWidth: Float = 0.0
+    var boundsHeight: Float = 0.0
     // The interactive surface under the point, zero when there is none: its
-    // key, where the point landed in its own coordinates, and its size.
+    // layer and key, where the point landed in its own coordinates, and its
+    // size.
+    var surfaceLayer: LayerId = LayerId(0)
     var surfaceKey: Int = 0
     var surfaceX: Float = 0.0
     var surfaceY: Float = 0.0
@@ -66,9 +75,11 @@ function caHitTest(items: borrow [CADrawItem], x: Float, y: Float) -> CAHitResul
             result.hitKey = item.hitKey
             result.localX = caApplyX(inv, x, y)
             result.localY = caApplyY(inv, x, y)
+            caHitBounds(result, item)
         }
         if item.interactive && !surfaceFound {
             surfaceFound = true
+            result.surfaceLayer = item.layer
             result.surfaceKey = item.hitKey
             result.surfaceX = caApplyX(inv, x, y)
             result.surfaceY = caApplyY(inv, x, y)
@@ -80,6 +91,31 @@ function caHitTest(items: borrow [CADrawItem], x: Float, y: Float) -> CAHitResul
         }
     }
     return result
+}
+
+// The window-space box of a drawn item: its four corners carried through its
+// transform, and the upright rectangle around them.
+function caHitBounds(result: borrow mut CAHitResult, item: borrow CADrawItem) {
+    let w = item.localWidth
+    let h = item.localHeight
+    let t = item.transform
+    let xs = [caApplyX(t, 0.0, 0.0), caApplyX(t, w, 0.0), caApplyX(t, 0.0, h), caApplyX(t, w, h)]
+    let ys = [caApplyY(t, 0.0, 0.0), caApplyY(t, w, 0.0), caApplyY(t, 0.0, h), caApplyY(t, w, h)]
+    var minX = xs[0]
+    var maxX = xs[0]
+    var minY = ys[0]
+    var maxY = ys[0]
+    for i in 1..4 {
+        minX = min(minX, xs[i])
+        maxX = max(maxX, xs[i])
+        minY = min(minY, ys[i])
+        maxY = max(maxY, ys[i])
+    }
+    result.boundsX = minX
+    result.boundsY = minY
+    result.boundsWidth = maxX - minX
+    result.boundsHeight = maxY - minY
+    return
 }
 
 // Hit test straight from the tree: flatten this frame's presentation and pick.

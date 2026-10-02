@@ -33,17 +33,17 @@ class UiBatch {
 //   posX posY  pxX pxY  localX localY  halfW halfH  radius borderWidth  mode
 //   edgeRefraction  fillR fillG fillB fillA  borderR borderG borderB borderA
 //   clipMinX clipMinY clipMaxX clipMaxY
-// `mode` 0 = SDF surface (local = pixel offset from centre), 1 = glyph (local = uv),
+// `mode` 0 = SDF surface (local = pixel offset from center), 1 = glyph (local = uv),
 // 2 = external texture, 3 = liquid glass, 4 = ADAPTIVE glyph — a glyph whose ink
 // comes from the blurred capture under the RUN it belongs to, so text stays legible
 // over whatever the backdrop turns out to be (see pushText).
 
 // 24 shared fields, a twenty-four-float material block (mode 3 only) and a
-// five-float gradient block (the far colour and its axis, zero when flat).
+// five-float gradient block (the far color and its axis, zero when flat).
 // 24 shared floats + 24 material floats. The material block grew from 16 when the
 // wash stopped being one alpha and became the platform's own two-layer fill stack
-// (app/Core/Materials.kira): a layer is a colour, an opacity and a blend mode, and
-// the lower layer's colour/opacity already ride in `fill`, so the six that were
+// (app/Core/Materials.kira): a layer is a color, an opacity and a blend mode, and
+// the lower layer's color/opacity already ride in `fill`, so the six that were
 // added are the lower blend and the whole upper layer.
 // One record per QUAD, matching `Shaders/UiBatch.ksl`'s `UiQuad`:
 //   posX0 posY0 posX1 posY1   pxX0 pxY0 pxX1 pxY1   localX0 localY0 localX1 localY1
@@ -59,11 +59,16 @@ class UiBatch {
 //     squircle is. The generic pipeline reads this off `mode` (0.25 is a
 //     squircle rect), which the glass pipelines cannot — their `mode` says
 //     which region patch this is. See `writeQuadShapeKind`.
+//   + two floats for the quad's TURN about its center, as cosine and sine. See
+//     `writeQuadRotation`.
+//   + two floats for the CLIP'S CORNER: the radius of the rounded box the quad
+//     is drawn inside, zero when its clip is a plain one, and that corner's
+//     kind, as the corner kind above.
 // The twelve leading floats are the corner-varying values at their two extremes;
 // the vertex stage picks per corner. Eighteen shared floats used to be written
 // once per vertex, so a quad cost 192 floats where it now costs 54 — 30 for
 // everything but liquid glass, which is every glyph on screen.
-function quadFloatCount() -> Int { return 68 }
+function quadFloatCount() -> Int { return 70 }
 // Where the material block starts inside a record.
 function quadMaterialOffset() -> Int { return 30 }
 function quadVertexCount() -> Int { return 4 }
@@ -98,18 +103,23 @@ function foundationRenderScale(displayScale: Float) -> Float {
     return displayScale
 }
 
-function glyphAtlasSize() -> Int { return 1024 }
+// The glyph atlas's side, in texels. Text is rasterized at twice the device
+// resolution, so on a Retina backing a body glyph is some fifty texels tall and a
+// large title twice that: a window's worth of text in its sizes, weights and four
+// phases wants most of this. When it does fill, the next frame starts it over
+// (see `resetGlyphAtlas`).
+function glyphAtlasSize() -> Int { return 2048 }
 
 // Transparent texels left between packed entries.
 //
 // TWO, not one. A glyph is drawn with its quad grown out to whole device pixels and
 // its uv grown with it, by up to a texel — and a bilinear tap at that edge reads one
 // texel FURTHER still. With a single-texel gutter that second tap lands in whichever
-// entry was packed next, which shows up as a faint ghost of a neighbouring glyph
+// entry was packed next, which shows up as a faint ghost of a neighboring glyph
 // beside an icon or a letter. Two texels is the reach of the widest tap this
 // compositor takes, so the gutter is always what gets sampled.
 function atlasGutter() -> Int { return 2 }
-function glyphCacheCapacity() -> Int { return 1024 }
+function glyphCacheCapacity() -> Int { return 8192 }
 
 // Stacked liquid glass. A frame is cut into emission STREAMS: stream 0 is
 // everything under the first glass surface, and each further stream is one glass
@@ -118,7 +128,7 @@ function glyphCacheCapacity() -> Int { return 1024 }
 //
 // A new layer only starts when the incoming glass surface actually sits over
 // something already drawn in the current layer (glassLayerOccupied): a sidebar,
-// a centre card and a bottom dock that never touch each other share one layer, and
+// a center card and a bottom dock that never touch each other share one layer, and
 // the frame costs exactly one capture + one blur chain, as before. Overlapping
 // glass pays one extra capture + blur chain per layer of overlap.
 function maxDrawStreams() -> Int { return 4 }
@@ -137,7 +147,7 @@ function hudStreamIndex() -> DrawStreamId { return DrawStreamId(maxDrawStreams()
 function streamSlotCount() -> Int { return hudStreamIndex().raw + 1 }
 
 // Cells the overlap grid cuts the viewport into. A cell is ~33x33pt at 1600x900 —
-// fine enough that neighbouring chrome does not falsely read as overlapping, coarse
+// fine enough that neighboring chrome does not falsely read as overlapping, coarse
 // enough that marking a quad touches a handful of cells.
 function glassGridCols() -> Int { return 48 }
 function glassGridRows() -> Int { return 27 }
@@ -186,20 +196,20 @@ function glassHairline(devicePixels: Float, scale: Float) -> Float {
 // A rasterized edge, in points, moved onto the nearest whole device pixel.
 //
 // A glass surface's interior is rasterized twice from the same quads: once by
-// the cache pass, into an offscreen colour target, and once by the composite,
+// the cache pass, into an offscreen color target, and once by the composite,
 // into the swapchain. Under GL those two targets disagree about which way rows
 // run, so one pass sees an edge as the top of its patch and the other as the
-// bottom — and when the edge falls exactly on a pixel centre the fill rule
+// bottom — and when the edge falls exactly on a pixel center the fill rule
 // answers differently, so that row of pixels is rasterized by one pass and not
 // the other. The cache holds it cleared, `UiGlassCopy` presents it at alpha 1,
 // and the surface grows a one-pixel black seam. Swapping stored rows corrects
 // where a row ends up, not which side of an edge owns a pixel, so it cannot
 // reach this.
 //
-// An edge on a whole device pixel has no pixel centre on it, so the two passes
+// An edge on a whole device pixel has no pixel center on it, so the two passes
 // cannot disagree — and a whole pixel stays whole under the row flip, because
 // the drawable's height is a whole number of pixels. Every patch of a surface
-// is emitted from shared edge values, so neighbours snap to the same place and
+// is emitted from shared edge values, so neighbors snap to the same place and
 // the region split stays gapless. The move is under half a device pixel, well
 // inside the guard each region keeps from the effects it drops.
 //

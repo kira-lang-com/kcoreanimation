@@ -1,12 +1,12 @@
 import Foundation
 
-// Perceptual colour interpolation, in OKLab.
+// Perceptual color interpolation, in OKLab.
 //
-// A fade animated by mixing sRGB channels darkens through a muddy middle — grey
+// A fade animated by mixing sRGB channels darkens through a muddy middle — gray
 // through the crossing of two hues, a dip in lightness between two brights —
 // because sRGB is neither linear nor perceptually uniform. OKLab is built so a
-// straight line between two colours reads as an even sweep, which is what a
-// property animation of `backgroundColor` should look like. Every colour channel
+// straight line between two colors reads as an even sweep, which is what a
+// property animation of `backgroundColor` should look like. Every color channel
 // crossfade in the layer tree goes through here.
 
 function caSrgbToLinear(c: Float) -> Float {
@@ -69,11 +69,27 @@ function caOklabToColor(lab: borrow CAOklab) -> CAColor {
     }
 }
 
-// The colour `t` of the way from `from` to `to`, mixed perceptually. Alpha rides
+// The color `t` of the way from `from` to `to`, mixed perceptually. Alpha rides
 // linearly, which is correct: opacity is already a linear quantity.
+//
+// Each end's color counts by how opaque it is, as a premultiplied blend does.
+// A fade to clear is a fade to transparent black, and mixed straight the color
+// would darken toward that black on its way out: a light band fading in or out
+// went through dark gray. Weighted, a clear end has no say in the color, and
+// only the alpha moves.
 function caColorLerp(from: borrow CAColor, to: borrow CAColor, t: Float) -> CAColor {
     let a = caColorToOklab(from)
     let b = caColorToOklab(to)
-    let mixed = lerp(a, b, t)
-    return caOklabToColor(mixed)
+    let alpha = a.alpha + (b.alpha - a.alpha) * t
+    if alpha <= 0.0 {
+        return caOklabToColor(lerp(a, b, t))
+    }
+    let wa = a.alpha * (1.0 - t)
+    let wb = b.alpha * t
+    return caOklabToColor(CAOklab {
+        l: (a.l * wa + b.l * wb) / alpha,
+        a: (a.a * wa + b.a * wb) / alpha,
+        b: (a.b * wa + b.b * wb) / alpha,
+        alpha: alpha
+    })
 }

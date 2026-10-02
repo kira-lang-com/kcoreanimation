@@ -44,13 +44,42 @@ struct CALayoutIntent {
     // A flex weight for a sublayer that shares leftover main-axis space.
     var flex: Int = 0
     // Where a sublayer smaller than this layer's inner box sits in it, as a unit
-    // point: (0, 0) is the top-leading corner, (0.5, 0.5) the centre. The origin
+    // point: (0, 0) is the top-leading corner, (0.5, 0.5) the center. The origin
     // by default, which is where a layer's sublayers are positioned when nothing
     // asks otherwise.
     var alignment: Point = Point { x: 0.0, y: 0.0 }
     // Where the layer is drawn relative to where it was placed, without moving
     // anything around it: the space it takes stays where layout put it.
     var offset: Point = Point { x: 0.0, y: 0.0 }
+    // A horizontal alignment guide this layer answers for whatever encloses
+    // it -- its tag, zero for none, and where it sits: a fraction of the
+    // layer's width plus a length, so it holds whatever width layout gives the
+    // layer -- and one a layer takes its leading edge from: once everything is
+    // placed, a follower's leading edge moves to the guide as the first layer
+    // before it in its parent publishes it, and its trailing edge stays.
+    var guide: Int = 0
+    var guideFraction: Float = 0.0
+    var guidePosition: Float = 0.0
+    var followsGuide: Int = 0
+}
+
+// A shadow cast under a layer's outline: its color (the alpha is how dark it
+// is), how far it blurs, and how far it falls from the layer. A clear color
+// casts none.
+struct CAShadow {
+    var color: CAColor = CAColor { a: 0.0 }
+    var radius: Float = 0.0
+    var offset: Point = Point {}
+}
+
+// How a layer leaves once a description no longer has it, as SwiftUI's
+// removal transition: it is kept where it last stood, eased to this scale and
+// opacity over `duration`, answering nothing, and only then taken out. A zero
+// duration -- the default -- takes it out at once.
+struct CARemoval {
+    var scale: Float = 1.0
+    var opacity: Float = 0.0
+    var duration: Float = 0.0
 }
 
 // Declarative layer value consumed by the retained tree reconciler. Identity is
@@ -66,14 +95,21 @@ class CALayerDescription {
     var rotation: Float = 0.0
     var cornerRadius: Float = 0.0
     var borderWidth: Float = 0.0
-    // The layer's own fill, drawn only when its content carries no colour of its
+    // The layer's own fill, drawn only when its content carries no color of its
     // own. Clear unless stated, as a layer's background is.
     var backgroundColor: CAColor = CAColor { a: 0.0 }
     var borderColor: CAColor = CAColor {}
+    // The shadow the layer casts under its outline. None unless stated.
+    var shadow: CAShadow = CAShadow {}
     var clipsChildren: Bool = false
     var content: CAContent = .Empty
     var level: CALevel = .Inline
     var renderTarget: Bool = false
+    // A gaussian blur over the layer and everything in it, its radius in
+    // points, as Core Animation's `gaussianBlur` filter takes `inputRadius`.
+    // Zero blurs nothing and costs nothing; anything more draws the layer's
+    // tree apart and composites it blurred.
+    var blur: Float = 0.0
     var capturesBackdrop: Bool = false
     var hittable: Bool = false
     // Whether the layer answers a press anywhere on it as a whole, as SwiftUI's
@@ -82,11 +118,22 @@ class CALayerDescription {
     // the press while the control takes the action.
     var interactive: Bool = false
     var hitKey: Int = 0
+    // The wash the layer lights with while the pointer rests on it, as UIKit's
+    // highlight hover effect: laid over its fill by the tree, which is told
+    // what the pointer is over, so nothing above it rebuilds to show it. Clear
+    // unless stated, which lights nothing.
+    var hoverColor: CAColor = CAColor { a: 0.0 }
+    // The wash it lights with while it is held down and the pointer is still
+    // on it, as a table cell's selection highlight -- known to the tree by
+    // the layer pressed, never by a key that a rebuild may hand to another.
+    var pressColor: CAColor = CAColor { a: 0.0 }
     // Whether a change to this layer lands at once rather than animating there,
     // as `CATransaction.setDisableActions` does: for a layer whose values
     // something already moves every frame, which an animation on top of it
     // would only drag behind.
     var disablesActions: Bool = false
+    // How the layer leaves when it is no longer described. See `CARemoval`.
+    var removal: CARemoval = CARemoval {}
     // How this layer wants to be sized and how it arranges its sublayers; a
     // toolkit's layout pass reads this and writes `position`/`size`.
     var layout: CALayoutIntent = CALayoutIntent {}

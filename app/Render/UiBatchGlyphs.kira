@@ -104,11 +104,46 @@ function glyphCacheKey(codepoint: Int, sizeKey: Int, weightKey: Int, phase: Int)
     return ((codepoint * 1024 + sizeKey) * 10 + weightKey) * glyphSubpixelPhases() + phase
 }
 
+// Whether a new entry may go in the glyph hash: there is a free slot for it, and
+// the table stays under three quarters full so a probe stays short. When it may
+// not, the atlas is marked exhausted like one with no room left in it.
+function glyphCacheHasRoom(state: borrow mut UiBatchState, homeSlot: Int) -> Bool {
+    if homeSlot < 0 || (state.glyphs.count + 1) * 4 > state.glyphHashKeys.count * 3 {
+        state.atlasExhausted = true
+        return false
+    }
+    return true
+}
+
+// Start the glyph atlas over: no glyphs, an empty hash, the packer back at the
+// corner, and a cleared image uploaded with the frame.
+//
+// There is no eviction short of this. A run reads its glyphs' places in the atlas
+// as it emits them, so nothing can move or go mid-frame; between frames
+// everything can, and a shelf packer has no cheaper way to give back a single
+// slot. A window settles on a set of glyphs that fits, so this happens once in a
+// long while — after the atlas filled, at the top of the frame that follows.
+function resetGlyphAtlas(state: borrow mut UiBatchState) {
+    state.glyphs = []
+    state.glyphHashKeys = zeroedInts(glyphCacheCapacity())
+    state.glyphHashVals = zeroedInts(glyphCacheCapacity())
+    state.cursorX = atlasGutter()
+    state.cursorY = atlasGutter()
+    state.rowHeight = 0
+    if !pointerIsNull(state.atlasPixels) {
+        freeBytes(state.atlasPixels)
+    }
+    state.atlasPixels = allocateBytes(U64(state.atlasW * state.atlasH * 4))
+    state.atlasDirty = true
+    state.atlasExhausted = false
+    return
+}
+
 // Composite one rasterized coverage bitmap into the atlas's CPU side at its
 // packed slot, and mark the atlas for this frame's upload.
 //
 // Straight into the shadow rather than into a `[U8]` handed to a sub-region
-// upload: the coverage becomes RGBA (the shader multiplies the glyph's colour by
+// upload: the coverage becomes RGBA (the shader multiplies the glyph's color by
 // all four channels), the destination is the row-major atlas image, and the one
 // upload the frame does replaces the whole thing.
 @Native

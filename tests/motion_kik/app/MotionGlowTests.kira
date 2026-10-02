@@ -32,7 +32,7 @@ construct MgAPressReachesItsLevel() extends Test {
         let level = mgRun(state, motionGlowFadeIn())
         return mtScaled(level, 3)
     }
-    expect { return .Ok(100) }
+    expect { return .Ok(300) }
 }
 
 // It is most of the way there in half that time: the curve is eased OUT, so the
@@ -106,13 +106,13 @@ construct MgAQuickTapFadesFromWhereItReached() extends Test {
 
 // --- the radial falloff ----------------------------------------------------
 
-// Full strength at the centre, and straight down to half across the inner
+// Full strength at the center, and straight down to half across the inner
 // half — a quarter of the way out is three quarters lit.
 construct MgTheCoreFallsStraightToHalf() extends Test {
     test {
-        let centre = motionGlowFalloff(0.0)
+        let center = motionGlowFalloff(0.0)
         let quarter = motionGlowFalloff(motionGlowDiameter() * 0.125)
-        if centre == 1.0 {
+        if center == 1.0 {
             return mtScaled(quarter, 3)
         }
         return 0 - 1
@@ -154,10 +154,10 @@ construct MgTheFalloffOnlyFalls() extends Test {
 
 // --- the light follows the finger ------------------------------------------
 
-// The highlight is centred where the touch is, not in the middle of what was
+// The highlight is centered where the touch is, not in the middle of what was
 // touched, and it tracks with no easing of its own — a light that lagged the
 // finger would trail the thing causing it.
-construct MgTheLightIsCentredOnTheTouch() extends Test {
+construct MgTheLightIsCenteredOnTheTouch() extends Test {
     test {
         var state = MotionGlowState {}
         motionGlowPress(state, 40.0, 10.0)
@@ -169,7 +169,7 @@ construct MgTheLightIsCentredOnTheTouch() extends Test {
         }
         return 0 - 1
     }
-    expect { return .Ok(100) }
+    expect { return .Ok(300) }
 }
 
 construct MgTheLightTracksTheFinger() extends Test {
@@ -182,7 +182,7 @@ construct MgTheLightTracksTheFinger() extends Test {
         let atNew = motionGlowAt(state, 90.0, 0.0)
         return mtScaled(atNew, 3)
     }
-    expect { return .Ok(100) }
+    expect { return .Ok(300) }
 }
 
 // --- overlapping touches ---------------------------------------------------
@@ -226,7 +226,7 @@ construct MgTwoFingersLightTwoPlaces() extends Test {
         }
         return 0 - 1
     }
-    expect { return .Ok(100) }
+    expect { return .Ok(300) }
 }
 
 // An unlit element asks for no frames.
@@ -283,9 +283,9 @@ construct MgAPressLiftsRatherThanShrinks() extends Test {
     test {
         let lift = motionPressLiftScale(100.0)
         if lift > 1.0 {
-            return mtScaled(lift, 2)
+            return mtScaled(lift, 3)
         }
         return 0
     }
-    expect { return .Ok(120) }
+    expect { return .Ok(1075) }
 }

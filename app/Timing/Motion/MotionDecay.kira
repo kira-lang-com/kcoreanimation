@@ -42,7 +42,7 @@ function motionDecayProjection(velocity: Float, rate: Float) -> Float {
     return -perMillisecond / decay
 }
 
-// How far a fling has travelled `seconds` in.
+// How far a fling has traveled `seconds` in.
 function motionDecayOffset(velocity: Float, rate: Float, seconds: Float) -> Float {
     let perMillisecond = velocity / 1000.0
     let decay = log(clamp(rate, 0.0001, 0.9999))
@@ -71,7 +71,7 @@ function motionDecayIsSpent(velocity: Float) -> Bool {
 // `offset` is how far the content WOULD have moved past the edge; the answer is
 // how far it actually moves. It is not a clamp and not a constant fraction: the
 // resistance increases with the pull, so the surface never stops responding but
-// asymptotically stops travelling. Pulled 5 points it gives about 2.7; pulled
+// asymptotically stops traveling. Pulled 5 points it gives about 2.7; pulled
 // the whole height of the viewport it gives about a third of it.
 //
 // `dimension` is what the pull is measured against — the viewport's own length

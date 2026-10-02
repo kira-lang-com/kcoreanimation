@@ -21,8 +21,13 @@ struct CALayerNode {
     var scaleX: CAChannel = CAChannel { model: 1.0, presentation: 1.0 }
     var scaleY: CAChannel = CAChannel { model: 1.0, presentation: 1.0 }
     var rotation: CAChannel = CAChannel {}
-    // Appearance channels — animatable like geometry. Colour is perceptual.
+    // Appearance channels — animatable like geometry. Color is perceptual.
     var fillColor: CAColorChannel = CAColorChannel { from: CAColor { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }, model: CAColor { r: 1.0, g: 1.0, b: 1.0, a: 1.0 } }
+    // The fill as it was set, and the wash laid over it while the pointer is
+    // on the layer. `fillColor` animates to one or the other.
+    var restingFill: CAColor = CAColor { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }
+    var hoverColor: CAColor = CAColor { a: 0.0 }
+    var pressColor: CAColor = CAColor { a: 0.0 }
     var borderColor: CAColorChannel = CAColorChannel {}
     var cornerRadius: CAChannel = CAChannel {}
     var borderWidth: CAChannel = CAChannel {}
@@ -41,6 +46,7 @@ struct CALayerNode {
     // This subtree renders into its own texture. A nonzero id names a target
     // registered with the compositor; zero asks for a compositor-owned cache.
     var renderTarget: Bool = false
+    var blur: Float = 0.0
     var renderTargetId: RenderTargetId = RenderTargetId(0)
     // This layer refracts a captured, blurred copy of what is drawn beneath it.
     var capturesBackdrop: Bool = false
@@ -52,6 +58,10 @@ struct CALayerNode {
     // the canvas root instead, so it escapes its parent's clip and order.
     var hoisted: Bool = false
     var mounted: Bool = true
+    // How the layer leaves, and, while it is leaving, the clock reading it is
+    // gone at; negative while it is not leaving.
+    var removal: CARemoval = CARemoval {}
+    var leavingUntil: Float = -1.0
     var damaged: Bool = true
     var reused: Bool = false
 }

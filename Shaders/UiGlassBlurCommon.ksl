@@ -17,13 +17,13 @@
 // the same 0.001 threshold `UiBackground.ksl` settles on, so a steady scheme
 // costs exactly what one source cost.
 
-const nearCentre: Float = 0.232934620588
+const nearCenter: Float = 0.232934620588
 const nearInner: Float = 0.316094188275
 const nearOuter: Float = 0.067438501431
 const nearInnerAt: Float = 1.376837128907
 const nearOuterAt: Float = 3.236195028878
 
-const farCentre: Float = 0.144429654361
+const farCenter: Float = 0.144429654361
 const farInner: Float = 0.247941942614
 const farMiddle: Float = 0.134832143947
 const farOuter: Float = 0.045011086258
@@ -45,7 +45,7 @@ function blendedTap(a: Texture2d, b: Texture2d, smp: Sampler, uv: Float2, blend:
 }
 
 function nearFilter(a: Texture2d, b: Texture2d, smp: Sampler, uv: Float2, step: Float2, blend: Float) -> Float4 {
-    let c = blendedTap(a, b, smp, uv, blend) * nearCentre
+    let c = blendedTap(a, b, smp, uv, blend) * nearCenter
     let inner = blendedTap(a, b, smp, uv + step * nearInnerAt, blend)
         + blendedTap(a, b, smp, uv - step * nearInnerAt, blend)
     let outer = blendedTap(a, b, smp, uv + step * nearOuterAt, blend)
@@ -54,7 +54,7 @@ function nearFilter(a: Texture2d, b: Texture2d, smp: Sampler, uv: Float2, step: 
 }
 
 function farFilter(a: Texture2d, b: Texture2d, smp: Sampler, uv: Float2, step: Float2, blend: Float) -> Float4 {
-    let c = blendedTap(a, b, smp, uv, blend) * farCentre
+    let c = blendedTap(a, b, smp, uv, blend) * farCenter
     let inner = blendedTap(a, b, smp, uv + step * farInnerAt, blend)
         + blendedTap(a, b, smp, uv - step * farInnerAt, blend)
     let middle = blendedTap(a, b, smp, uv + step * farMiddleAt, blend)

@@ -4,7 +4,7 @@ import Foundation
 // each an ordered list of draw commands with EXACT geometry. This is the shape
 // the four hard cases live in and the shape a test can assert without a GPU.
 //
-//   * A rotated/scaled layer is an oriented quad (centre, half extents, cos/sin),
+//   * A rotated/scaled layer is an oriented quad (center, half extents, cos/sin),
 //     never an axis-aligned box.
 //   * A clipped subtree's commands each carry the intersected clip rectangle.
 //   * A group-opacity subtree becomes its OWN pass, composited into its parent
@@ -47,6 +47,12 @@ struct CADrawCmd {
     var cornerRadius: Float = 0.0
     var borderWidth: Float = 0.0
     var shadowRadius: Float = 0.0
+    // For a shadow command: how far the shadow falls from the layer casting
+    // it, and whether that layer is glass -- which captures what is behind it,
+    // the shadow included, so a shadow under glass stops at the glass's edge
+    // instead of darkening the glass from beneath.
+    var shadowOffset: Point = Point {}
+    var shadowKnockout: Bool = false
     var shapeKind: Int = 0
     var lengthScale: Float = 1.0
     var textScale: Float = 1.0
@@ -58,8 +64,11 @@ struct CADrawCmd {
     var clipMaxX: Float = 1000000.0
     var clipMaxY: Float = 1000000.0
     var clipRadius: Float = 0.0
+    var clipShapeKind: Int = 0
     // For a composite command: the pass whose texture is drawn. -1 otherwise.
     var sourcePass: Option<RenderPassId> = .None
+    // For a composite command: the blur it is drawn with, in points.
+    var blur: Float = 0.0
     var hit: Bool = false
     var hitKey: Int = 0
 }

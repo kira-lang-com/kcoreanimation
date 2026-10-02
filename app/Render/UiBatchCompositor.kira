@@ -3,7 +3,7 @@ import KiraGraphics
 
 // The compositor's one new batch primitive: an EXACT oriented quad. The batch
 // vertex stream already carries a per-quad rotation (cos/sin about the quad's
-// centre — see `writeQuadRotation`), so a rotated layer needs no shader change
+// center — see `writeQuadRotation`), so a rotated layer needs no shader change
 // and no axis-aligned bounding-box fallback: the covering rectangle is grown to
 // the rotated extent and the SDF is evaluated in the quad's own turned frame.
 //
@@ -16,6 +16,8 @@ extend UiBatch {
         radius: Float, borderWidth: Float,
         fill: borrow Color, border: borrow Color,
         clipMinX: Float, clipMinY: Float, clipMaxX: Float, clipMaxY: Float,
+        clipRadius: Float,
+        clipShapeKind: Int,
         shapeKind: Int,
         gradient: borrow Color, gradientAxis: Float,
     ) {
@@ -39,7 +41,10 @@ extend UiBatch {
                 cx - halfW, cy - halfH, halfW * 2.0, halfH * 2.0,
                 fill, border, borderWidth, radius,
                 clipMinX, clipMinY, clipMaxX, clipMaxY,
-                shapeMode, gradient, gradientAxis
+                shapeMode, gradient, gradientAxis,
+                glowX: 0.0, glowY: 0.0, glowStrength: 0.0,
+                clipRadius: clipRadius,
+                clipShapeKind: Float(clipShapeKind)
             )
             return
         }
@@ -70,7 +75,8 @@ extend UiBatch {
             gradient.r, gradient.g, gradient.b, gradient.a, gradientAxis,
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
             0.0,
-            rotCos, rotSin
+            rotCos, rotSin,
+            clipRadius, Float(clipShapeKind)
         )
         return
     }
@@ -80,16 +86,21 @@ extend UiBatch {
         rotCos: Float, rotSin: Float,
         alpha: Float, transition: Float, radius: Float,
         clipMinX: Float, clipMinY: Float, clipMaxX: Float, clipMaxY: Float,
+        blur: Float = 0.0,
+        clipRadius: Float = 0.0,
+        clipShapeKind: Float = 0.0,
     ) {
         if halfW <= 0.0 || halfH <= 0.0 || alpha <= 0.0 {
             return
         }
+        // The blur rides the border slots, which a texture never draws: its
+        // reach across and down in the texture's own coordinates.
         self.emitQuad(
             cx - halfW, cy - halfH, cx + halfW, cy + halfH,
             0.0, 0.0, 1.0, 1.0,
             halfW, halfH, radius, 0.0, 2.0, transition,
             1.0, 1.0, 1.0, alpha,
-            0.0, 0.0, 0.0, 0.0,
+            blur / (halfW * 2.0), blur / (halfH * 2.0), 0.0, 0.0,
             clipMinX, clipMinY, clipMaxX, clipMaxY,
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
@@ -97,7 +108,8 @@ extend UiBatch {
             0.0, 0.0, 0.0, 0.0, 0.0,
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
             0.0,
-            rotCos, rotSin
+            rotCos, rotSin,
+            clipRadius, clipShapeKind
         )
         return
     }
@@ -106,6 +118,7 @@ extend UiBatch {
         cx: Float, cy: Float, halfW: Float, halfH: Float,
         rotCos: Float, rotSin: Float,
         radius: Float, blurRadius: Float,
+        offset: borrow Point, knockout: Bool,
         color: borrow Color,
         clipMinX: Float, clipMinY: Float, clipMaxX: Float, clipMaxY: Float,
         shapeKind: Int,
@@ -115,7 +128,8 @@ extend UiBatch {
         }
         var blur = blurRadius
         if blur < 0.0 { blur = 0.0 }
-        let pad = blur + 1.0
+        // The blur is two deviations, and the Gaussian reaches three.
+        let pad = blur * 1.5 + 1.0
         let coverHalfW = halfW + pad
         let coverHalfH = halfH + pad
         var clampedRadius = radius
@@ -124,12 +138,18 @@ extend UiBatch {
         if clampedRadius > halfH { clampedRadius = halfH }
         var mode = -1.0
         if shapeKind != 0 { mode = -1.25 }
+        // The border slots, which a shadow never draws, carry where the caster
+        // stands from the shadow, in the quad's own turned space, and whether
+        // the shadow stops at the caster's edge.
+        let casterX = rotCos * offset.x + rotSin * offset.y
+        let casterY = rotCos * offset.y - rotSin * offset.x
+        let knocks = knockout ? 1.0 : 0.0
         self.emitQuad(
             cx - coverHalfW, cy - coverHalfH, cx + coverHalfW, cy + coverHalfH,
             -coverHalfW, -coverHalfH, coverHalfW, coverHalfH,
             halfW, halfH, clampedRadius, blur, mode, 0.0,
             color.r, color.g, color.b, color.a,
-            0.0, 0.0, 0.0, 0.0,
+            casterX, casterY, knocks, 0.0,
             clipMinX, clipMinY, clipMaxX, clipMaxY,
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,

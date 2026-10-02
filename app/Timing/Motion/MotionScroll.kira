@@ -116,7 +116,7 @@ function motionScrollRaw(shown: Float, bounds: borrow MotionScrollBounds) -> Flo
 //
 // Any animation in flight is CUT rather than allowed to finish, and its
 // velocity is kept: catching a moving list stops it under your finger, which is
-// the behaviour that makes a long list feel like an object rather than a
+// the behavior that makes a long list feel like an object rather than a
 // playback.
 function motionScrollDragBegin(state: borrow mut MotionScrollState, pointer: Float, bounds: borrow MotionScrollBounds) {
     state.phase = .Dragging
