@@ -253,19 +253,25 @@ function sdSquircle(point: Float2, halfSize: Float2, radius: Float) -> Float {
 
 // A box whose corner is `radius` along each side, as far as that side allows.
 //
-// Below both half sides it is the squircle, exponent and all. Past the short
-// one the corner stays as tall as the short side and keeps widening, a quarter
-// superellipse wider than it is tall, and as it does the exponent eases from
-// the squircle's to two; past the long one too it is the ellipse the box
-// holds. One radius runs the whole way from the card to the ellipse, which is
+// Well below both half sides it is the squircle, exponent and all. Over the
+// last quarter of the short side the exponent starts easing from the
+// squircle's to two; past the short side the corner stays as tall as it and
+// keeps widening, a quarter superellipse wider than it is tall; past the long
+// one too it is the ellipse the box holds, and a square's full radius its
+// circle. One radius runs the whole way from the card to the ellipse, which is
 // what lets a surface turn from one into the other as one shape.
 function sdWideCorner(point: Float2, halfSize: Float2, radius: Float) -> Float {
     let shortSide = min(halfSize.x, halfSize.y)
     let longSide = max(halfSize.x, halfSize.y)
-    if radius <= shortSide {
+    // The corner rounds out from the squircle's over the last quarter of the
+    // short side, not from the short side on: a square box has no run from
+    // short to long, and its full radius would stay a rounded square where
+    // it should be a circle.
+    let rounding = shortSide * 0.25
+    if radius <= shortSide - rounding {
         return sdSquircle(point, halfSize, radius)
     }
-    let widened = clamp((radius - shortSide) / max(longSide - shortSide, 0.001), 0.0, 1.0)
+    let widened = clamp((radius - shortSide + rounding) / max(longSide - shortSide + rounding, 0.001), 0.0, 1.0)
     let exponent = squircleExponent + (2.0 - squircleExponent) * widened
     let corner = Float2(max(min(radius, halfSize.x), 0.001), max(min(radius, halfSize.y), 0.001))
     let q = abs(point) - (halfSize - corner)
