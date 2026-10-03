@@ -21,6 +21,8 @@ struct CALayerNode {
     var scaleX: CAChannel = CAChannel { model: 1.0, presentation: 1.0 }
     var scaleY: CAChannel = CAChannel { model: 1.0, presentation: 1.0 }
     var rotation: CAChannel = CAChannel {}
+    // Set every frame by whatever pulls the layer, so it is never animated.
+    var deformation: CADeformation = CADeformation {}
     // Appearance channels — animatable like geometry. Color is perceptual.
     var fillColor: CAColorChannel = CAColorChannel { from: CAColor { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }, model: CAColor { r: 1.0, g: 1.0, b: 1.0, a: 1.0 } }
     // The fill as it was set, and the wash laid over it while the pointer is

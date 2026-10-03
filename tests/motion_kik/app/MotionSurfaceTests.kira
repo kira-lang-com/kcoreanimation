@@ -201,7 +201,7 @@ construct MtAnIdleSurfaceNeedsNoFrames() extends Test {
 
 // --- pulling a control -----------------------------------------------------
 
-// Pulled 60 points against a 120-point reach, the control travels about 26. It
+// Pulled 60 points against a 120-point reach, the control travels about 8. It
 // answers the whole gesture and goes almost nowhere, which is what an anchored
 // control does.
 construct MtAPulledControlResistsTheWholeWay() extends Test {
@@ -211,7 +211,30 @@ construct MtAPulledControlResistsTheWholeWay() extends Test {
         motionPullMove(state, 0.0, 60.0, 1.0 / 120.0)
         return Int(round(state.y))
     }
-    expect { return .Ok(26) }
+    expect { return .Ok(8) }
+}
+
+// Near the top of the window, a capsule pulled up hardly gives, while pulled
+// down it gives as it always does -- and against the edge it still gives a
+// little rather than stopping dead.
+construct MtANearEdgeHoldsTheGlassIn() extends Test {
+    test {
+        var up = MotionPullState {}
+        motionPullFit(up, 120.0, 44.0)
+        motionPullRoom(up, 400.0, 6.0, 400.0, 600.0)
+        motionPullPress(up, 0.0, 0.0, false)
+        motionPullMove(up, 0.0, -100.0, 1.0 / 120.0)
+        var down = MotionPullState {}
+        motionPullFit(down, 120.0, 44.0)
+        motionPullRoom(down, 400.0, 6.0, 400.0, 600.0)
+        motionPullPress(down, 0.0, 0.0, false)
+        motionPullMove(down, 0.0, 100.0, 1.0 / 120.0)
+        if up.y < 0.0 && abs(up.y) < down.y * 0.25 {
+            return 1
+        }
+        return 0
+    }
+    expect { return .Ok(1) }
 }
 
 // Under the slop the control has not begun to move at all.

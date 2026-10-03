@@ -77,6 +77,22 @@ function caLocalTransform(node: borrow CALayerNode) -> CAAffineTransform {
     return caConcat(pos, aboutAnchor)
 }
 
+// A layer's deformation, about its center, in its own coordinates.
+function caDeformTransform(node: borrow CALayerNode) -> CAAffineTransform {
+    let d = node.deformation
+    let cx = node.boundsW.presentation * 0.5
+    let cy = node.boundsH.presentation * 0.5
+    let stretch = caConcat(caScaleTransform(d.scaleX, d.scaleY), caTranslation(-cx, -cy))
+    return caConcat(caTranslation(cx + d.x, cy + d.y), stretch)
+}
+
+// Where a layer's deformation carries a point already placed at rest, in the
+// space `rest` places the layer in: the picture of what it holds, drawn at
+// rest, is deformed through this.
+function caDeformAcross(rest: borrow CAAffineTransform, node: borrow CALayerNode) -> CAAffineTransform {
+    return caConcat(caConcat(rest, caDeformTransform(node)), caInvert(rest))
+}
+
 function caDrawItemFor(node: borrow CALayerNode, frame: borrow CAWalkFrame, world: borrow CAAffineTransform, opacity: Float) -> CADrawItem {
     let w = node.boundsW.presentation
     let h = node.boundsH.presentation
@@ -158,7 +174,7 @@ function caFlattenInto(tree: borrow CALayerTree, frame: borrow CAWalkFrame, out:
     if !node.mounted {
         return
     }
-    let world = caConcat(frame.world, caLocalTransform(node))
+    let world = caConcat(frame.world, caConcat(caLocalTransform(node), caDeformTransform(node)))
     let opacity = frame.opacity * node.opacity.presentation
     out.append(caDrawItemFor(node, frame, world, opacity))
     let childFrame = caChildFrame(node, frame, world, opacity)

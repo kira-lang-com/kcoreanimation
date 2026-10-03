@@ -105,7 +105,7 @@ class KiraGraphicsFoundationBackend {
             caGlassMaterialAt(glass, width, height),
             originX + glass.glowX * unitX,
             originY + glass.glowY * unitY,
-            glass.glowStrength,
+            caPackedGlow(glass.glowStrength, glass.glowRadius * (unitX + unitY) * 0.5),
             originX + glass.morphX * unitX,
             originY + glass.morphY * unitY,
             glass.morphWidth * unitX,
@@ -162,4 +162,16 @@ class KiraGraphicsFoundationBackend {
         )
         return
     }
+}
+
+// The touch highlight as the glass batch carries it: its radius and its
+// strength share one number, the radius in the whole part and the strength,
+// always under one, in what is left. The glass pipelines have no slot to spare
+// for a fourth number, and a light has never needed a fraction of a point of
+// reach. No light, or one with no reach, is zero.
+function caPackedGlow(strength: Float, radius: Float) -> Float {
+    if strength <= 0.0 || radius < 1.0 {
+        return 0.0
+    }
+    return floor(radius) + min(strength, 0.999)
 }

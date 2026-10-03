@@ -12,6 +12,13 @@ import Foundation
 // (the wrong thing) is exactly what this avoids. A render-target node opens a
 // pass targeting a texture the same way.
 //
+// A DEFORMED node -- glass pulled by a press -- draws its own content in place
+// at the deformed geometry, and opens a pass for what it holds, drawn at rest:
+// the composite carries that picture through the deformation, so the text on
+// the glass stretches with it as an image instead of being laid out afresh at
+// every frame's shape, and while only the deformation changes the pass is not
+// dirty and its texture is reused.
+//
 // Overlays are walked from the canvas root, unclipped, after the root subtree —
 // a hoisted menu escapes its ancestors' clips.
 
@@ -183,15 +190,17 @@ function caPlanNode(tree: borrow CALayerTree, frame: borrow CAPlanFrame, plan: b
     if !node.mounted {
         return
     }
-    let world = caConcat(frame.world, caLocalTransform(node))
+    let rest = caConcat(frame.world, caLocalTransform(node))
+    let world = caConcat(rest, caDeformTransform(node))
     let eff = frame.opacity * node.opacity.presentation
     // A group at full opacity looks the same drawn in place, so it is.
     let isGroup = node.groupOpacity && node.opacity.presentation < 1.0 && node.childIds.count > 0
     let isTarget = node.renderTarget && node.childIds.count > 0
     let isBlurred = node.blur > 0.0 && node.childIds.count > 0
-    let childFrame = caPlanChildFrame(node, frame, world)
+    let isDeformed = !caDeformationIsIdentity(node.deformation) && node.childIds.count > 0
+    let childFrame = caPlanChildFrame(node, frame, isDeformed ? rest : world)
 
-    if isGroup || isTarget || isBlurred {
+    if isGroup || isTarget || isBlurred || isDeformed {
         let newPass = RenderPassId(plan.passes.count)
         var kind: CAPassKind = .GroupOpacity
         var targetId = RenderTargetId(0)
@@ -206,10 +215,15 @@ function caPlanNode(tree: borrow CALayerTree, frame: borrow CAPlanFrame, plan: b
             targetId: targetId,
             groupOpacity: eff
         })
+        // Deformed, the layer's own content is drawn live where the
+        // deformation puts it -- glass refracts what is really behind it --
+        // and only what it holds goes into the picture.
+        let own = isDeformed ? frame.pass : newPass
+        let ownOpacity = isDeformed ? eff : 1.0
         if caNodeHasShadow(node) {
-            caPlanEmit(plan, newPass, caShadowCmd(node, world, 1.0, frame), node.damaged)
+            caPlanEmit(plan, own, caShadowCmd(node, world, ownOpacity, frame), node.damaged)
         }
-        caPlanEmit(plan, newPass, caNodeDrawCmd(node, world, 1.0, frame), node.damaged)
+        caPlanEmit(plan, own, caNodeDrawCmd(node, world, ownOpacity, frame), node.damaged)
         for childId in node.childIds {
             var cidx = LayerSlot(0)
             match tree.nodeSlot(childId) {
@@ -217,6 +231,18 @@ function caPlanNode(tree: borrow CALayerTree, frame: borrow CAPlanFrame, plan: b
                 Some(slot) -> { cidx = slot }
             }
             if tree.nodes[cidx.raw].mounted && !tree.nodes[cidx.raw].hoisted {
+                // Glass held by a deformed layer refracts what is really
+                // behind it, so it is drawn live and deformed, as the layer's
+                // own content is, rather than into the picture.
+                if isDeformed && tree.nodes[cidx.raw].capturesBackdrop {
+                    let deformed = caPlanChildFrame(node, frame, world)
+                    let live = deformed {
+                        let id = childId
+                        let opacity = eff
+                    }
+                    caPlanNode(tree, live, plan)
+                    continue
+                }
                 let cf = childFrame {
                     let id = childId
                     let pass = newPass
@@ -240,7 +266,8 @@ function caPlanNode(tree: borrow CALayerTree, frame: borrow CAPlanFrame, plan: b
         }
         let isolated = plan.passes[newPass.raw]
         if isolated.hasBounds {
-            var composite = caCompositeCmd(node.id, isolated.bounds, eff, frame, newPass)
+            let shown = isDeformed ? caApplyRect(caDeformAcross(rest, node), isolated.bounds) : isolated.bounds
+            var composite = caCompositeCmd(node.id, shown, eff, frame, newPass)
             composite.blur = isBlurred ? node.blur * caLengthScale(world) : 0.0
             caPlanEmit(
                 plan,

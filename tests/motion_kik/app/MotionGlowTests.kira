@@ -2,9 +2,9 @@ import Foundation
 import KCoreAnimation
 
 // The highlight, checked against the shipping implementation it is taken from:
-// a two-state fade with different durations each way, a radial falloff that is
-// linear to half strength and then eased away, and a light that travels with
-// the finger.
+// a two-state fade with different durations each way, a smooth radial bell, a
+// light that travels with the finger, and opens out over the surface when the
+// finger is dragged away.
 
 function mgStep() -> Float {
     return 1.0 / 240.0
@@ -32,7 +32,7 @@ construct MgAPressReachesItsLevel() extends Test {
         let level = mgRun(state, motionGlowFadeIn())
         return mtScaled(level, 3)
     }
-    expect { return .Ok(300) }
+    expect { return .Ok(120) }
 }
 
 // It is most of the way there in half that time: the curve is eased OUT, so the
@@ -106,29 +106,29 @@ construct MgAQuickTapFadesFromWhereItReached() extends Test {
 
 // --- the radial falloff ----------------------------------------------------
 
-// Full strength at the center, and straight down to half across the inner
-// half — a quarter of the way out is three quarters lit.
-construct MgTheCoreFallsStraightToHalf() extends Test {
-    test {
-        let center = motionGlowFalloff(0.0)
-        let quarter = motionGlowFalloff(motionGlowDiameter() * 0.125)
-        if center == 1.0 {
-            return mtScaled(quarter, 3)
-        }
-        return 0 - 1
-    }
-    expect { return .Ok(750) }
+function mgNear() -> Float {
+    return motionGlowDiameter() * 0.5
 }
 
-construct MgTheFalloffIsHalfWhereTheCoreEnds() extends Test {
-    test { return mtScaled(motionGlowFalloff(motionGlowDiameter() * 0.25), 3) }
-    expect { return .Ok(500) }
+// Flat at the center: a bell, not a cone, so the light has no hot core.
+construct MgTheCenterIsFlat() extends Test {
+    test {
+        let center = motionGlowFalloff(0.0, mgNear())
+        let close = motionGlowFalloff(mgNear() * 0.05, mgNear())
+        return mtScaled(center - close, 2)
+    }
+    expect { return .Ok(1) }
+}
+
+construct MgTheFalloffIsTheBellHalfway() extends Test {
+    test { return mtScaled(motionGlowFalloff(mgNear() * 0.5, mgNear()), 3) }
+    expect { return .Ok(422) }
 }
 
 construct MgTheFalloffReachesNothingAtTheRim() extends Test {
     test {
-        let rim = motionGlowFalloff(motionGlowDiameter() * 0.5)
-        let beyond = motionGlowFalloff(motionGlowDiameter())
+        let rim = motionGlowFalloff(mgNear(), mgNear())
+        let beyond = motionGlowFalloff(mgNear() * 2.0, mgNear())
         return mtScaled(rim + beyond, 3)
     }
     expect { return .Ok(0) }
@@ -140,7 +140,7 @@ construct MgTheFalloffOnlyFalls() extends Test {
         var previous = 2.0
         var step = 0
         while step <= 20 {
-            let here = motionGlowFalloff(motionGlowDiameter() * 0.5 * Float(step) / 20.0)
+            let here = motionGlowFalloff(mgNear() * Float(step) / 20.0, mgNear())
             if here > previous {
                 return 0
             }
@@ -148,6 +148,81 @@ construct MgTheFalloffOnlyFalls() extends Test {
             step = step + 1
         }
         return 1
+    }
+    expect { return .Ok(1) }
+}
+
+// --- the spread --------------------------------------------------------------
+
+// Held still, the light is the finger's: its own size, at full level, on it.
+construct MgAStillPressStaysOnTheFinger() extends Test {
+    test {
+        var state = MotionGlowState {}
+        motionGlowFit(state, 400.0, 300.0)
+        motionGlowPress(state, 40.0, 30.0)
+        motionGlowMove(state, 44.0, 30.0)
+        let ignored = mgRun(state, 0.5)
+        let light = motionGlowLight(state)
+        if light.radius == mgNear() && light.x == 44.0 {
+            return mtScaled(light.strength, 3)
+        }
+        return 0 - 1
+    }
+    expect { return .Ok(120) }
+}
+
+// Dragged well away, it lets go of the finger: wide enough to reach every
+// corner, near the middle, and dimmer.
+construct MgADragSpreadsTheLight() extends Test {
+    test {
+        var state = MotionGlowState {}
+        motionGlowFit(state, 400.0, 300.0)
+        motionGlowPress(state, 40.0, 30.0)
+        motionGlowMove(state, 140.0, 30.0)
+        let ignored = mgRun(state, 1.0)
+        let light = motionGlowLight(state)
+        if light.radius < 499.0 {
+            return 0 - 1
+        }
+        if abs(light.x - 200.0) > abs(140.0 - 200.0) * 0.3 {
+            return 0 - 2
+        }
+        return mtScaled(light.strength, 3)
+    }
+    expect { return .Ok(60) }
+}
+
+// It spreads over time, not in one frame.
+construct MgTheSpreadEasesIn() extends Test {
+    test {
+        var state = MotionGlowState {}
+        motionGlowFit(state, 400.0, 300.0)
+        motionGlowPress(state, 40.0, 30.0)
+        motionGlowMove(state, 140.0, 30.0)
+        let ignored = motionGlowAdvance(state, mgStep())
+        if state.spread > 0.1 {
+            return 0
+        }
+        return 1
+    }
+    expect { return .Ok(1) }
+}
+
+// Let go, it does not gather back: it opens out wider as it drains.
+construct MgAReleaseOpensTheLightOut() extends Test {
+    test {
+        var state = MotionGlowState {}
+        motionGlowFit(state, 400.0, 300.0)
+        motionGlowPress(state, 40.0, 30.0)
+        let ignored = mgRun(state, 0.5)
+        let held = motionGlowLight(state)
+        motionGlowRelease(state)
+        let fading = mgRun(state, motionGlowFadeOut() * 0.5)
+        let leaving = motionGlowLight(state)
+        if leaving.radius > held.radius * 1.3 && leaving.x == held.x {
+            return 1
+        }
+        return 0
     }
     expect { return .Ok(1) }
 }
@@ -163,13 +238,13 @@ construct MgTheLightIsCenteredOnTheTouch() extends Test {
         motionGlowPress(state, 40.0, 10.0)
         let ignored = mgRun(state, motionGlowFadeIn())
         let atTouch = motionGlowAt(state, 40.0, 10.0)
-        let awayFromIt = motionGlowAt(state, 40.0 + motionGlowDiameter() * 0.45, 10.0)
+        let awayFromIt = motionGlowAt(state, 40.0 + motionGlowDiameter() * 0.4, 10.0)
         if atTouch > awayFromIt && awayFromIt > 0.0 {
             return mtScaled(atTouch, 3)
         }
         return 0 - 1
     }
-    expect { return .Ok(300) }
+    expect { return .Ok(120) }
 }
 
 construct MgTheLightTracksTheFinger() extends Test {
@@ -182,7 +257,7 @@ construct MgTheLightTracksTheFinger() extends Test {
         let atNew = motionGlowAt(state, 90.0, 0.0)
         return mtScaled(atNew, 3)
     }
-    expect { return .Ok(300) }
+    expect { return .Ok(120) }
 }
 
 // --- overlapping touches ---------------------------------------------------
@@ -226,7 +301,7 @@ construct MgTwoFingersLightTwoPlaces() extends Test {
         }
         return 0 - 1
     }
-    expect { return .Ok(300) }
+    expect { return .Ok(120) }
 }
 
 // An unlit element asks for no frames.

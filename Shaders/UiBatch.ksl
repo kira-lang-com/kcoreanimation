@@ -189,35 +189,27 @@ type FragmentOut {
     let color: Float4
 }
 
-// How strongly the touch highlight lights a point `distance` from its center.
-//
-// The same two halves as `motionGlowFalloff` on the Kira side: straight from
-// full strength to half across the inner half of the radius, then eased away
-// over the outer half, so the light meets the material on a curve and leaves no
-// ring. The radius is pinned to `motionGlowDiameter()`.
-function glowFalloff(distance: Float) -> Float {
-    let r = distance / 150.0
+// The touch highlight's falloff: one smooth bell, (1 - r²)³, flat at the
+// center and meeting nothing at the rim on a curve -- `motionGlowFalloff` on
+// the Kira side; the two must move together.
+function glowFalloff(distance: Float, radius: Float) -> Float {
+    let r = distance / max(radius, 0.0001)
     if r >= 1.0 {
         return 0.0
     }
-    if r <= 0.5 {
-        return 1.0 - r
-    }
-    let t = (r - 0.5) * 2.0
-    if t < 0.5 {
-        return 0.5 * (1.0 - 4.0 * t * t * t)
-    }
-    let inv = 2.0 - 2.0 * t
-    return 0.5 * (inv * inv * inv * 0.5)
+    let inside = 1.0 - r * r
+    return inside * inside * inside
 }
 
-// The highlight's contribution at this fragment.
+// The highlight's contribution at this fragment, masked by the surface's own
+// coverage. Its radius and strength share `glow.z` as `caPackedGlow` packs them.
 function glowStrength(input: VertexOut, coverage: Float) -> Float {
     if input.glow.z <= 0.0 {
         return 0.0
     }
+    let radius = floor(input.glow.z)
     let offset = Float2(input.local.x - input.glow.x, input.local.y - input.glow.y)
-    return input.glow.z * glowFalloff(length(offset)) * coverage
+    return (input.glow.z - radius) * glowFalloff(length(offset), radius) * coverage
 }
 
 // The quadratic smooth minimum: two distance fields fused so that the surface

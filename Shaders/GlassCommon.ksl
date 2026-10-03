@@ -346,34 +346,29 @@ function refractionCurve(value: Float) -> Float {
     return 1.0 - 2.3 * pow(5.2 * e, -6.9 * value - 0.7)
 }
 
-// The touch highlight's falloff: full at the center, straight down to half
-// across the inner half of the radius, then eased to nothing at the rim. The
-// same two halves as `motionGlowFalloff` on the Kira side, and the radius is
-// pinned to `motionGlowDiameter()` — the two must move together.
-function glowFalloff(distance: Float) -> Float {
-    let r = distance / 80.0
+// The touch highlight's falloff: one smooth bell, (1 - r²)³, flat at the
+// center and meeting nothing at the rim on a curve -- `motionGlowFalloff` on
+// the Kira side; the two must move together.
+function glowFalloff(distance: Float, radius: Float) -> Float {
+    let r = distance / max(radius, 0.0001)
     if r >= 1.0 {
         return 0.0
     }
-    if r <= 0.5 {
-        return 1.0 - r
-    }
-    let t = (r - 0.5) * 2.0
-    if t < 0.5 {
-        return 0.5 * (1.0 - 4.0 * t * t * t)
-    }
-    let inv = 2.0 - 2.0 * t
-    return 0.5 * (inv * inv * inv * 0.5)
+    let inside = 1.0 - r * r
+    return inside * inside * inside
 }
 
 // What the highlight adds at a point. `glow` carries its center in the quad's
-// own space (xy) and its strength (z); zero strength costs one comparison.
+// own space (xy), and its radius and strength packed in one number (z): the
+// radius in the whole part, the strength in what is left -- see
+// `caPackedGlow`. No light costs one comparison.
 function touchGlow(local: Float2, glow: Float3, coverage: Float) -> Float {
     if glow.z <= 0.0 {
         return 0.0
     }
+    let radius = floor(glow.z)
     let offset = Float2(local.x - glow.x, local.y - glow.y)
-    return glow.z * glowFalloff(length(offset)) * coverage
+    return (glow.z - radius) * glowFalloff(length(offset), radius) * coverage
 }
 
 // The quadratic smooth minimum: two distance fields fused so the surface grows

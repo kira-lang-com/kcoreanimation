@@ -125,7 +125,8 @@ extend UiBatch {
         edgeRefraction: Float,
         clipMinX: Float, clipMinY: Float, clipMaxX: Float, clipMaxY: Float,
         material: borrow CAGlassMaterial,
-        // The touch highlight, in the same coordinates as `x`/`y`. It rides the
+        // The touch highlight, in the same coordinates as `x`/`y`, its radius
+        // and strength packed as `caPackedGlow` packs them. It rides the
         // gradient block: the glass pipelines carry that block for stride and
         // never read it, while all three material spares are already spoken for
         // (inverse drawable size for the copy pass, and the AA band).

@@ -204,6 +204,22 @@ struct CALayerTree {
         return
     }
 
+    function setDeformation(id: LayerId, deformation: borrow CADeformation) {
+        var idx = LayerSlot(0)
+        match self.nodeSlot(id) {
+            None -> { return }
+            Some(slot) -> { idx = slot }
+        }
+        var node = self.nodes[idx.raw]
+        let was = node.deformation
+        if was.x != deformation.x || was.y != deformation.y || was.scaleX != deformation.scaleX || was.scaleY != deformation.scaleY {
+            node.deformation = copy deformation
+            node.damaged = true
+        }
+        self.nodes[idx.raw] = node
+        return
+    }
+
     function setRotation(id: LayerId, radians: Float) {
         var idx = LayerSlot(0)
     match self.nodeSlot(id) {

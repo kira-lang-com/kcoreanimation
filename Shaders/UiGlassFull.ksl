@@ -399,9 +399,7 @@ shader UiGlassFull {
             let outAlpha = cov + shadowAlpha * over
             // The touch light, ADDED on top of the finished material and masked
             // by its own coverage: glass energizes from within under a finger,
-            // it is not a white sheet laid over it. Two halves — straight from
-            // full to half across the inner half of the radius, then eased to
-            // nothing — matching `motionGlowFalloff` on the Kira side.
+            // it is not a white sheet laid over it.
             let lit = GlassCommon.touchGlow(input.local, Float3(input.glow.x, input.glow.y, input.glow.z), cov)
             // The surface fades whole: what it drew, premultiplied, thinned by
             // how far it has faded, so what is behind shows through it evenly.

@@ -150,41 +150,27 @@ function clipCoverage(input: VertexOut) -> Float {
     return GlassCommon.clipShapeCoverage(input.px, input.clip, input.clipCorner)
 }
 
-// How strongly the touch highlight lights a point `distance` from its center.
-//
-// Two halves, matching `motionGlowFalloff` on the Kira side exactly. The inner
-// half runs straight from full strength down to half; the outer half eases the
-// remaining half away to nothing, so the light meets the material on a curve
-// and leaves no ring where the two touch.
-//
-// The radius is fixed here rather than carried per quad because the highlight
-// is the size of a fingertip's influence and not of what was touched. It is
-// pinned to `motionGlowDiameter()` by `MotionGlowRadiusMatchesTheShader`; the
-// two must move together.
-function glowFalloff(distance: Float) -> Float {
-    let r = distance / 80.0
+// The touch highlight's falloff: one smooth bell, (1 - r²)³, flat at the
+// center and meeting nothing at the rim on a curve -- `motionGlowFalloff` on
+// the Kira side; the two must move together.
+function glowFalloff(distance: Float, radius: Float) -> Float {
+    let r = distance / max(radius, 0.0001)
     if r >= 1.0 {
         return 0.0
     }
-    if r <= 0.5 {
-        return 1.0 - r
-    }
-    let t = (r - 0.5) * 2.0
-    if t < 0.5 {
-        return 0.5 * (1.0 - 4.0 * t * t * t)
-    }
-    let inv = 2.0 - 2.0 * t
-    return 0.5 * (inv * inv * inv * 0.5)
+    let inside = 1.0 - r * r
+    return inside * inside * inside
 }
 
-// The highlight's contribution at this fragment, already masked by the
-// surface's own coverage so it cannot spill past a rounded corner.
+// The highlight's contribution at this fragment, masked by the surface's own
+// coverage. Its radius and strength share `glow.z` as `caPackedGlow` packs them.
 function glowAt(input: VertexOut, coverage: Float) -> Float {
     if input.glow.z <= 0.0 {
         return 0.0
     }
+    let radius = floor(input.glow.z)
     let offset = Float2(input.local.x - input.glow.x, input.local.y - input.glow.y)
-    return input.glow.z * glowFalloff(length(offset)) * coverage
+    return (input.glow.z - radius) * glowFalloff(length(offset), radius) * coverage
 }
 
 shader UiRect {

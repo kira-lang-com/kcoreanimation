@@ -76,6 +76,24 @@ struct CAShadow {
     var offset: Point = Point {}
 }
 
+// A layer pulled out of shape as a finished picture: moved by `x`, `y` and
+// stretched by `scaleX`, `scaleY` about its center, after everything else
+// places it -- glass leaning after a press. The layer's own content is drawn
+// at the deformed geometry, live; what it holds is drawn once at rest, as
+// layout and the layer's own scale have it, and that picture is deformed, so
+// text and icons stretch with the glass rather than reflowing or slipping
+// across it. The identity deforms nothing and costs nothing.
+struct CADeformation {
+    var x: Float = 0.0
+    var y: Float = 0.0
+    var scaleX: Float = 1.0
+    var scaleY: Float = 1.0
+}
+
+function caDeformationIsIdentity(d: borrow CADeformation) -> Bool {
+    return d.x == 0.0 && d.y == 0.0 && d.scaleX == 1.0 && d.scaleY == 1.0
+}
+
 // How a layer leaves once a description no longer has it, as SwiftUI's
 // removal transition: it is kept where it last stood, eased to this scale and
 // opacity over `duration`, answering nothing, and only then taken out. A zero
@@ -101,6 +119,8 @@ class CALayerDescription {
     var scaleX: Float = 1.0
     var scaleY: Float = 1.0
     var rotation: Float = 0.0
+    // Drawn over everything else, as a picture. See `CADeformation`.
+    var deformation: CADeformation = CADeformation {}
     var cornerRadius: Float = 0.0
     var borderWidth: Float = 0.0
     // The layer's own fill, drawn only when its content carries no color of its
