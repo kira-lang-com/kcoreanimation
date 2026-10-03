@@ -56,6 +56,8 @@ struct CADrawCmd {
     var shapeKind: Int = 0
     var lengthScale: Float = 1.0
     var textScale: Float = 1.0
+    // The weight a run is drawn at, as its layer's weight channel has it now.
+    var textWeight: Float = 400.0
     var glassWash: Float = 0.0
     var glassWashLuma: Float = 1.0
     var capturesBackdrop: Bool = false

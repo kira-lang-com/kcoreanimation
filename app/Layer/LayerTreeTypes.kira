@@ -36,6 +36,10 @@ struct CALayerNode {
     var shadowX: CAChannel = CAChannel {}
     var shadowY: CAChannel = CAChannel {}
     var shadowColor: CAColorChannel = CAColorChannel {}
+    // The weight a run of text is drawn at, on the variable font's axis, so a
+    // label going from regular to semibold thickens through every weight
+    // between rather than swapping outlines in one frame.
+    var textWeight: CAChannel = CAChannel { model: 400.0, presentation: 400.0 }
     // Anchor as a fraction of bounds: scale and rotation pivot here.
     var anchorX: Float = 0.5
     var anchorY: Float = 0.5

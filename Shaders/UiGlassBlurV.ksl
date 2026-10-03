@@ -60,8 +60,8 @@ shader UiGlassBlurV {
             }
             let uv = Float2((x + 0.5) / size.x, (y + 0.5) / size.y)
             let step = Float2(0.0, 1.0 / size.y)
-            store(nearOut, q.gid.xy, UiGlassBlurCommon.nearFilter(nearIn, nearIn, glassSmp, uv, step, 0.0))
-            store(farOut, q.gid.xy, UiGlassBlurCommon.farFilter(farIn, farIn, glassSmp, uv, step, 0.0))
+            store(nearOut, q.gid.xy, UiGlassBlurCommon.nearFilter(nearIn, nearIn, glassSmp, uv, step, Float2(0.0, 0.0), 0.0))
+            store(farOut, q.gid.xy, UiGlassBlurCommon.farFilter(farIn, farIn, glassSmp, uv, step, Float2(0.0, 0.0), 0.0))
             return
         }
     }

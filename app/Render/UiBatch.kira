@@ -166,10 +166,16 @@ function glassBlurDivisor() -> Int { return 4 }
 // level texel is at most `glassBlurDivisor()` points, because the capture is
 // never smaller than the viewport it holds. H and V each contribute this along
 // their own axis, so it is the reach per axis and not their sum.
-function glassBlurFarOuterTap() -> Float { return 5.333673259024 }
+function glassBlurFarOuterTap() -> Float { return 9.355774893514 }
 function glassBlurReach() -> Float {
     return (glassBlurFarOuterTap() + 0.5) * Float(glassBlurDivisor())
 }
+
+// How far each blurred level blurs, as a gaussian's sigma in points: the
+// kernel's own sigma in level texels (`Shaders/UiGlassBlurCommon.ksl`), at
+// the pyramid's divisor.
+function glassBlurNearRadius() -> Float { return 1.615855311186 * Float(glassBlurDivisor()) }
+function glassBlurFarRadius() -> Float { return 3.835586901974 * Float(glassBlurDivisor()) }
 
 // A hairline length authored in DEVICE PIXELS, in the quad's own (point) units.
 //

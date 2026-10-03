@@ -21,6 +21,7 @@ function caInitAppearanceFromContent(node: borrow mut CALayerNode) {
         }
         Text(t) -> {
             node.fillColor = caColorChannel(t.color)
+            node.textWeight = caChannel(t.weight)
             return
         }
         Texture(x) -> {
@@ -71,6 +72,9 @@ function caSampleNode(node: borrow mut CALayerNode, now: Float) -> Bool {
         moving = true
     }
     if caChannelSampleAt(node.borderWidth, now) {
+        moving = true
+    }
+    if caChannelSampleAt(node.textWeight, now) {
         moving = true
     }
     if caChannelSampleAt(node.shadowRadius, now) {

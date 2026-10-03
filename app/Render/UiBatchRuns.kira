@@ -264,6 +264,9 @@ extend UiBatch {
         inkBottom: Float = 0.0,
         rotCos: Float = 1.0,
         rotSin: Float = 0.0,
+        // The scale the run is shown at, from a transform over it. It is laid
+        // out at its own size and its glyphs scaled down onto the screen.
+        displayScale: Float = 1.0,
     ) {
         // Recover the compositor state ONCE for the whole string. Every per-glyph step
         // (size, metrics, glyph lookup, atlas rasterization, and quad emission) runs
@@ -287,11 +290,32 @@ extend UiBatch {
         // vertical metrics — is therefore in RASTER pixels, and is divided by
         // `rasterScale` (not `scale`) on the way back into points.
         let rasterScale = scale * textOversample()
-        let sizeKey = glyphSizeKey(sizePx * rasterScale)
+        // A run under a scale is laid out once at its own size about its own
+        // origin -- every whole-pixel decision below included -- and the
+        // finished glyphs are scaled onto the screen from there. The text is
+        // shown smaller, not set smaller: set at each size a scale passes
+        // through, its glyphs would snap to a different pixel size and its
+        // baseline to a different pixel row frame by frame, and it would shake
+        // against everything else moving with it.
+        var shown = 1.0
+        if displayScale > 0.0 && (displayScale > 1.0001 || displayScale < 0.9999) {
+            shown = displayScale
+        }
+        let originX = shown == 1.0 ? 0.0 : x
+        let originY = shown == 1.0 ? 0.0 : y
+        let runX = x - originX
+        let runY = y - originY
+        let runW = w / shown
+        let runH = h / shown
+        let leftInk = inkLeft / shown
+        let rightInk = inkRight / shown
+        let topInk = inkTop / shown
+        let bottomInk = inkBottom / shown
+        let sizeKey = glyphSizeKey(sizePx / shown * rasterScale)
         let weightKey = glyphWeightKey(weightAxis)
         // Inline of setGlyphSize: switch the face's working size + cache vertical metrics.
         if state.fontSizeSet != sizeKey || state.fontWeightSet != weightKey {
-            let applied = kira_text_face_set_pixel_size(state.face, Float(sizeKey), weightAxis)
+            let applied = kira_text_face_set_pixel_size(state.face, Float(sizeKey), glyphWeightAxis(weightKey))
             if applied == 0 {
                 return
             }
@@ -320,17 +344,17 @@ extend UiBatch {
         // leading above and below it, and that is the case this branch exists
         // for.
         var hasInk = false
-        if inkRight > inkLeft && inkTop > 0.0 && inkBottom >= 0.0 {
+        if rightInk > leftInk && topInk > 0.0 && bottomInk >= 0.0 {
             hasInk = true
         }
         let lineBox = ascender + descender
-        var baseline = y + (h - lineBox) / 2.0 + ascender
-        if hasInk && h < lineBox {
-            let inkHeight = inkTop + inkBottom
-            if h > inkHeight {
-                baseline = y + (h - inkHeight) / 2.0 + inkTop
+        var baseline = runY + (runH - lineBox) / 2.0 + ascender
+        if hasInk && runH < lineBox {
+            let inkHeight = topInk + bottomInk
+            if runH > inkHeight {
+                baseline = runY + (runH - inkHeight) / 2.0 + topInk
             } else {
-                baseline = y + inkTop
+                baseline = runY + topInk
             }
         }
         // The baseline lands on a WHOLE device pixel. Horizontal position is resolved
@@ -374,12 +398,12 @@ extend UiBatch {
         var glyphSlots = state.glyphs
         let cap = hashKeys.count
         let stride = quadFloatCount()
-        var penX = x
+        var penX = runX
         if hasInk {
             // The layout frame starts at visible ink, while glyph bearings are
             // measured from the renderer's pen origin. Shift the pen so the
             // actual first painted column lands exactly on the frame edge.
-            penX = x - inkLeft
+            penX = runX - leftInk
         }
 
         let indexSlot: int32_t_ptr = allocateBytes(8)
@@ -534,8 +558,8 @@ extend UiBatch {
                             let gw = (x1 - x0) / scale
                             let gh = (y1 - y0) / scale
                             if rotSin != 0.0 || rotCos != 1.0 {
-                                let runCenterX = x + w * 0.5
-                                let runCenterY = y + h * 0.5
+                                let runCenterX = runX + runW * 0.5
+                                let runCenterY = runY + runH * 0.5
                                 let glyphCenterX = gx + gw * 0.5
                                 let glyphCenterY = gy + gh * 0.5
                                 let dx = glyphCenterX - runCenterX
@@ -574,7 +598,8 @@ extend UiBatch {
                                 // in capture uv.
                                 writeQuadRecord(
                                     state.contentsPtr, base,
-                                    gx, gy, gx + gw, gy + gh,
+                                    originX + gx * shown, originY + gy * shown,
+                                    originX + (gx + gw) * shown, originY + (gy + gh) * shown,
                                     u0, v0, u1, v1,
                                     state.viewportW, state.viewportH,
                                     0.0, 0.0, 0.0, glyphWash, glyphMode, glyphWashLuma,

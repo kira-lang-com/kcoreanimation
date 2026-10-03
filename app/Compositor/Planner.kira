@@ -54,6 +54,7 @@ function caNodeDrawCmd(node: borrow CALayerNode, world: borrow CAAffineTransform
         borderWidth: node.borderWidth.presentation * lengthScale,
         lengthScale: lengthScale,
         textScale: caTextScale(world),
+        textWeight: node.textWeight.presentation,
         glassWash: frame.glassWash,
         glassWashLuma: frame.glassWashLuma,
         capturesBackdrop: node.capturesBackdrop,

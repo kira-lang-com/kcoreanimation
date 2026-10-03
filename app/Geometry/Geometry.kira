@@ -52,9 +52,11 @@ function caLengthScale(t: borrow CAAffineTransform) -> Float {
     return min(caScaleX(t), caScaleY(t))
 }
 
+// The scale text under `t` is shown at, exactly: text is set at its own size
+// and its glyphs scaled by this, so it follows a scale as smoothly as the
+// layers around it do.
 function caTextScale(t: borrow CAAffineTransform) -> Float {
-    let scale = sqrt(max(caScaleX(t) * caScaleY(t), 0.0001))
-    return round(scale * 32.0) / 32.0
+    return sqrt(max(caScaleX(t) * caScaleY(t), 0.0001))
 }
 
 // `outer` applied to the result of `inner`: outer * inner, so a child's own

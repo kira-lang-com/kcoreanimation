@@ -1,10 +1,8 @@
-// The two calibrated gaussian taps the glass blur pair share.
+// The two gaussian taps the glass blur pair share.
 //
-// Same kernel as the reference specialization, with only its numerically
-// negligible outermost pair removed and the retained weights renormalized:
-// near's removed mass is 0.0125%, far's is 0.2264%. That drops four bilinear
-// samples per output pixel across H+V while keeping the authored physical blur
-// radius.
+// Near is the reference specialization's kernel with its numerically
+// negligible outermost pair removed (0.0125%) and the retained weights
+// renormalized; far is the platform's wide blur, below.
 //
 // The weights sum to 1 in each, which is what keeps a second pass from
 // darkening the image.
@@ -23,13 +21,25 @@ const nearOuter: Float = 0.067438501431
 const nearInnerAt: Float = 1.376837128907
 const nearOuterAt: Float = 3.236195028878
 
-const farCenter: Float = 0.144429654361
-const farInner: Float = 0.247941942614
-const farMiddle: Float = 0.134832143947
-const farOuter: Float = 0.045011086258
-const farInnerAt: Float = 1.452983549719
-const farMiddleAt: Float = 3.391712260535
-const farOuterAt: Float = 5.333673259024
+// The far level is a wide gaussian, sigma four level texels -- sixteen points
+// at the pyramid's divisor, the radius of the platform's glass on a menu or a
+// panel. Its 0.68% outermost pair is dropped and the rest renormalized.
+const farCenter: Float = 0.100589795788
+const farOne: Float = 0.186265156342
+const farTwo: Float = 0.136939956617
+const farThree: Float = 0.078710089760
+const farFour: Float = 0.035367417471
+const farFive: Float = 0.012422481916
+const farOneAt: Float = 1.476579651064
+const farTwoAt: Float = 3.445529535040
+const farThreeAt: Float = 5.414898845797
+const farFourAt: Float = 7.384912144484
+const farFiveAt: Float = 9.355774893514
+
+// How many capture texels one texel of a blurred level spans per axis: the
+// pyramid's divisor, `glassBlurDivisor()` in Render/UiBatch.kira, which this
+// literal must match.
+const captureTexels: Float = 4.0
 
 // How near an endpoint the crossfade stops being one.
 const settled: Float = 0.001
@@ -44,22 +54,45 @@ function blendedTap(a: Texture2d, b: Texture2d, smp: Sampler, uv: Float2, blend:
     return mix(sample(a, smp, uv), sample(b, smp, uv), blend)
 }
 
-function nearFilter(a: Texture2d, b: Texture2d, smp: Sampler, uv: Float2, step: Float2, blend: Float) -> Float4 {
-    let c = blendedTap(a, b, smp, uv, blend) * nearCenter
-    let inner = blendedTap(a, b, smp, uv + step * nearInnerAt, blend)
-        + blendedTap(a, b, smp, uv - step * nearInnerAt, blend)
-    let outer = blendedTap(a, b, smp, uv + step * nearOuterAt, blend)
-        + blendedTap(a, b, smp, uv - step * nearOuterAt, blend)
+// A tap that stands for everything under it. The horizontal half reads the
+// full-resolution capture into a target a quarter its size, so one of its taps
+// covers a block of capture texels; read at a single point it would pick one
+// texel of the block and drop the rest, and a thin stroke -- a glyph's -- would
+// land between the taps and alias into streaks rather than blurring. Four
+// bilinear reads, `footprint` from the tap on each diagonal, average the whole
+// block. A pass whose source is already its own size gives a zero footprint
+// and reads once.
+function footprintTap(a: Texture2d, b: Texture2d, smp: Sampler, uv: Float2, footprint: Float2, blend: Float) -> Float4 {
+    if footprint.x <= 0.0 {
+        return blendedTap(a, b, smp, uv, blend)
+    }
+    let across = Float2(footprint.x, 0.0 - footprint.y)
+    let sum = blendedTap(a, b, smp, uv + footprint, blend)
+        + blendedTap(a, b, smp, uv - footprint, blend)
+        + blendedTap(a, b, smp, uv + across, blend)
+        + blendedTap(a, b, smp, uv - across, blend)
+    return sum * 0.25
+}
+
+function nearFilter(a: Texture2d, b: Texture2d, smp: Sampler, uv: Float2, step: Float2, footprint: Float2, blend: Float) -> Float4 {
+    let c = footprintTap(a, b, smp, uv, footprint, blend) * nearCenter
+    let inner = footprintTap(a, b, smp, uv + step * nearInnerAt, footprint, blend)
+        + footprintTap(a, b, smp, uv - step * nearInnerAt, footprint, blend)
+    let outer = footprintTap(a, b, smp, uv + step * nearOuterAt, footprint, blend)
+        + footprintTap(a, b, smp, uv - step * nearOuterAt, footprint, blend)
     return c + inner * nearInner + outer * nearOuter
 }
 
-function farFilter(a: Texture2d, b: Texture2d, smp: Sampler, uv: Float2, step: Float2, blend: Float) -> Float4 {
-    let c = blendedTap(a, b, smp, uv, blend) * farCenter
-    let inner = blendedTap(a, b, smp, uv + step * farInnerAt, blend)
-        + blendedTap(a, b, smp, uv - step * farInnerAt, blend)
-    let middle = blendedTap(a, b, smp, uv + step * farMiddleAt, blend)
-        + blendedTap(a, b, smp, uv - step * farMiddleAt, blend)
-    let outer = blendedTap(a, b, smp, uv + step * farOuterAt, blend)
-        + blendedTap(a, b, smp, uv - step * farOuterAt, blend)
-    return c + inner * farInner + middle * farMiddle + outer * farOuter
+function farPair(a: Texture2d, b: Texture2d, smp: Sampler, uv: Float2, offset: Float2, footprint: Float2, blend: Float) -> Float4 {
+    return footprintTap(a, b, smp, uv + offset, footprint, blend) + footprintTap(a, b, smp, uv - offset, footprint, blend)
+}
+
+function farFilter(a: Texture2d, b: Texture2d, smp: Sampler, uv: Float2, step: Float2, footprint: Float2, blend: Float) -> Float4 {
+    let c = footprintTap(a, b, smp, uv, footprint, blend) * farCenter
+    return c
+        + farPair(a, b, smp, uv, step * farOneAt, footprint, blend) * farOne
+        + farPair(a, b, smp, uv, step * farTwoAt, footprint, blend) * farTwo
+        + farPair(a, b, smp, uv, step * farThreeAt, footprint, blend) * farThree
+        + farPair(a, b, smp, uv, step * farFourAt, footprint, blend) * farFour
+        + farPair(a, b, smp, uv, step * farFiveAt, footprint, blend) * farFive
 }

@@ -64,8 +64,11 @@ shader UiGlassBlurH {
             }
             let uv = Float2((x + 0.5) / size.x, (y + 0.5) / size.y)
             let step = Float2(1.0 / size.x, 0.0)
-            store(nearOut, q.gid.xy, UiGlassBlurCommon.nearFilter(source, secondSource, glassSmp, uv, step, extent.blend))
-            store(farOut, q.gid.xy, UiGlassBlurCommon.farFilter(source, secondSource, glassSmp, uv, step, extent.blend))
+            // One capture texel, in the target's uv: the capture is
+            // `captureTexels` times this target per axis.
+            let footprint = Float2(1.0 / size.x, 1.0 / size.y) / UiGlassBlurCommon.captureTexels
+            store(nearOut, q.gid.xy, UiGlassBlurCommon.nearFilter(source, secondSource, glassSmp, uv, step, footprint, extent.blend))
+            store(farOut, q.gid.xy, UiGlassBlurCommon.farFilter(source, secondSource, glassSmp, uv, step, footprint, extent.blend))
             return
         }
     }

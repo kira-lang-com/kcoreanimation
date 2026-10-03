@@ -354,6 +354,21 @@ struct CALayerTree {
         return
     }
 
+    function setTextWeight(id: LayerId, weight: Float) {
+        var idx = LayerSlot(0)
+    match self.nodeSlot(id) {
+        None -> { return }
+        Some(slot) -> { idx = slot }
+    }
+        let timing = self.currentTiming()
+        var node = self.nodes[idx.raw]
+        if caApplyTiming(node.textWeight, timing, weight, self.clock) {
+            node.damaged = true
+        }
+        self.nodes[idx.raw] = node
+        return
+    }
+
     // Shadow: blur radius, opacity, and offset — each animatable.
     function setShadow(id: LayerId, radius: Float, opacity: Float, offsetX: Float, offsetY: Float) {
         var idx = LayerSlot(0)
@@ -873,7 +888,7 @@ struct CALayerTree {
                 return node.posX.animating || node.posY.animating || node.boundsW.animating
                     || node.boundsH.animating || node.opacity.animating || node.scaleX.animating
                     || node.scaleY.animating || node.rotation.animating || node.cornerRadius.animating
-                    || node.borderWidth.animating || node.fillColor.progress.animating
+                    || node.borderWidth.animating || node.textWeight.animating || node.fillColor.progress.animating
             }
         }
     }
@@ -892,12 +907,16 @@ struct CALayerTree {
 
     // The key a layer answers presses under as the tree stands now: zero for a
     // layer that is gone or answers none.
+    // The key a layer answers presses under, or 0 for none. A layer leaving,
+    // or in one that is, answers none: the key it was described with is a
+    // number the next build has handed to some other control, and a press it
+    // still held would light that control up.
     function hitKeyOf(id: LayerId) -> Int {
         match self.nodeSlot(id) {
             None -> { return 0 }
             Some(idx) -> {
                 let node = self.nodes[idx.raw]
-                if !node.mounted {
+                if !node.mounted || self.stillLeaving(id) {
                     return 0
                 }
                 return node.hitKey

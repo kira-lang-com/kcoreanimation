@@ -46,6 +46,20 @@ function caDescribedBorderWidth(layer: borrow CALayerDescription) -> Float {
     }
 }
 
+// A run states its weight on the font's axis. Every other content draws no
+// text and takes the regular weight a layer starts at.
+function caDescribedTextWeight(layer: borrow CALayerDescription) -> Float {
+    match layer.content {
+        Text(t) -> return t.weight
+        Solid(s) -> return 400.0
+        Icon(i) -> return 400.0
+        Glass(g) -> return 400.0
+        Gradient(r) -> return 400.0
+        Texture(x) -> return 400.0
+        Empty -> return 400.0
+    }
+}
+
 function caDescribedBorderColor(layer: borrow CALayerDescription) -> CAColor {
     match layer.content {
         Solid(s) -> return s.border
@@ -77,6 +91,7 @@ function caApplyLayerDescription(tree: borrow mut CALayerTree, id: LayerId, laye
     tree.setAnchor(id, layer.anchorPoint.x, layer.anchorPoint.y)
     tree.setCornerRadius(id, caDescribedCornerRadius(layer))
     tree.setBorderWidth(id, caDescribedBorderWidth(layer))
+    tree.setTextWeight(id, caDescribedTextWeight(layer))
     tree.setHoverColor(id, layer.hoverColor)
     tree.setPressColor(id, layer.pressColor)
     tree.setFillColor(id, caDescribedFill(layer))

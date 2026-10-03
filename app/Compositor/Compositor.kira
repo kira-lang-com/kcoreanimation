@@ -101,11 +101,16 @@ function caQuadFrame(quad: borrow CAOrientedQuad) -> Rect {
 // Draw a text layer: its run in its bounds, or — when it wraps and its bounds
 // are narrower than the run — each line in a line box of its own, one under the
 // last down the layer's own axis, so a turned layer's lines turn with it.
+//
+// The lines break where the run's stated weight breaks them, as layout measured
+// it, while the glyphs are drawn at `weight`, wherever the layer's weight is on
+// its way there: a label thickening never reflows under itself.
 function caDrawText(
     t: borrow CAText,
     quad: borrow CAOrientedQuad,
     localWidth: Float,
     textScale: Float,
+    weight: Float,
     fill: borrow Color,
     clipMinX: Float,
     clipMinY: Float,
@@ -130,7 +135,7 @@ function caDrawText(
                 backend.graphics,
                 line,
                 centerX - frame.width / 2.0, centerY - pitch / 2.0, frame.width, pitch,
-                fill, t.size * textScale, t.weight,
+                fill, t.size * textScale, weight,
                 clipMinX, clipMinY, clipMaxX, clipMaxY,
                 t.adaptiveInk,
                 wash,
@@ -140,7 +145,8 @@ function caDrawText(
                 0.0,
                 0.0,
                 quad.rotCos,
-                quad.rotSin
+                quad.rotSin,
+                textScale
             )
             index += 1
         }
@@ -150,7 +156,7 @@ function caDrawText(
         backend.graphics,
         t.content,
         frame.x, frame.y, frame.width, frame.height,
-        fill, t.size * textScale, t.weight,
+        fill, t.size * textScale, weight,
         clipMinX, clipMinY, clipMaxX, clipMaxY,
         t.adaptiveInk,
         wash,
@@ -160,7 +166,8 @@ function caDrawText(
         t.inkTop * textScale,
         t.inkBottom * textScale,
         quad.rotCos,
-        quad.rotSin
+        quad.rotSin,
+        textScale
     )
     return
 }
@@ -246,7 +253,7 @@ function caSubmitCmdAt(
             drawn = 1
         }
         Text(t) -> {
-            caDrawText(t, quad, cmd.localWidth, cmd.textScale, fill, clipMinX, clipMinY, clipMaxX, clipMaxY, cmd.glassWash, cmd.glassWashLuma, backend)
+            caDrawText(t, quad, cmd.localWidth, cmd.textScale, cmd.textWeight, fill, clipMinX, clipMinY, clipMaxX, clipMaxY, cmd.glassWash, cmd.glassWashLuma, backend)
             drawn = 1
         }
         Texture(x) -> {
@@ -346,7 +353,7 @@ function caSubmitDrawItem(item: borrow CADrawItem, backend: borrow mut KiraGraph
             drawn = 1
         }
         Text(t) -> {
-            caDrawText(t, item.quad, item.localWidth, item.textScale, fill, item.clipMinX, item.clipMinY, item.clipMaxX, item.clipMaxY, item.glassWash, item.glassWashLuma, backend)
+            caDrawText(t, item.quad, item.localWidth, item.textScale, item.textWeight, fill, item.clipMinX, item.clipMinY, item.clipMaxX, item.clipMaxY, item.glassWash, item.glassWashLuma, backend)
             drawn = 1
         }
         Texture(x) -> {

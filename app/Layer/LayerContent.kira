@@ -206,12 +206,17 @@ function caGlassRampAt(ramp: borrow CAGlassRamp, width: Float, height: Float) ->
     return clamp(ramp.base + ramp.slope * min(width, height), ramp.minimum, ramp.maximum)
 }
 
-// What a surface's size does to its glass: how much of its blur it shows, the
-// grays its edge burns in, and how its top and bottom edges are lit. The default leaves a surface exactly as its
-// `blur` and material say, which is glass that does not change with size.
+// What a surface's size does to its glass: how much of its blur it shows and
+// how far that blurs, the grays its edge burns in, and how its top and bottom
+// edges are lit. The default leaves a surface exactly as its `blur` and
+// material say, which is glass that does not change with size.
 @Derive(Copy)
 struct CAGlassSizing {
     var blur: CAGlassRamp = CAGlassRamp { base: 1.0, minimum: 1.0, maximum: 1.0 }
+    // How far the glass blurs what is behind it at this size, as a gaussian's
+    // sigma in points. A ramp that tops out below zero states none, and `blur`
+    // alone is the dial.
+    var blurRadius: CAGlassRamp = CAGlassRamp { base: -1.0, minimum: -1.0, maximum: -1.0 }
     // The grays the edge's ring and side lines burn in at this size. A ramp
     // that tops out at zero states none, and the material's own gray stands.
     var ringTone: CAGlassRamp = CAGlassRamp {}
@@ -224,7 +229,22 @@ struct CAGlassSizing {
 
 // The blur a surface this size draws with.
 function caGlassBlurAt(glass: borrow CAGlass, width: Float, height: Float) -> Float {
-    return glass.blur * caGlassRampAt(glass.sizing.blur, width, height)
+    let shown = glass.blur * caGlassRampAt(glass.sizing.blur, width, height)
+    if glass.sizing.blurRadius.maximum < 0.0 {
+        return shown
+    }
+    return shown * caGlassBlurDial(caGlassRampAt(glass.sizing.blurRadius, width, height), glass.material.blurNearSplit)
+}
+
+// The dial that blurs as far as `radius` points: up the sharp capture's
+// crossfade to the near level, which the dial reaches at `split`, then across
+// to the far level at the dial's top.
+function caGlassBlurDial(radius: Float, split: Float) -> Float {
+    let near = glassBlurNearRadius()
+    if radius <= near {
+        return split * max(radius, 0.0) / near
+    }
+    return min(split + (1.0 - split) * (radius - near) / (glassBlurFarRadius() - near), 1.0)
 }
 
 // The gray one of the edge's lines burns in at this size: the sizing's, when
@@ -276,6 +296,7 @@ function caGlassRampSignature(ramp: borrow CAGlassRamp) -> Int {
 
 function caGlassSizingSignature(sizing: borrow CAGlassSizing) -> Int {
     return caGlassRampSignature(sizing.blur) * 13
+        + caGlassRampSignature(sizing.blurRadius) * 31
         + caGlassRampSignature(sizing.ringTone) * 17
         + caGlassRampSignature(sizing.sideTone) * 19
         + caGlassRampSignature(sizing.lightDodge) * 23

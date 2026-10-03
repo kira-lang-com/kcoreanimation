@@ -78,20 +78,20 @@ function glyphPhaseOffset(phase: Int) -> Int {
     return phase * 64 * Int(textOversample()) / glyphSubpixelPhases()
 }
 
-// A weight as a cache bucket: one per hundred, so 400 and 600 are 4 and 6.
+// A weight as a cache bucket: one per ten units of the variable axis, so 400
+// and 600 are 40 and 60 and the axis's ends, 100 and 900, are 10 and 90.
 //
-// The variable axis is continuous, but the tokens that reach it are not — a
-// theme names Regular, SemiBold and Bold — and a bucket per hundred is finer
-// than any typography scale asks for.
+// The axis is continuous and a weight animates across it, so the buckets have
+// to be finer than the eye can tell apart frame to frame; ten units is a
+// twentieth of the way from regular to semibold.
 function glyphWeightKey(weight: Float) -> Int {
-    var w = Int(weight / 100.0 + 0.5)
-    if w < 1 {
-        w = 1
-    }
-    if w > 9 {
-        w = 9
-    }
-    return w
+    return Int(min(max(weight / 10.0, 10.0), 90.0) + 0.5)
+}
+
+// The axis value a bucket is rasterized at, so every glyph cached under one
+// is the same outline, whichever weight inside it was asked for first.
+function glyphWeightAxis(weightKey: Int) -> Float {
+    return Float(weightKey) * 10.0
 }
 
 // A cached glyph is a (character, size, weight, subpixel phase) — the phase is
@@ -101,7 +101,7 @@ function glyphWeightKey(weight: Float) -> Int {
 // first weight rasterized at that size to every run after it, so which weight a
 // label lands in depends on the order the panel was built in.
 function glyphCacheKey(codepoint: Int, sizeKey: Int, weightKey: Int, phase: Int) -> Int {
-    return ((codepoint * 1024 + sizeKey) * 10 + weightKey) * glyphSubpixelPhases() + phase
+    return ((codepoint * 1024 + sizeKey) * 100 + weightKey) * glyphSubpixelPhases() + phase
 }
 
 // Whether a new entry may go in the glyph hash: there is a free slot for it, and
