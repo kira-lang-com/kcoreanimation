@@ -152,6 +152,20 @@ function caDrawText(
         }
         return
     }
+    // The run is placed by its ink, which the description measured at the
+    // stated weight. Drawn at another, on its way there, the glyphs' bearings
+    // are that weight's, and so must the ink be, or the label slides by the
+    // difference until the weight arrives.
+    var inkLeft = t.inkLeft
+    var inkRight = t.inkRight
+    var inkTop = t.inkTop
+    var inkBottom = t.inkBottom
+    if abs(weight - t.weight) > 0.5 {
+        inkLeft = foundationTextRunInkLeft(content: t.content, size: t.size, weight: weight)
+        inkRight = foundationTextRunInkRight(content: t.content, size: t.size, weight: weight)
+        inkTop = foundationTextRunInkTop(content: t.content, size: t.size, weight: weight)
+        inkBottom = foundationTextRunInkBottom(content: t.content, size: t.size, weight: weight)
+    }
     backend.batch.pushText(
         backend.graphics,
         t.content,
@@ -161,10 +175,10 @@ function caDrawText(
         t.adaptiveInk,
         wash,
         washLuma,
-        t.inkLeft * textScale,
-        t.inkRight * textScale,
-        t.inkTop * textScale,
-        t.inkBottom * textScale,
+        inkLeft * textScale,
+        inkRight * textScale,
+        inkTop * textScale,
+        inkBottom * textScale,
         quad.rotCos,
         quad.rotSin,
         textScale

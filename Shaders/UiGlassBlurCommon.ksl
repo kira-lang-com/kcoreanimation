@@ -74,17 +74,31 @@ function footprintTap(a: Texture2d, b: Texture2d, smp: Sampler, uv: Float2, foot
     return sum * 0.25
 }
 
+// A paired tap: a gaussian tap set between two texels stands for both, which
+// a bilinear read at the target's own size averages for free. Read from the
+// capture it averages two of its texels and nothing else, so a pair of level
+// texels would be half missed and a stroke under the missing half would
+// stripe the blur. Two blocks of a level texel each, centered half a level
+// texel either side of the tap, cover the pair.
+function pairTap(a: Texture2d, b: Texture2d, smp: Sampler, uv: Float2, footprint: Float2, blend: Float) -> Float4 {
+    if footprint.x <= 0.0 {
+        return blendedTap(a, b, smp, uv, blend)
+    }
+    let apart = Float2(footprint.x * captureTexels * 0.5, 0.0)
+    return (footprintTap(a, b, smp, uv - apart, footprint, blend) + footprintTap(a, b, smp, uv + apart, footprint, blend)) * 0.5
+}
+
 function nearFilter(a: Texture2d, b: Texture2d, smp: Sampler, uv: Float2, step: Float2, footprint: Float2, blend: Float) -> Float4 {
     let c = footprintTap(a, b, smp, uv, footprint, blend) * nearCenter
-    let inner = footprintTap(a, b, smp, uv + step * nearInnerAt, footprint, blend)
-        + footprintTap(a, b, smp, uv - step * nearInnerAt, footprint, blend)
-    let outer = footprintTap(a, b, smp, uv + step * nearOuterAt, footprint, blend)
-        + footprintTap(a, b, smp, uv - step * nearOuterAt, footprint, blend)
+    let inner = pairTap(a, b, smp, uv + step * nearInnerAt, footprint, blend)
+        + pairTap(a, b, smp, uv - step * nearInnerAt, footprint, blend)
+    let outer = pairTap(a, b, smp, uv + step * nearOuterAt, footprint, blend)
+        + pairTap(a, b, smp, uv - step * nearOuterAt, footprint, blend)
     return c + inner * nearInner + outer * nearOuter
 }
 
 function farPair(a: Texture2d, b: Texture2d, smp: Sampler, uv: Float2, offset: Float2, footprint: Float2, blend: Float) -> Float4 {
-    return footprintTap(a, b, smp, uv + offset, footprint, blend) + footprintTap(a, b, smp, uv - offset, footprint, blend)
+    return pairTap(a, b, smp, uv + offset, footprint, blend) + pairTap(a, b, smp, uv - offset, footprint, blend)
 }
 
 function farFilter(a: Texture2d, b: Texture2d, smp: Sampler, uv: Float2, step: Float2, footprint: Float2, blend: Float) -> Float4 {

@@ -162,13 +162,13 @@ function glassBlurDivisor() -> Int { return 4 }
 // How far the blur reaches past the pixel it is sampled at, in logical points.
 //
 // `Shaders/UiGlassBlurCommon.ksl`'s outermost far tap sits at `farOuterAt`
-// level texels and a bilinear fetch reads half a texel past its coordinate; a
-// level texel is at most `glassBlurDivisor()` points, because the capture is
+// level texels and, as a pair, averages the level texel either side of its
+// coordinate, so it reads up to one texel past it; a level texel is at most `glassBlurDivisor()` points, because the capture is
 // never smaller than the viewport it holds. H and V each contribute this along
 // their own axis, so it is the reach per axis and not their sum.
 function glassBlurFarOuterTap() -> Float { return 9.355774893514 }
 function glassBlurReach() -> Float {
-    return (glassBlurFarOuterTap() + 0.5) * Float(glassBlurDivisor())
+    return (glassBlurFarOuterTap() + 1.0) * Float(glassBlurDivisor())
 }
 
 // How far each blurred level blurs, as a gaussian's sigma in points: the
