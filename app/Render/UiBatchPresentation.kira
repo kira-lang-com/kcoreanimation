@@ -361,7 +361,7 @@ extend UiBatch {
 // path they come from the C batch when its vertex list turns out non-empty; the
 // retained path's equivalent moment is a presented frame whose streams held
 // quads, which is here.
-function announceVisibleContent(state: borrow mut UiBatchState) {
+public function announceVisibleContent(state: borrow mut UiBatchState) {
     if state.announcedVisibleContent {
         return
     }

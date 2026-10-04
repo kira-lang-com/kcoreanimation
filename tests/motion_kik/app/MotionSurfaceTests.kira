@@ -18,7 +18,7 @@ function mtBounds() -> MotionScrollBounds {
 function mtSettleScroll(state: borrow mut MotionScrollState, bounds: borrow MotionScrollBounds) -> Int {
     var frames = 0
     while frames < 2000 {
-        let moving = motionScrollAdvance(state, 1.0 / 120.0, bounds, false)
+        let moving = motionScrollAdvance(state, 1.0 / 120.0, bounds)
         frames = frames + 1
         if moving == false {
             return frames
@@ -35,8 +35,8 @@ construct MtDragMovesOppositeThePointer() extends Test {
     test {
         var state = MotionScrollState {}
         let bounds = mtBounds()
-        motionScrollDragBegin(state, 500.0, bounds)
-        motionScrollDragMove(state, 400.0, 1.0 / 120.0, bounds)
+        motionScrollDragBegin(state, 500.0, bounds, motionRubberBandConstant())
+        motionScrollDragMove(state, 400.0, bounds)
         return Int(round(state.offset))
     }
     expect { return .Ok(100) }
@@ -49,8 +49,8 @@ construct MtDragPastTheTopIsResisted() extends Test {
     test {
         var state = MotionScrollState {}
         let bounds = mtBounds()
-        motionScrollDragBegin(state, 100.0, bounds)
-        motionScrollDragMove(state, 200.0, 1.0 / 120.0, bounds)
+        motionScrollDragBegin(state, 100.0, bounds, motionRubberBandConstant())
+        motionScrollDragMove(state, 200.0, bounds)
         return Int(round(state.offset))
     }
     expect { return .Ok(0 - 48) }
@@ -63,12 +63,12 @@ construct MtRegrabbingAStretchedSurfaceDoesNotJump() extends Test {
     test {
         var state = MotionScrollState {}
         let bounds = mtBounds()
-        motionScrollDragBegin(state, 100.0, bounds)
-        motionScrollDragMove(state, 200.0, 1.0 / 120.0, bounds)
+        motionScrollDragBegin(state, 100.0, bounds, motionRubberBandConstant())
+        motionScrollDragMove(state, 200.0, bounds)
         let held = state.offset
         // A second gesture begins without the first having sprung back.
-        motionScrollDragBegin(state, 640.0, bounds)
-        motionScrollDragMove(state, 640.0, 1.0 / 120.0, bounds)
+        motionScrollDragBegin(state, 640.0, bounds, motionRubberBandConstant())
+        motionScrollDragMove(state, 640.0, bounds)
         return mtScaled(abs(state.offset - held), 3)
     }
     expect { return .Ok(0) }
@@ -80,8 +80,8 @@ construct MtANonBouncingSurfaceClamps() extends Test {
     test {
         var state = MotionScrollState { bounces: false }
         let bounds = mtBounds()
-        motionScrollDragBegin(state, 100.0, bounds)
-        motionScrollDragMove(state, 300.0, 1.0 / 120.0, bounds)
+        motionScrollDragBegin(state, 100.0, bounds, motionRubberBandConstant())
+        motionScrollDragMove(state, 300.0, bounds)
         return Int(round(state.offset))
     }
     expect { return .Ok(0) }
@@ -95,8 +95,8 @@ construct MtReleasePastAnEdgeReturnsToIt() extends Test {
     test {
         var state = MotionScrollState {}
         let bounds = mtBounds()
-        motionScrollDragBegin(state, 100.0, bounds)
-        motionScrollDragMove(state, 250.0, 1.0 / 120.0, bounds)
+        motionScrollDragBegin(state, 100.0, bounds, motionRubberBandConstant())
+        motionScrollDragMove(state, 250.0, bounds)
         motionScrollDragEnd(state, bounds, false)
         let frames = mtSettleScroll(state, bounds)
         if frames < 0 {
@@ -126,8 +126,8 @@ construct MtAThrowComesToRestInRange() extends Test {
 }
 
 // A throw hard enough to reach the end does not stop at it — it overshoots,
-// stretches, and springs back to exactly the end. The velocity is carried into
-// the spring, which is what makes the bounce one motion rather than two.
+// stretches, and comes back to exactly the end. The velocity is carried past
+// the edge, which is what makes the bounce one motion rather than two.
 construct MtAHardThrowBouncesOffTheEnd() extends Test {
     test {
         var state = MotionScrollState { offset: 300.0, velocity: 4000.0, phase: .Dragging }
@@ -136,7 +136,7 @@ construct MtAHardThrowBouncesOffTheEnd() extends Test {
         var frames = 0
         var stretched = false
         while frames < 2000 {
-            let moving = motionScrollAdvance(state, 1.0 / 120.0, bounds, false)
+            let moving = motionScrollAdvance(state, 1.0 / 120.0, bounds)
             // Past the end at some point in the flight, which is the overshoot.
             if state.offset > 600.0 {
                 stretched = true
@@ -155,14 +155,15 @@ construct MtAHardThrowBouncesOffTheEnd() extends Test {
     expect { return .Ok(6000000) }
 }
 
-// A wheel is a displacement, not a gesture: it starts nothing and it clamps.
-construct MtTheWheelClampsAndStartsNothing() extends Test {
+// A wheel is a displacement, not a gesture: it eases the notch's way and
+// clamps at the end.
+construct MtTheWheelStepsAndClamps() extends Test {
     test {
         var state = MotionScrollState {}
         let bounds = mtBounds()
         motionScrollWheel(state, 5000.0, bounds)
-        let moving = motionScrollAdvance(state, 1.0 / 120.0, bounds, false)
-        if moving {
+        let frames = mtSettleScroll(state, bounds)
+        if frames < 0 {
             return 0 - 1
         }
         return Int(round(state.offset))
@@ -191,7 +192,7 @@ construct MtAnIdleSurfaceNeedsNoFrames() extends Test {
     test {
         var state = MotionScrollState {}
         let bounds = mtBounds()
-        if motionScrollAdvance(state, 1.0 / 120.0, bounds, false) {
+        if motionScrollAdvance(state, 1.0 / 120.0, bounds) {
             return 1
         }
         return 0

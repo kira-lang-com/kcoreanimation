@@ -11,9 +11,9 @@ import Foundation
 // it, and a frame samples every channel at the clock reading it was handed. The
 // delta form (`advance`) is the clock advanced by dt and then sampled.
 
-distinct LayerId = Int
+public distinct LayerId = Int
 
-function caNoLayer() -> LayerId {
+public function caNoLayer() -> LayerId {
     return LayerId(0)
 }
 
@@ -21,13 +21,13 @@ function caNoLayer() -> LayerId {
 // ancestors' clips. `Overlay(level)` escapes every ancestor clip and draws from
 // the canvas root, ordered by level (lower first), after all inline content —
 // the semantic hoist a menu, popover or dialog needs.
-function caDuplicateLayerKeyTrap(key: Int) {
+public function caDuplicateLayerKeyTrap(key: Int) {
     printLine("KCoreAnimation: duplicate sibling layer key " + String(key) + " is ambiguous and is not allowed")
     let ignored = "duplicate-layer-key".charAt("duplicate-layer-key".count)
     return
 }
 
-struct CALayerTree {
+public struct CALayerTree {
     var nodes: [CALayerNode] = []
     var indexOfId: [Option<LayerSlot>] = []
     var nextId: LayerId = LayerId(1)
@@ -139,13 +139,11 @@ struct CALayerTree {
         Some(slot) -> { idx = slot }
     }
         let timing = self.currentTiming()
-        var node = self.nodes[idx.raw]
-        let changedX = caApplyTiming(node.posX, timing, x, self.clock)
-        let changedY = caApplyTiming(node.posY, timing, y, self.clock)
+        let changedX = caApplyTiming(self.nodes[idx.raw].posX, timing, x, self.clock)
+        let changedY = caApplyTiming(self.nodes[idx.raw].posY, timing, y, self.clock)
         if changedX || changedY {
-            node.damaged = true
+            self.nodes[idx.raw].damaged = true
         }
-        self.nodes[idx.raw] = node
         return
     }
 
@@ -156,13 +154,11 @@ struct CALayerTree {
         Some(slot) -> { idx = slot }
     }
         let timing = self.currentTiming()
-        var node = self.nodes[idx.raw]
-        let changedW = caApplyTiming(node.boundsW, timing, width, self.clock)
-        let changedH = caApplyTiming(node.boundsH, timing, height, self.clock)
+        let changedW = caApplyTiming(self.nodes[idx.raw].boundsW, timing, width, self.clock)
+        let changedH = caApplyTiming(self.nodes[idx.raw].boundsH, timing, height, self.clock)
         if changedW || changedH {
-            node.damaged = true
+            self.nodes[idx.raw].damaged = true
         }
-        self.nodes[idx.raw] = node
         return
     }
 
@@ -179,11 +175,9 @@ struct CALayerTree {
         Some(slot) -> { idx = slot }
     }
         let timing = self.currentTiming()
-        var node = self.nodes[idx.raw]
-        if caApplyTiming(node.opacity, timing, value, self.clock) {
-            node.damaged = true
+        if caApplyTiming(self.nodes[idx.raw].opacity, timing, value, self.clock) {
+            self.nodes[idx.raw].damaged = true
         }
-        self.nodes[idx.raw] = node
         return
     }
 
@@ -194,13 +188,11 @@ struct CALayerTree {
         Some(slot) -> { idx = slot }
     }
         let timing = self.currentTiming()
-        var node = self.nodes[idx.raw]
-        let changedX = caApplyTiming(node.scaleX, timing, scaleX, self.clock)
-        let changedY = caApplyTiming(node.scaleY, timing, scaleY, self.clock)
+        let changedX = caApplyTiming(self.nodes[idx.raw].scaleX, timing, scaleX, self.clock)
+        let changedY = caApplyTiming(self.nodes[idx.raw].scaleY, timing, scaleY, self.clock)
         if changedX || changedY {
-            node.damaged = true
+            self.nodes[idx.raw].damaged = true
         }
-        self.nodes[idx.raw] = node
         return
     }
 
@@ -210,13 +202,11 @@ struct CALayerTree {
             None -> { return }
             Some(slot) -> { idx = slot }
         }
-        var node = self.nodes[idx.raw]
-        let was = node.deformation
+        let was = self.nodes[idx.raw].deformation
         if was.x != deformation.x || was.y != deformation.y || was.scaleX != deformation.scaleX || was.scaleY != deformation.scaleY {
-            node.deformation = copy deformation
-            node.damaged = true
+            self.nodes[idx.raw].deformation = copy deformation
+            self.nodes[idx.raw].damaged = true
         }
-        self.nodes[idx.raw] = node
         return
     }
 
@@ -227,11 +217,9 @@ struct CALayerTree {
         Some(slot) -> { idx = slot }
     }
         let timing = self.currentTiming()
-        var node = self.nodes[idx.raw]
-        if caApplyTiming(node.rotation, timing, radians, self.clock) {
-            node.damaged = true
+        if caApplyTiming(self.nodes[idx.raw].rotation, timing, radians, self.clock) {
+            self.nodes[idx.raw].damaged = true
         }
-        self.nodes[idx.raw] = node
         return
     }
 
@@ -244,12 +232,10 @@ struct CALayerTree {
         Some(slot) -> { idx = slot }
     }
         let timing = self.currentTiming()
-        var node = self.nodes[idx.raw]
-        node.restingFill = color
-        if caColorApplyTiming(node.fillColor, timing, caShownFill(node, id == self.hoveredId, id == self.pressedId), self.clock) {
-            node.damaged = true
+        self.nodes[idx.raw].restingFill = color
+        if caColorApplyTiming(self.nodes[idx.raw].fillColor, timing, caShownFill(self.nodes[idx.raw], id == self.hoveredId, id == self.pressedId), self.clock) {
+            self.nodes[idx.raw].damaged = true
         }
-        self.nodes[idx.raw] = node
         return
     }
 
@@ -259,12 +245,10 @@ struct CALayerTree {
             None -> { return }
             Some(slot) -> { idx = slot }
         }
-        var node = self.nodes[idx.raw]
-        if caColorSame(node.hoverColor, color) {
+        if caColorSame(self.nodes[idx.raw].hoverColor, color) {
             return
         }
-        node.hoverColor = color
-        self.nodes[idx.raw] = node
+        self.nodes[idx.raw].hoverColor = color
         self.relight(id)
         return
     }
@@ -275,12 +259,10 @@ struct CALayerTree {
             None -> { return }
             Some(slot) -> { idx = slot }
         }
-        var node = self.nodes[idx.raw]
-        if caColorSame(node.pressColor, color) {
+        if caColorSame(self.nodes[idx.raw].pressColor, color) {
             return
         }
-        node.pressColor = color
-        self.nodes[idx.raw] = node
+        self.nodes[idx.raw].pressColor = color
         self.relight(id)
         return
     }
@@ -295,6 +277,100 @@ struct CALayerTree {
         self.relight(left)
         self.relight(id)
         return
+    }
+
+    // The press goes from the layer held to this one, under a finger sliding
+    // across a menu. Its wash does not fade out of the one and into the
+    // other: it is one platter, and it travels. Drawn at this layer, it starts
+    // where it stood at the last one and springs onto this one's box, taking
+    // on its height on the way.
+    function slidePress(id: LayerId) {
+        let left = self.pressedId
+        if id == left {
+            return
+        }
+        var fromIdx = LayerSlot(0)
+        var toIdx = LayerSlot(0)
+        match self.nodeSlot(left) {
+            None -> {
+                self.setPressed(id)
+                return
+            }
+            Some(slot) -> { fromIdx = slot }
+        }
+        match self.nodeSlot(id) {
+            None -> {
+                self.setPressed(id)
+                return
+            }
+            Some(slot) -> { toIdx = slot }
+        }
+        var from = self.nodes[fromIdx.raw]
+        let stood = Rect {
+            x: from.platterX.presentation,
+            y: from.platterY.presentation,
+            width: from.boundsW.presentation + from.platterW.presentation,
+            height: from.boundsH.presentation + from.platterH.presentation
+        }
+        let there = caApplyRect(caConcat(caInvert(self.placement(id)), self.placement(left)), stood)
+        caChannelSetImmediate(from.platterX, 0.0)
+        caChannelSetImmediate(from.platterY, 0.0)
+        caChannelSetImmediate(from.platterW, 0.0)
+        caChannelSetImmediate(from.platterH, 0.0)
+        from.fillColor = caColorChannel(from.restingFill)
+        from.damaged = true
+        self.nodes[fromIdx.raw] = from
+
+        self.pressedId = id
+        var follow = motionPlatterFollow(0.0)
+        if self.currentTiming().reducedMotion {
+            follow = motionCurveReduced(follow)
+        }
+        var to = self.nodes[toIdx.raw]
+        caChannelSetImmediate(to.platterX, there.x)
+        caChannelSetImmediate(to.platterY, there.y)
+        caChannelSetImmediate(to.platterW, there.width - to.boundsW.presentation)
+        caChannelSetImmediate(to.platterH, there.height - to.boundsH.presentation)
+        caChannelStartSpring(to.platterX, copy follow, self.clock)
+        caChannelStartSpring(to.platterY, copy follow, self.clock)
+        caChannelStartSpring(to.platterW, copy follow, self.clock)
+        caChannelStartSpring(to.platterH, copy follow, self.clock)
+        to.fillColor = caColorChannel(caShownFill(to, id == self.hoveredId, true))
+        to.damaged = true
+        self.nodes[toIdx.raw] = to
+        return
+    }
+
+    // Where a layer's own coordinates land in the canvas, at rest: its local
+    // transform and every ancestor's up to the canvas, or up to the overlay it
+    // is drawn in, which is placed from the canvas itself. No pull is in it.
+    function placement(id: LayerId) -> CAAffineTransform {
+        var placed = caIdentity()
+        var at = id
+        while at != caNoLayer() {
+            match self.nodeSlot(at) {
+                None -> { return placed }
+                Some(slot) -> {
+                    placed = caConcat(caLocalTransform(self.nodes[slot.raw]), placed)
+                    if self.nodes[slot.raw].hoisted {
+                        return placed
+                    }
+                    at = self.nodes[slot.raw].parentId
+                }
+            }
+        }
+        return placed
+    }
+
+    // A layer's box in the canvas at rest: where it stands with nothing
+    // pulling it or anything it is in.
+    function restBounds(id: LayerId) -> Rect {
+        match self.nodeSlot(id) {
+            None -> { return Rect {} }
+            Some(slot) -> {
+                return caApplyRect(self.placement(id), Rect { x: 0.0, y: 0.0, width: self.nodes[slot.raw].boundsW.presentation, height: self.nodes[slot.raw].boundsH.presentation })
+            }
+        }
     }
 
     // The pointer is now over this layer, or over none. The layer it left
@@ -317,11 +393,9 @@ struct CALayerTree {
             None -> { return }
             Some(slot) -> { idx = slot }
         }
-        var node = self.nodes[idx.raw]
-        if caColorApplyTiming(node.fillColor, self.currentTiming(), caShownFill(node, id == self.hoveredId, id == self.pressedId), self.clock) {
-            node.damaged = true
+        if caColorApplyTiming(self.nodes[idx.raw].fillColor, self.currentTiming(), caShownFill(self.nodes[idx.raw], id == self.hoveredId, id == self.pressedId), self.clock) {
+            self.nodes[idx.raw].damaged = true
         }
-        self.nodes[idx.raw] = node
         return
     }
 
@@ -332,11 +406,9 @@ struct CALayerTree {
         Some(slot) -> { idx = slot }
     }
         let timing = self.currentTiming()
-        var node = self.nodes[idx.raw]
-        if caColorApplyTiming(node.borderColor, timing, color, self.clock) {
-            node.damaged = true
+        if caColorApplyTiming(self.nodes[idx.raw].borderColor, timing, color, self.clock) {
+            self.nodes[idx.raw].damaged = true
         }
-        self.nodes[idx.raw] = node
         return
     }
 
@@ -347,11 +419,9 @@ struct CALayerTree {
         Some(slot) -> { idx = slot }
     }
         let timing = self.currentTiming()
-        var node = self.nodes[idx.raw]
-        if caApplyTiming(node.cornerRadius, timing, radius, self.clock) {
-            node.damaged = true
+        if caApplyTiming(self.nodes[idx.raw].cornerRadius, timing, radius, self.clock) {
+            self.nodes[idx.raw].damaged = true
         }
-        self.nodes[idx.raw] = node
         return
     }
 
@@ -362,11 +432,9 @@ struct CALayerTree {
         Some(slot) -> { idx = slot }
     }
         let timing = self.currentTiming()
-        var node = self.nodes[idx.raw]
-        if caApplyTiming(node.borderWidth, timing, width, self.clock) {
-            node.damaged = true
+        if caApplyTiming(self.nodes[idx.raw].borderWidth, timing, width, self.clock) {
+            self.nodes[idx.raw].damaged = true
         }
-        self.nodes[idx.raw] = node
         return
     }
 
@@ -377,11 +445,9 @@ struct CALayerTree {
         Some(slot) -> { idx = slot }
     }
         let timing = self.currentTiming()
-        var node = self.nodes[idx.raw]
-        if caApplyTiming(node.textWeight, timing, weight, self.clock) {
-            node.damaged = true
+        if caApplyTiming(self.nodes[idx.raw].textWeight, timing, weight, self.clock) {
+            self.nodes[idx.raw].damaged = true
         }
-        self.nodes[idx.raw] = node
         return
     }
 
@@ -393,15 +459,13 @@ struct CALayerTree {
         Some(slot) -> { idx = slot }
     }
         let timing = self.currentTiming()
-        var node = self.nodes[idx.raw]
-        let changedRadius = caApplyTiming(node.shadowRadius, timing, radius, self.clock)
-        let changedOpacity = caApplyTiming(node.shadowOpacity, timing, opacity, self.clock)
-        let changedX = caApplyTiming(node.shadowX, timing, offsetX, self.clock)
-        let changedY = caApplyTiming(node.shadowY, timing, offsetY, self.clock)
+        let changedRadius = caApplyTiming(self.nodes[idx.raw].shadowRadius, timing, radius, self.clock)
+        let changedOpacity = caApplyTiming(self.nodes[idx.raw].shadowOpacity, timing, opacity, self.clock)
+        let changedX = caApplyTiming(self.nodes[idx.raw].shadowX, timing, offsetX, self.clock)
+        let changedY = caApplyTiming(self.nodes[idx.raw].shadowY, timing, offsetY, self.clock)
         if changedRadius || changedOpacity || changedX || changedY {
-            node.damaged = true
+            self.nodes[idx.raw].damaged = true
         }
-        self.nodes[idx.raw] = node
         return
     }
 
@@ -412,11 +476,9 @@ struct CALayerTree {
         Some(slot) -> { idx = slot }
     }
         let timing = self.currentTiming()
-        var node = self.nodes[idx.raw]
-        if caColorApplyTiming(node.shadowColor, timing, color, self.clock) {
-            node.damaged = true
+        if caColorApplyTiming(self.nodes[idx.raw].shadowColor, timing, color, self.clock) {
+            self.nodes[idx.raw].damaged = true
         }
-        self.nodes[idx.raw] = node
         return
     }
 
@@ -429,13 +491,11 @@ struct CALayerTree {
         Some(slot) -> { idx = slot }
     }
         let signature = caContentSignature(content)
-        var node = self.nodes[idx.raw]
-        if signature != node.contentSignature {
-            node.damaged = true
+        if signature != self.nodes[idx.raw].contentSignature {
+            self.nodes[idx.raw].damaged = true
         }
-        node.content = move content
-        node.contentSignature = signature
-        self.nodes[idx.raw] = node
+        self.nodes[idx.raw].content = move content
+        self.nodes[idx.raw].contentSignature = signature
         return
     }
 
@@ -445,12 +505,10 @@ struct CALayerTree {
             None -> { return }
             Some(slot) -> { idx = slot }
         }
-        var node = self.nodes[idx.raw]
-        if node.anchorX != anchorX || node.anchorY != anchorY {
-            node.anchorX = anchorX
-            node.anchorY = anchorY
-            node.damaged = true
-            self.nodes[idx.raw] = node
+        if self.nodes[idx.raw].anchorX != anchorX || self.nodes[idx.raw].anchorY != anchorY {
+            self.nodes[idx.raw].anchorX = anchorX
+            self.nodes[idx.raw].anchorY = anchorY
+            self.nodes[idx.raw].damaged = true
         }
         return
     }
@@ -461,11 +519,9 @@ struct CALayerTree {
             None -> { return }
             Some(slot) -> { idx = slot }
         }
-        var node = self.nodes[idx.raw]
-        if node.clip != clip {
-            node.clip = clip
-            node.damaged = true
-            self.nodes[idx.raw] = node
+        if self.nodes[idx.raw].clip != clip {
+            self.nodes[idx.raw].clip = clip
+            self.nodes[idx.raw].damaged = true
         }
         return
     }
@@ -476,11 +532,9 @@ struct CALayerTree {
             None -> { return }
             Some(slot) -> { idx = slot }
         }
-        var node = self.nodes[idx.raw]
-        if node.groupOpacity != group {
-            node.groupOpacity = group
-            node.damaged = true
-            self.nodes[idx.raw] = node
+        if self.nodes[idx.raw].groupOpacity != group {
+            self.nodes[idx.raw].groupOpacity = group
+            self.nodes[idx.raw].damaged = true
         }
         return
     }
@@ -491,12 +545,10 @@ struct CALayerTree {
             None -> { return }
             Some(slot) -> { idx = slot }
         }
-        var node = self.nodes[idx.raw]
-        if node.renderTarget != enabled || node.renderTargetId != targetId {
-            node.renderTarget = enabled
-            node.renderTargetId = targetId
-            node.damaged = true
-            self.nodes[idx.raw] = node
+        if self.nodes[idx.raw].renderTarget != enabled || self.nodes[idx.raw].renderTargetId != targetId {
+            self.nodes[idx.raw].renderTarget = enabled
+            self.nodes[idx.raw].renderTargetId = targetId
+            self.nodes[idx.raw].damaged = true
         }
         return
     }
@@ -507,11 +559,9 @@ struct CALayerTree {
             None -> { return }
             Some(slot) -> { idx = slot }
         }
-        var node = self.nodes[idx.raw]
-        if node.blur != radius {
-            node.blur = radius
-            node.damaged = true
-            self.nodes[idx.raw] = node
+        if self.nodes[idx.raw].blur != radius {
+            self.nodes[idx.raw].blur = radius
+            self.nodes[idx.raw].damaged = true
         }
         return
     }
@@ -522,27 +572,37 @@ struct CALayerTree {
             None -> { return }
             Some(slot) -> { idx = slot }
         }
-        var node = self.nodes[idx.raw]
-        if node.capturesBackdrop != captures {
-            node.capturesBackdrop = captures
-            node.damaged = true
-            self.nodes[idx.raw] = node
+        if self.nodes[idx.raw].capturesBackdrop != captures {
+            self.nodes[idx.raw].capturesBackdrop = captures
+            self.nodes[idx.raw].damaged = true
         }
         return
     }
 
-    function setHit(id: LayerId, hit: Bool, interactive: Bool, hitKey: Int) {
+    function setHit(id: LayerId, hit: Bool, interactive: Bool, slidesPress: Bool, hitKey: Int) {
         var idx = LayerSlot(0)
         match self.nodeSlot(id) {
             None -> { return }
             Some(slot) -> { idx = slot }
         }
-        var node = self.nodes[idx.raw]
-        if node.hit != hit || node.interactive != interactive || node.hitKey != hitKey {
-            node.hit = hit
-            node.interactive = interactive
-            node.hitKey = hitKey
-            self.nodes[idx.raw] = node
+        if self.nodes[idx.raw].hit != hit || self.nodes[idx.raw].interactive != interactive || self.nodes[idx.raw].slidesPress != slidesPress || self.nodes[idx.raw].hitKey != hitKey {
+            self.nodes[idx.raw].hit = hit
+            self.nodes[idx.raw].interactive = interactive
+            self.nodes[idx.raw].slidesPress = slidesPress
+            self.nodes[idx.raw].hitKey = hitKey
+        }
+        return
+    }
+
+    // Whether the layer scrolls its content, for a hit test to find.
+    function setScrolls(id: LayerId, scrolls: Bool) {
+        var idx = LayerSlot(0)
+        match self.nodeSlot(id) {
+            None -> { return }
+            Some(slot) -> { idx = slot }
+        }
+        if self.nodes[idx.raw].scrolls != scrolls {
+            self.nodes[idx.raw].scrolls = scrolls
         }
         return
     }
@@ -555,7 +615,6 @@ struct CALayerTree {
         None -> { return }
         Some(slot) -> { idx = slot }
     }
-        var node = self.nodes[idx.raw]
         var overlay = false
         match level {
             Inline -> {
@@ -565,9 +624,8 @@ struct CALayerTree {
                 overlay = true
             }
         }
-        node.level = move level
-        node.hoisted = overlay
-        self.nodes[idx.raw] = node
+        self.nodes[idx.raw].level = move level
+        self.nodes[idx.raw].hoisted = overlay
         if overlay && !caIntArrayContains(self.overlays, id) {
             self.overlays.append(id)
         }
@@ -592,13 +650,9 @@ struct CALayerTree {
     function sample() -> Bool {
         var anyMoving = false
         for i in 0..self.nodes.count {
-            var node = self.nodes[i]
-            if node.mounted {
-                if caSampleNode(node, self.clock) {
-                    node.damaged = true
-                    anyMoving = true
-                }
-                self.nodes[i] = node
+            if self.nodes[i].mounted && caSampleNode(self.nodes[i], self.clock) {
+                self.nodes[i].damaged = true
+                anyMoving = true
             }
         }
         if self.finishLeaving() {
@@ -615,12 +669,15 @@ struct CALayerTree {
     function finishLeaving() -> Bool {
         var finished = false
         for i in 0..self.nodes.count {
-            let node = self.nodes[i]
-            if node.mounted && !node.reused && node.leavingUntil >= 0.0 && self.clock >= node.leavingUntil {
-                self.dropFromParent(node.parentId, node.id)
-                self.unmountSubtree(node.id)
+            let until = self.nodes[i].leavingUntil
+            if until >= 0.0 && self.clock >= until && self.nodes[i].mounted && !self.nodes[i].reused {
+                self.dropFromParent(self.nodes[i].parentId, self.nodes[i].id)
+                self.unmountSubtree(self.nodes[i].id)
                 finished = true
             }
+        }
+        if finished {
+            self.compactUnmounted()
         }
         return finished
     }
@@ -629,16 +686,14 @@ struct CALayerTree {
         match self.nodeSlot(parent) {
             None -> { return }
             Some(slot) -> {
-                var node = self.nodes[slot.raw]
                 var kept: [LayerId] = []
-                for child in node.childIds {
+                for child in self.nodes[slot.raw].childIds {
                     if child != id {
                         kept.append(child)
                     }
                 }
-                node.childIds = move kept
-                node.damaged = true
-                self.nodes[slot.raw] = node
+                self.nodes[slot.raw].childIds = move kept
+                self.nodes[slot.raw].damaged = true
             }
         }
         return
@@ -650,14 +705,12 @@ struct CALayerTree {
         match self.nodeSlot(id) {
             None -> { return }
             Some(slot) -> {
-                var node = self.nodes[slot.raw]
-                if !node.mounted || node.reused {
+                if !self.nodes[slot.raw].mounted || self.nodes[slot.raw].reused {
                     return
                 }
-                node.mounted = false
-                node.leavingUntil = -1.0
-                let children = copy node.childIds
-                self.nodes[slot.raw] = node
+                self.nodes[slot.raw].mounted = false
+                self.nodes[slot.raw].leavingUntil = -1.0
+                let children = copy self.nodes[slot.raw].childIds
                 self.teardownCount += 1
                 for child in children {
                     self.unmountSubtree(child)
@@ -682,9 +735,9 @@ struct CALayerTree {
 
     function clearDamage() {
         for i in 0..self.nodes.count {
-            var node = self.nodes[i]
-            node.damaged = false
-            self.nodes[i] = node
+            if self.nodes[i].damaged {
+                self.nodes[i].damaged = false
+            }
         }
         return
     }
@@ -693,9 +746,7 @@ struct CALayerTree {
 
     function beginReconcile() {
         for i in 0..self.nodes.count {
-            var node = self.nodes[i]
-            node.reused = false
-            self.nodes[i] = node
+            self.nodes[i].reused = false
         }
         return
     }
@@ -707,10 +758,8 @@ struct CALayerTree {
         match self.nodeSlot(id) {
             None -> { return }
             Some(slot) -> {
-                var node = self.nodes[slot.raw]
-                node.reused = true
-                node.leavingUntil = -1.0
-                self.nodes[slot.raw] = node
+                self.nodes[slot.raw].reused = true
+                self.nodes[slot.raw].leavingUntil = -1.0
             }
         }
         return
@@ -720,9 +769,7 @@ struct CALayerTree {
         match self.nodeSlot(id) {
             None -> { return }
             Some(slot) -> {
-                var node = self.nodes[slot.raw]
-                node.removal = removal
-                self.nodes[slot.raw] = node
+                self.nodes[slot.raw].removal = removal
             }
         }
         return
@@ -734,17 +781,18 @@ struct CALayerTree {
             None -> { return LayerId(0) }
             Some(slot) -> { pidx = slot }
         }
-        let parentNode = self.nodes[pidx.raw]
-        for childId in parentNode.childIds {
-            var cidx = LayerSlot(0)
+        // Fields are read where they stand: a node is a large value, and
+        // taking a copy of each sibling made matching a child cost the square
+        // of its parent's width.
+        for childId in self.nodes[pidx.raw].childIds {
+            var c = 0
             match self.nodeSlot(childId) {
                 None -> { continue }
-                Some(slot) -> { cidx = slot }
+                Some(slot) -> { c = slot.raw }
             }
-            let child = self.nodes[cidx.raw]
             // A leaving layer comes back only to its own key: an unkeyed
             // sibling matched by order is some other layer.
-            if child.mounted && !child.reused && child.key == key && (key != 0 || child.leavingUntil < 0.0) {
+            if self.nodes[c].mounted && !self.nodes[c].reused && self.nodes[c].key == key && (key != 0 || self.nodes[c].leavingUntil < 0.0) {
                 self.reuse(childId)
                 return childId
             }
@@ -756,11 +804,9 @@ struct CALayerTree {
         match self.nodeSlot(parent) {
             None -> { return }
             Some(slot) -> {
-                var node = self.nodes[slot.raw]
-                if !caLayerIdsEqual(node.childIds, childIds) {
-                    node.childIds = move childIds
-                    node.damaged = true
-                    self.nodes[slot.raw] = node
+                if !caLayerIdsEqual(self.nodes[slot.raw].childIds, childIds) {
+                    self.nodes[slot.raw].childIds = move childIds
+                    self.nodes[slot.raw].damaged = true
                 }
             }
         }
@@ -773,28 +819,56 @@ struct CALayerTree {
     // holds leaves with it.
     function endReconcile() -> Int {
         for i in 0..self.nodes.count {
-            let node = self.nodes[i]
-            if node.mounted && !node.reused && node.leavingUntil < 0.0 && node.removal.duration > 0.0 && self.isReused(node.parentId) {
-                self.beginLeaving(node.id)
+            if self.nodes[i].mounted && !self.nodes[i].reused && self.nodes[i].leavingUntil < 0.0 && self.nodes[i].removal.duration > 0.0 && self.isReused(self.nodes[i].parentId) {
+                self.beginLeaving(self.nodes[i].id)
             }
         }
         var torn = 0
         for i in 0..self.nodes.count {
-            var node = self.nodes[i]
-            if node.mounted && !node.reused && node.id != self.rootId {
-                if self.stillLeaving(node.id) {
-                    if node.leavingUntil >= 0.0 {
-                        self.keepUnder(node.parentId, node.id)
+            if self.nodes[i].mounted && !self.nodes[i].reused && self.nodes[i].id != self.rootId {
+                if self.stillLeaving(self.nodes[i].id) {
+                    if self.nodes[i].leavingUntil >= 0.0 {
+                        self.keepUnder(self.nodes[i].parentId, self.nodes[i].id)
                     }
                     continue
                 }
-                node.mounted = false
+                self.nodes[i].mounted = false
                 torn += 1
-                self.nodes[i] = node
             }
         }
         self.teardownCount += torn
+        if torn > 0 {
+            self.compactUnmounted()
+        }
         return torn
+    }
+
+    // Unmounted layers never come back, so once they outweigh the live ones
+    // they are dropped and every slot renumbered. Each frame walks `nodes`
+    // whole, and a tree kept every layer it ever made gets slower with every
+    // page it has shown.
+    function compactUnmounted() {
+        var unmounted = 0
+        for i in 0..self.nodes.count {
+            if !self.nodes[i].mounted {
+                unmounted += 1
+            }
+        }
+        if unmounted < 64 || unmounted * 3 < self.nodes.count {
+            return
+        }
+        var kept: [CALayerNode] = []
+        for i in 0..self.nodes.count {
+            let id = self.nodes[i].id
+            if self.nodes[i].mounted {
+                self.indexOfId[id.raw] = .Some(LayerSlot(kept.count))
+                kept.append(self.nodes[i])
+            } else {
+                self.indexOfId[id.raw] = .None
+            }
+        }
+        self.nodes = move kept
+        return
     }
 
     function isReused(id: LayerId) -> Bool {
@@ -812,12 +886,12 @@ struct CALayerTree {
             None -> { return }
             Some(slot) -> { idx = slot }
         }
-        var node = self.nodes[idx.raw]
-        let removal = node.removal
-        node.leavingUntil = self.clock + removal.duration
-        node.hit = false
-        node.interactive = false
-        self.nodes[idx.raw] = node
+        let removal = self.nodes[idx.raw].removal
+        self.nodes[idx.raw].leavingUntil = self.clock + removal.duration
+        self.nodes[idx.raw].hit = false
+        self.nodes[idx.raw].interactive = false
+        self.nodes[idx.raw].slidesPress = false
+        self.nodes[idx.raw].scrolls = false
         self.beginTransaction(caEaseTiming(removal.duration, .EaseOut))
         self.setOpacity(id, removal.opacity)
         self.setScale(id, removal.scale, removal.scale)
@@ -834,14 +908,14 @@ struct CALayerTree {
                 None -> { return false }
                 Some(slot) -> { idx = slot }
             }
-            let node = self.nodes[idx.raw]
-            if node.reused {
+            let i = idx.raw
+            if self.nodes[i].reused {
                 return false
             }
-            if node.leavingUntil >= 0.0 {
-                return self.clock < node.leavingUntil
+            if self.nodes[i].leavingUntil >= 0.0 {
+                return self.clock < self.nodes[i].leavingUntil
             }
-            current = node.parentId
+            current = self.nodes[i].parentId
         }
         return false
     }
@@ -852,15 +926,13 @@ struct CALayerTree {
         match self.nodeSlot(parent) {
             None -> { return }
             Some(slot) -> {
-                var node = self.nodes[slot.raw]
-                for child in node.childIds {
+                for child in self.nodes[slot.raw].childIds {
                     if child == id {
                         return
                     }
                 }
-                node.childIds.append(id)
-                node.damaged = true
-                self.nodes[slot.raw] = node
+                self.nodes[slot.raw].childIds.append(id)
+                self.nodes[slot.raw].damaged = true
             }
         }
         return
@@ -900,11 +972,12 @@ struct CALayerTree {
         match self.nodeSlot(id) {
             None -> return false
             Some(idx) -> {
-                let node = self.nodes[idx.raw]
-                return node.posX.animating || node.posY.animating || node.boundsW.animating
-                    || node.boundsH.animating || node.opacity.animating || node.scaleX.animating
-                    || node.scaleY.animating || node.rotation.animating || node.cornerRadius.animating
-                    || node.borderWidth.animating || node.textWeight.animating || node.fillColor.progress.animating
+                let i = idx.raw
+                return self.nodes[i].posX.animating || self.nodes[i].posY.animating || self.nodes[i].boundsW.animating
+                    || self.nodes[i].boundsH.animating || self.nodes[i].opacity.animating || self.nodes[i].scaleX.animating
+                    || self.nodes[i].scaleY.animating || self.nodes[i].rotation.animating || self.nodes[i].cornerRadius.animating
+                    || self.nodes[i].borderWidth.animating || self.nodes[i].textWeight.animating || self.nodes[i].fillColor.progress.animating
+                    || self.nodes[i].platterX.animating || self.nodes[i].platterY.animating || self.nodes[i].platterW.animating || self.nodes[i].platterH.animating
             }
         }
     }
@@ -931,11 +1004,10 @@ struct CALayerTree {
         match self.nodeSlot(id) {
             None -> { return 0 }
             Some(idx) -> {
-                let node = self.nodes[idx.raw]
-                if !node.mounted || self.stillLeaving(id) {
+                if !self.nodes[idx.raw].mounted || self.stillLeaving(id) {
                     return 0
                 }
-                return node.hitKey
+                return self.nodes[idx.raw].hitKey
             }
         }
     }
@@ -946,11 +1018,11 @@ struct CALayerTree {
 
 }
 
-function caLayerTree() -> CALayerTree {
+public function caLayerTree() -> CALayerTree {
     return CALayerTree {}
 }
 
-function caIntArrayContains(values: borrow [LayerId], value: LayerId) -> Bool {
+public function caIntArrayContains(values: borrow [LayerId], value: LayerId) -> Bool {
     for candidate in values {
         if candidate == value {
             return true
@@ -959,7 +1031,7 @@ function caIntArrayContains(values: borrow [LayerId], value: LayerId) -> Bool {
     return false
 }
 
-function caLayerIdsEqual(a: borrow [LayerId], b: borrow [LayerId]) -> Bool {
+public function caLayerIdsEqual(a: borrow [LayerId], b: borrow [LayerId]) -> Bool {
     if a.count != b.count {
         return false
     }
@@ -974,7 +1046,7 @@ function caLayerIdsEqual(a: borrow [LayerId], b: borrow [LayerId]) -> Bool {
 
 // What a layer's fill shows: its fill, with its hover wash laid over it while
 // the pointer is on it.
-function caShownFill(node: borrow CALayerNode, hovered: Bool, pressed: Bool) -> CAColor {
+public function caShownFill(node: borrow CALayerNode, hovered: Bool, pressed: Bool) -> CAColor {
     let fill = node.restingFill
     var wash = CAColor { a: 0.0 }
     if hovered && pressed && node.pressColor.a > 0.0 {

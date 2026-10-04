@@ -15,7 +15,7 @@ import KiraLayout
 // `drawRetainedGlass`, `drawTextureFields` and the free `caDrawSurfaceQuad`.
 // `drewVisibleUi` records whether the pass emitted anything the swapchain must
 // present.
-class KiraGraphicsFoundationBackend {
+public class KiraGraphicsFoundationBackend {
     let graphics: Graphics
     let batch: UiBatch
     // Whether the host window is composited with holes in it. Carried for the
@@ -169,7 +169,7 @@ class KiraGraphicsFoundationBackend {
 // always under one, in what is left. The glass pipelines have no slot to spare
 // for a fourth number, and a light has never needed a fraction of a point of
 // reach. No light, or one with no reach, is zero.
-function caPackedGlow(strength: Float, radius: Float) -> Float {
+public function caPackedGlow(strength: Float, radius: Float) -> Float {
     if strength <= 0.0 || radius < 1.0 {
         return 0.0
     }

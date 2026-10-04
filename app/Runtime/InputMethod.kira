@@ -13,7 +13,7 @@
 // commits its codepoint. Typing "ni" then space yields 你, "hao" then space
 // yields 好, and so on, so "ni hao" composes 你好.
 
-struct ImeComposition {
+public struct ImeComposition {
     // ASCII codepoints typed so far for the in-progress syllable (the pinyin).
     var letters: [Int] = []
     // Predicted Hanzi codepoints for the current pinyin, most frequent first.
@@ -22,7 +22,7 @@ struct ImeComposition {
     var activeIndex: Int = 0
 }
 
-function imeReset() -> ImeComposition {
+public function imeReset() -> ImeComposition {
     return ImeComposition {
         letters: [],
         candidates: [],
@@ -30,14 +30,14 @@ function imeReset() -> ImeComposition {
     }
 }
 
-function imeIsComposing(comp: borrow ImeComposition) -> Bool {
+public function imeIsComposing(comp: borrow ImeComposition) -> Bool {
     return comp.letters.count > 0
 }
 
 // Build a fresh, independent copy of an Int array. Used whenever a value is
 // derived from a borrowed composition: array struct fields may not alias an
 // existing backing store, so we always rebuild in place.
-function imeCloneInts(src: borrow [Int]) -> [Int] {
+public function imeCloneInts(src: borrow [Int]) -> [Int] {
     var out: [Int] = []
     var index = 0
     while index < src.count {
@@ -49,7 +49,7 @@ function imeCloneInts(src: borrow [Int]) -> [Int] {
 
 // A pinyin letter is a-z / A-Z. Everything else (space, digits, punctuation,
 // Enter) is treated as a control or commit signal by the dispatcher.
-function imeIsPinyinLetter(codepoint: Int) -> Bool {
+public function imeIsPinyinLetter(codepoint: Int) -> Bool {
     if codepoint >= 97 && codepoint <= 122 {
         return true
     }
@@ -59,7 +59,7 @@ function imeIsPinyinLetter(codepoint: Int) -> Bool {
     return false
 }
 
-function imeLowerIndex(codepoint: Int) -> Int {
+public function imeLowerIndex(codepoint: Int) -> Int {
     if codepoint >= 65 && codepoint <= 90 {
         return codepoint - 65 + 1
     }
@@ -72,7 +72,7 @@ function imeLowerIndex(codepoint: Int) -> Int {
 // Pack the typed letters into a single base-27 integer key (a=1..z=26). Pinyin
 // syllables are at most ~6 letters so the key always fits comfortably in an Int,
 // and distinct syllables never collide.
-function imeKeyFromLetters(letters: borrow [Int]) -> Int {
+public function imeKeyFromLetters(letters: borrow [Int]) -> Int {
     var key = 0
         for index in 0..letters.count {
         let slot = imeLowerIndex(letters[index])
@@ -84,7 +84,7 @@ function imeKeyFromLetters(letters: borrow [Int]) -> Int {
 // Pack a literal lowercase pinyin string (provided as its ASCII codepoints) the
 // same way, so the dictionary below can be written in terms of readable
 // syllables instead of precomputed integers.
-function imeSyllableKey(a: Int, b: Int, c: Int, d: Int, e: Int, f: Int) -> Int {
+public function imeSyllableKey(a: Int, b: Int, c: Int, d: Int, e: Int, f: Int) -> Int {
     var key = 0
     if a > 0 {
         key = key * 27 + a
@@ -111,7 +111,7 @@ function imeSyllableKey(a: Int, b: Int, c: Int, d: Int, e: Int, f: Int) -> Int {
 // rough frequency order. This is a representative subset chosen so common
 // phrases (你好 我是 中国 中文 谢谢 ...) can be composed end to end; it is not a
 // full lexicon. The key is the base-27 packing of the lowercase syllable.
-function imeCandidatesForKey(key: Int) -> [Int] {
+public function imeCandidatesForKey(key: Int) -> [Int] {
     // ni
     if key == imeSyllableKey(14, 9, 0, 0, 0, 0) {
         return [20320, 24744, 23612, 27877, 20393]
@@ -179,12 +179,12 @@ function imeCandidatesForKey(key: Int) -> [Int] {
     return []
 }
 
-function imeCandidatesForLetters(letters: borrow [Int]) -> [Int] {
+public function imeCandidatesForLetters(letters: borrow [Int]) -> [Int] {
     return imeCandidatesForKey(imeKeyFromLetters(letters))
 }
 
 // Append a pinyin letter and recompute predictions for the new buffer.
-function imeAppendLetter(comp: borrow ImeComposition, codepoint: Int) -> ImeComposition {
+public function imeAppendLetter(comp: borrow ImeComposition, codepoint: Int) -> ImeComposition {
     var letters = imeCloneInts(comp.letters)
     letters.append(codepoint)
     let candidates = imeCandidatesForLetters(letters)
@@ -197,7 +197,7 @@ function imeAppendLetter(comp: borrow ImeComposition, codepoint: Int) -> ImeComp
 
 // Remove the last pinyin letter. Returns a fresh (empty) composition when the
 // buffer drains, signalling the dispatcher that composition has ended.
-function imeBackspace(comp: borrow ImeComposition) -> ImeComposition {
+public function imeBackspace(comp: borrow ImeComposition) -> ImeComposition {
     if comp.letters.count == 0 {
         return imeReset()
     }
@@ -219,7 +219,7 @@ function imeBackspace(comp: borrow ImeComposition) -> ImeComposition {
     }
 }
 
-function imeClampIndex(comp: borrow ImeComposition, index: Int) -> Int {
+public function imeClampIndex(comp: borrow ImeComposition, index: Int) -> Int {
     if comp.candidates.count == 0 {
         return 0
     }
@@ -232,7 +232,7 @@ function imeClampIndex(comp: borrow ImeComposition, index: Int) -> Int {
     return index
 }
 
-function imeSelectIndex(comp: borrow ImeComposition, index: Int) -> ImeComposition {
+public function imeSelectIndex(comp: borrow ImeComposition, index: Int) -> ImeComposition {
     return ImeComposition {
         letters: imeCloneInts(comp.letters),
         candidates: imeCloneInts(comp.candidates),
@@ -240,17 +240,17 @@ function imeSelectIndex(comp: borrow ImeComposition, index: Int) -> ImeCompositi
     }
 }
 
-function imeSelectNext(comp: borrow ImeComposition) -> ImeComposition {
+public function imeSelectNext(comp: borrow ImeComposition) -> ImeComposition {
     return imeSelectIndex(comp, comp.activeIndex + 1)
 }
 
-function imeSelectPrev(comp: borrow ImeComposition) -> ImeComposition {
+public function imeSelectPrev(comp: borrow ImeComposition) -> ImeComposition {
     return imeSelectIndex(comp, comp.activeIndex - 1)
 }
 
 // Resolve the codepoint that would be committed for a given candidate index.
 // Returns 0 when there is nothing to commit.
-function imeCandidateAt(comp: borrow ImeComposition, index: Int) -> Int {
+public function imeCandidateAt(comp: borrow ImeComposition, index: Int) -> Int {
     if comp.candidates.count == 0 {
         return 0
     }
@@ -259,6 +259,6 @@ function imeCandidateAt(comp: borrow ImeComposition, index: Int) -> Int {
 }
 
 // Commit the highlighted candidate, returning its codepoint (0 if none).
-function imeCommitActive(comp: borrow ImeComposition) -> Int {
+public function imeCommitActive(comp: borrow ImeComposition) -> Int {
     return imeCandidateAt(comp, comp.activeIndex)
 }

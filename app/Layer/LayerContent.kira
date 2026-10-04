@@ -7,7 +7,7 @@ import Foundation
 // and a new kind is a new arm the compiler forces every reader to answer. The
 // payloads are plain value structs, so a content value clones with the node it
 // rides on (the retained tree reads nodes by value).
-enum CAContent {
+public enum CAContent {
     // A layer that only groups, clips, or transforms its children.
     Empty
     // A rounded rectangle / squircle fill with an optional border. Maps to the
@@ -32,7 +32,7 @@ enum CAContent {
 // Color as four unit channels. Its own type rather than KiraGraphics' `Color`
 // so the model tree, the animation maths and the tests do not pull the graphics
 // package in; the compositor converts to the backend color at the submit seam.
-@Derive(Copy)
+public @Derive(Copy)
 struct CAColor {
     var r: Float = 0.0
     var g: Float = 0.0
@@ -40,13 +40,13 @@ struct CAColor {
     var a: Float = 1.0
 }
 
-@Derive(Copy)
+public @Derive(Copy)
 struct CAGlassWash {
     var alpha: Float = 0.0
     var luma: Float = 1.0
 }
 
-function caBlendChannel(base: Float, layer: Float, mode: Float) -> Float {
+public function caBlendChannel(base: Float, layer: Float, mode: Float) -> Float {
     if mode < 0.5 { return layer }
     if mode < 1.5 { return min(base + layer, 1.0) }
     if mode < 2.5 {
@@ -66,18 +66,18 @@ function caBlendChannel(base: Float, layer: Float, mode: Float) -> Float {
     return base * layer
 }
 
-function caGlassApplyLayer(base: Float, color: Float, alpha: Float, mode: Float) -> Float {
+public function caGlassApplyLayer(base: Float, color: Float, alpha: Float, mode: Float) -> Float {
     if alpha <= 0.0 { return base }
     let blended = caBlendChannel(base, color, mode)
     return base + (blended - base) * alpha
 }
 
-function caGlassApplyStackChannel(base: Float, lower: Float, upper: Float, lowerAlpha: Float, material: borrow CAGlassMaterial) -> Float {
+public function caGlassApplyStackChannel(base: Float, lower: Float, upper: Float, lowerAlpha: Float, material: borrow CAGlassMaterial) -> Float {
     let first = caGlassApplyLayer(base, lower, lowerAlpha, material.washBlend)
     return caGlassApplyLayer(first, upper, material.washUpperAlpha, material.washUpperBlend)
 }
 
-function caGlassWash(tint: borrow CAColor, material: borrow CAGlassMaterial) -> CAGlassWash {
+public function caGlassWash(tint: borrow CAColor, material: borrow CAGlassMaterial) -> CAGlassWash {
     let blackR = caGlassApplyStackChannel(0.0, tint.r, material.washUpperR, tint.a, material)
     let blackG = caGlassApplyStackChannel(0.0, tint.g, material.washUpperG, tint.a, material)
     let blackB = caGlassApplyStackChannel(0.0, tint.b, material.washUpperB, tint.a, material)
@@ -99,7 +99,7 @@ function caGlassWash(tint: borrow CAColor, material: borrow CAGlassMaterial) -> 
 
 // 0 = rounded rectangle, 1 = continuous squircle. An Int on the wire between
 // here and the batch, which reads the same code off its quad.
-struct CASolid {
+public struct CASolid {
     var fill: CAColor = CAColor {}
     var border: CAColor = CAColor { a: 0.0 }
     var borderWidth: Float = 0.0
@@ -107,7 +107,7 @@ struct CASolid {
     var shapeKind: Int = 0
 }
 
-struct CAText {
+public struct CAText {
     var content: String = ""
     var color: CAColor = CAColor {}
     var size: Float = 15.0
@@ -122,7 +122,7 @@ struct CAText {
     var inkBottom: Float = 0.0
 }
 
-struct CATexture {
+public struct CATexture {
     var handle: TextureHandle = TextureHandle(0)
     var secondaryHandle: TextureHandle = TextureHandle(0)
     var transition: Float = 0.0
@@ -134,14 +134,13 @@ struct CATexture {
 // beneath by how far the ink is from white, and a linear dodge lightens it by
 // the ink itself — which is how Apple sets a symbol into glass: the glass shows
 // through the glyph rather than being painted over by it.
-@Derive(Equatable)
-enum CABlendMode {
+public enum CABlendMode {
     Normal
     LinearBurn
     LinearDodge
 }
 
-function caBlendModeCode(mode: borrow CABlendMode) -> Int {
+public function caBlendModeCode(mode: borrow CABlendMode) -> Int {
     match mode {
         Normal -> return 0
         LinearBurn -> return 1
@@ -153,18 +152,18 @@ function caBlendModeCode(mode: borrow CABlendMode) -> Int {
 // blend names. A mode's own codes stay under 100, so a blended quad is never
 // mistaken for another mode, and every code from 100 up draws through a
 // blending pipeline.
-function caBlendModeRoute(mode: borrow CABlendMode) -> Int {
+public function caBlendModeRoute(mode: borrow CABlendMode) -> Int {
     return caBlendModeCode(mode) * 100
 }
 
-struct CAIcon {
+public struct CAIcon {
     var svg: String = ""
     var tint: CAColor = CAColor {}
     var weightGrowth: Float = 0.0
     var blend: CABlendMode = .Normal
 }
 
-struct CAGlass {
+public struct CAGlass {
     var blur: Float = 1.0
     var edgeRefraction: Float = 1.0
     var tint: CAColor = CAColor { r: 1.0, g: 1.0, b: 1.0, a: 0.04 }
@@ -196,7 +195,7 @@ struct CAGlass {
 // A figure that follows a surface's size: `base + slope * extent`, held
 // between `minimum` and `maximum`, where the extent is the shorter side in
 // points.
-@Derive(Copy)
+public @Derive(Copy)
 struct CAGlassRamp {
     var base: Float = 0.0
     var slope: Float = 0.0
@@ -204,7 +203,7 @@ struct CAGlassRamp {
     var maximum: Float = 0.0
 }
 
-function caGlassRampAt(ramp: borrow CAGlassRamp, width: Float, height: Float) -> Float {
+public function caGlassRampAt(ramp: borrow CAGlassRamp, width: Float, height: Float) -> Float {
     return clamp(ramp.base + ramp.slope * min(width, height), ramp.minimum, ramp.maximum)
 }
 
@@ -212,7 +211,7 @@ function caGlassRampAt(ramp: borrow CAGlassRamp, width: Float, height: Float) ->
 // how far that blurs, the grays its edge burns in, and how its top and bottom
 // edges are lit. The default leaves a surface exactly as its `blur` and
 // material say, which is glass that does not change with size.
-@Derive(Copy)
+public @Derive(Copy)
 struct CAGlassSizing {
     var blur: CAGlassRamp = CAGlassRamp { base: 1.0, minimum: 1.0, maximum: 1.0 }
     // How far the glass blurs what is behind it at this size, as a gaussian's
@@ -230,7 +229,7 @@ struct CAGlassSizing {
 }
 
 // The blur a surface this size draws with.
-function caGlassBlurAt(glass: borrow CAGlass, width: Float, height: Float) -> Float {
+public function caGlassBlurAt(glass: borrow CAGlass, width: Float, height: Float) -> Float {
     let shown = glass.blur * caGlassRampAt(glass.sizing.blur, width, height)
     if glass.sizing.blurRadius.maximum < 0.0 {
         return shown
@@ -241,7 +240,7 @@ function caGlassBlurAt(glass: borrow CAGlass, width: Float, height: Float) -> Fl
 // The dial that blurs as far as `radius` points: up the sharp capture's
 // crossfade to the near level, which the dial reaches at `split`, then across
 // to the far level at the dial's top.
-function caGlassBlurDial(radius: Float, split: Float) -> Float {
+public function caGlassBlurDial(radius: Float, split: Float) -> Float {
     let near = glassBlurNearRadius()
     if radius <= near {
         return split * max(radius, 0.0) / near
@@ -251,7 +250,7 @@ function caGlassBlurDial(radius: Float, split: Float) -> Float {
 
 // The gray one of the edge's lines burns in at this size: the sizing's, when
 // it states one, and the material's otherwise.
-function caGlassToneAt(ramp: borrow CAGlassRamp, material: Float, width: Float, height: Float) -> Float {
+public function caGlassToneAt(ramp: borrow CAGlassRamp, material: Float, width: Float, height: Float) -> Float {
     if ramp.maximum <= 0.0 {
         return material
     }
@@ -260,7 +259,7 @@ function caGlassToneAt(ramp: borrow CAGlassRamp, material: Float, width: Float, 
 
 // The material a surface this size shades with: its own, with the edge's
 // grays and its light taken at the surface's size.
-function caGlassMaterialAt(glass: borrow CAGlass, width: Float, height: Float) -> CAGlassMaterial {
+public function caGlassMaterialAt(glass: borrow CAGlass, width: Float, height: Float) -> CAGlassMaterial {
     let material = glass.material
     return CAGlassMaterial {
         edgeStrokeStrength: material.edgeStrokeStrength,
@@ -289,14 +288,14 @@ function caGlassMaterialAt(glass: borrow CAGlass, width: Float, height: Float) -
     }
 }
 
-function caGlassRampSignature(ramp: borrow CAGlassRamp) -> Int {
+public function caGlassRampSignature(ramp: borrow CAGlassRamp) -> Int {
     return Int(round(ramp.base * 1000.0)) * 3
         + Int(round(ramp.slope * 100000.0)) * 5
         + Int(round(ramp.minimum * 1000.0)) * 7
         + Int(round(ramp.maximum * 1000.0)) * 11
 }
 
-function caGlassSizingSignature(sizing: borrow CAGlassSizing) -> Int {
+public function caGlassSizingSignature(sizing: borrow CAGlassSizing) -> Int {
     return caGlassRampSignature(sizing.blur) * 13
         + caGlassRampSignature(sizing.blurRadius) * 31
         + caGlassRampSignature(sizing.ringTone) * 17
@@ -307,7 +306,7 @@ function caGlassSizingSignature(sizing: borrow CAGlassSizing) -> Int {
 
 // `axis`: 0 none, 1 down, 2 across (leading→trailing), 3 corner→corner. `start`
 // is the near color (also the layer's `fillColor`); `end` is the far color.
-struct CAGradient {
+public struct CAGradient {
     var start: CAColor = CAColor {}
     var end: CAColor = CAColor {}
     var axis: Int = 1
@@ -316,7 +315,7 @@ struct CAGradient {
 
 // A stable code per kind, so the flat reconcile and the damage signature stay on
 // Ints (the retained passes never clone a whole content value to ask its kind).
-function caContentKind(content: borrow CAContent) -> Int {
+public function caContentKind(content: borrow CAContent) -> Int {
     match content {
         Empty -> return 0
         Solid(s) -> return 1
@@ -328,7 +327,7 @@ function caContentKind(content: borrow CAContent) -> Int {
     }
 }
 
-function caContentShapeKind(content: borrow CAContent) -> Int {
+public function caContentShapeKind(content: borrow CAContent) -> Int {
     match content {
         Solid(s) -> return s.shapeKind
         Glass(g) -> return g.shapeKind
@@ -343,21 +342,21 @@ function caContentShapeKind(content: borrow CAContent) -> Int {
 // A corner radius as a signature term. A capsule's radius is unbounded — the
 // box clamps it to half its short side when it is drawn — so it is folded to
 // one code instead of being converted, which an infinite float cannot be.
-function caRadiusCode(radius: Float) -> Int {
+public function caRadiusCode(radius: Float) -> Int {
     if radius > 1000000.0 {
         return 100000000
     }
     return Int(round(radius * 100.0))
 }
 
-function caColorCode(color: borrow CAColor) -> Int {
+public function caColorCode(color: borrow CAColor) -> Int {
     return Int(round(color.r * 255.0)) * 16777216
         + Int(round(color.g * 255.0)) * 65536
         + Int(round(color.b * 255.0)) * 256
         + Int(round(color.a * 255.0))
 }
 
-function caGlassMaterialSignature(material: borrow CAGlassMaterial) -> Int {
+public function caGlassMaterialSignature(material: borrow CAGlassMaterial) -> Int {
     return Int(round(material.edgeStrokeStrength * 1000.0)) * 3
         + Int(round(material.edgeStrokeDarken * 1000.0)) * 5
         + Int(round(material.edgeStrokePeak * 1000.0)) * 7
@@ -386,7 +385,7 @@ function caGlassMaterialSignature(material: borrow CAGlassMaterial) -> Int {
 // A cheap fingerprint of everything about the content that the renderer draws.
 // Equal signatures across frames mean the layer's paint is unchanged, which is
 // what lets a still layer be re-flushed from the retained batch (damage skip).
-function caContentSignature(content: borrow CAContent) -> Int {
+public function caContentSignature(content: borrow CAContent) -> Int {
     match content {
         Empty -> return 1
         Solid(s) -> return 1000000

@@ -18,19 +18,19 @@ import KiraLayout
 // and render-target passes; the runner renders those passes into `passTextures`
 // (indexed by pass id) and hands them here.
 
-function caColorToFoundation(color: borrow CAColor, opacity: Float) -> Color {
+public function caColorToFoundation(color: borrow CAColor, opacity: Float) -> Color {
     return Color { r: color.r, g: color.g, b: color.b, a: color.a * opacity }
 }
 
 // The inverse seam: a foundation (graphics) color as the compositor's own model
 // color. A toolkit lowers a widget's `FoundationColor` into layer content
 // through this, so the model tree carries `CAColor` and never the graphics type.
-function caColorFromFoundation(color: borrow FoundationColor) -> CAColor {
+public function caColorFromFoundation(color: borrow FoundationColor) -> CAColor {
     return CAColor { r: color.r, g: color.g, b: color.b, a: color.a }
 }
 
 // A gradient command's far color and axis; a flat fill returns a clear far.
-function caGradientFar(content: borrow CAContent) -> Color {
+public function caGradientFar(content: borrow CAContent) -> Color {
     match content {
         Gradient(g) -> return Color { r: g.end.r, g: g.end.g, b: g.end.b, a: g.end.a }
         Empty -> return Color { a: 0.0 }
@@ -42,7 +42,7 @@ function caGradientFar(content: borrow CAContent) -> Color {
     }
 }
 
-function caGradientAxis(content: borrow CAContent) -> Float {
+public function caGradientAxis(content: borrow CAContent) -> Float {
     match content {
         Gradient(g) -> return Float(g.axis)
         Empty -> return 0.0
@@ -55,7 +55,7 @@ function caGradientAxis(content: borrow CAContent) -> Float {
 }
 
 // Draw a fill/gradient/glass surface as an oriented quad through the batch.
-function caDrawSurfaceQuad(quad: borrow CAOrientedQuad, radius: Float, borderWidth: Float, fill: borrow Color, border: borrow Color, clipMinX: Float, clipMinY: Float, clipMaxX: Float, clipMaxY: Float, clipRadius: Float, clipShapeKind: Int, shapeKind: Int, gradient: borrow Color, gradientAxis: Float, backend: borrow mut KiraGraphicsFoundationBackend) {
+public function caDrawSurfaceQuad(quad: borrow CAOrientedQuad, radius: Float, borderWidth: Float, fill: borrow Color, border: borrow Color, clipMinX: Float, clipMinY: Float, clipMaxX: Float, clipMaxY: Float, clipRadius: Float, clipShapeKind: Int, shapeKind: Int, gradient: borrow Color, gradientAxis: Float, backend: borrow mut KiraGraphicsFoundationBackend) {
     backend.batch.pushLayerQuad(
         quad.centerX, quad.centerY, quad.halfW, quad.halfH,
         quad.rotCos, quad.rotSin,
@@ -69,7 +69,7 @@ function caDrawSurfaceQuad(quad: borrow CAOrientedQuad, radius: Float, borderWid
     return
 }
 
-function caShiftRect(rect: borrow Rect, originX: Float, originY: Float) -> Rect {
+public function caShiftRect(rect: borrow Rect, originX: Float, originY: Float) -> Rect {
     return Rect {
         x: rect.x - originX,
         y: rect.y - originY,
@@ -78,7 +78,7 @@ function caShiftRect(rect: borrow Rect, originX: Float, originY: Float) -> Rect 
     }
 }
 
-function caShiftQuad(quad: borrow CAOrientedQuad, originX: Float, originY: Float) -> CAOrientedQuad {
+public function caShiftQuad(quad: borrow CAOrientedQuad, originX: Float, originY: Float) -> CAOrientedQuad {
     return CAOrientedQuad {
         centerX: quad.centerX - originX,
         centerY: quad.centerY - originY,
@@ -89,7 +89,7 @@ function caShiftQuad(quad: borrow CAOrientedQuad, originX: Float, originY: Float
     }
 }
 
-function caQuadFrame(quad: borrow CAOrientedQuad) -> Rect {
+public function caQuadFrame(quad: borrow CAOrientedQuad) -> Rect {
     return Rect {
         x: quad.centerX - quad.halfW,
         y: quad.centerY - quad.halfH,
@@ -105,7 +105,7 @@ function caQuadFrame(quad: borrow CAOrientedQuad) -> Rect {
 // The lines break where the run's stated weight breaks them, as layout measured
 // it, while the glyphs are drawn at `weight`, wherever the layer's weight is on
 // its way there: a label thickening never reflows under itself.
-function caDrawText(
+public function caDrawText(
     t: borrow CAText,
     quad: borrow CAOrientedQuad,
     localWidth: Float,
@@ -188,7 +188,7 @@ function caDrawText(
 
 // One plan command. `passTextures[passId]` is the sampled view of the texture a
 // composite draws. `origin` is the world-space top-left of the pass target.
-function caSubmitCmdAt(
+public function caSubmitCmdAt(
     cmd: borrow CADrawCmd,
     passTextures: borrow [TextureHandle],
     originX: Float,
@@ -307,13 +307,13 @@ function caSubmitCmdAt(
     return drawn
 }
 
-function caSubmitCmd(cmd: borrow CADrawCmd, passTextures: borrow [TextureHandle], backend: borrow mut KiraGraphicsFoundationBackend) -> Int {
+public function caSubmitCmd(cmd: borrow CADrawCmd, passTextures: borrow [TextureHandle], backend: borrow mut KiraGraphicsFoundationBackend) -> Int {
     return caSubmitCmdAt(cmd, passTextures, 0.0, 0.0, backend)
 }
 
 // Submit one whole pass in order. Offscreen passes shift their world-space
 // commands by the pass bounds origin; the root uses (0,0).
-function caSubmitPassAt(
+public function caSubmitPassAt(
     plan: borrow CARenderPlan,
     passIndex: RenderPassId,
     passTextures: borrow [TextureHandle],
@@ -331,12 +331,12 @@ function caSubmitPassAt(
     return drawn
 }
 
-function caSubmitPass(plan: borrow CARenderPlan, passIndex: RenderPassId, passTextures: borrow [TextureHandle], backend: borrow mut KiraGraphicsFoundationBackend) -> Int {
+public function caSubmitPass(plan: borrow CARenderPlan, passIndex: RenderPassId, passTextures: borrow [TextureHandle], backend: borrow mut KiraGraphicsFoundationBackend) -> Int {
     return caSubmitPassAt(plan, passIndex, passTextures, 0.0, 0.0, backend)
 }
 
 // Draw one flat presentation item (the compat single-pass path).
-function caSubmitDrawItem(item: borrow CADrawItem, backend: borrow mut KiraGraphicsFoundationBackend) -> Int {
+public function caSubmitDrawItem(item: borrow CADrawItem, backend: borrow mut KiraGraphicsFoundationBackend) -> Int {
     if item.opacity <= 0.0 {
         return 0
     }
@@ -407,7 +407,7 @@ function caSubmitDrawItem(item: borrow CADrawItem, backend: borrow mut KiraGraph
     return drawn
 }
 
-function caSubmit(items: borrow [CADrawItem], backend: borrow mut KiraGraphicsFoundationBackend) -> Int {
+public function caSubmit(items: borrow [CADrawItem], backend: borrow mut KiraGraphicsFoundationBackend) -> Int {
     var drawn = 0
     for item in items {
         drawn += caSubmitDrawItem(item, backend)
@@ -418,6 +418,6 @@ function caSubmit(items: borrow [CADrawItem], backend: borrow mut KiraGraphicsFo
 // The compat single-pass path: flatten and submit in place. Group opacity here
 // is inherited, not isolated — the isolated result is `caPlan` + per-pass submit,
 // which the runner drives with real render targets.
-function caComposite(tree: borrow CALayerTree, backend: borrow mut KiraGraphicsFoundationBackend) -> Int {
+public function caComposite(tree: borrow CALayerTree, backend: borrow mut KiraGraphicsFoundationBackend) -> Int {
     return caSubmit(caFlatten(tree), backend)
 }

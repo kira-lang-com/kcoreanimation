@@ -15,7 +15,7 @@ import Foundation
 //   * A pass whose subtree took no damage this frame is `dirty = false`, so the
 //     executor reuses its cached texture instead of re-rendering it.
 
-enum CAPassKind {
+public enum CAPassKind {
     // The swapchain / window pass. Executed last.
     Root
     // An isolated offscreen for real group opacity.
@@ -25,15 +25,15 @@ enum CAPassKind {
 }
 
 // kind 0..6 mirror caContentKind; 100 is a composite of another pass's texture.
-function caCompositeKind() -> Int {
+public function caCompositeKind() -> Int {
     return 100
 }
 
-function caShadowKind() -> Int {
+public function caShadowKind() -> Int {
     return 101
 }
 
-struct CADrawCmd {
+public struct CADrawCmd {
     var layer: LayerId = LayerId(0)
     var kind: Int = 0
     var content: CAContent = .Empty
@@ -75,7 +75,7 @@ struct CADrawCmd {
     var hitKey: Int = 0
 }
 
-struct CAPass {
+public struct CAPass {
     var kind: CAPassKind = .Root
     var passId: RenderPassId = RenderPassId(0)
     var owner: LayerId = LayerId(0)
@@ -98,14 +98,14 @@ struct CAPass {
     var cmds: [CADrawCmd] = []
 }
 
-struct CARenderPlan {
+public struct CARenderPlan {
     var passes: [CAPass] = []
     var rootPass: RenderPassId = RenderPassId(0)
 }
 
 // Append a command to a pass, folding the command's damage into the pass. Pass
 // records are read/written whole (the retained-tree discipline).
-function caRectUnion(a: borrow Rect, b: borrow Rect) -> Rect {
+public function caRectUnion(a: borrow Rect, b: borrow Rect) -> Rect {
     let minX = min(a.x, b.x)
     let minY = min(a.y, b.y)
     let maxX = max(a.x + a.width, b.x + b.width)
@@ -118,7 +118,7 @@ function caRectUnion(a: borrow Rect, b: borrow Rect) -> Rect {
     }
 }
 
-function caCommandRequiresRefresh(cmd: borrow CADrawCmd) -> Bool {
+public function caCommandRequiresRefresh(cmd: borrow CADrawCmd) -> Bool {
     if cmd.capturesBackdrop {
         return true
     }
@@ -133,40 +133,41 @@ function caCommandRequiresRefresh(cmd: borrow CADrawCmd) -> Bool {
     }
 }
 
-function caPlanEmit(plan: borrow mut CARenderPlan, passIndex: RenderPassId, cmd: CADrawCmd, damaged: Bool) {
-    var pass = plan.passes[passIndex.raw]
+public function caPlanEmit(plan: borrow mut CARenderPlan, passIndex: RenderPassId, cmd: CADrawCmd, damaged: Bool) {
+    let p = passIndex.raw
     // Wrapping arithmetic: the signature accumulates one factor of 31 per command,
     // so a plain checked multiply overflows `Int` after a dozen or so commands.
     // A change-detection hash only needs to differ when the input differs, which
     // wrapping preserves — the same reason Foundation's `fnvStep` wraps.
-    pass.signature = wrappingAdd(
-        wrappingAdd(wrappingMul(pass.signature, 31), cmd.kind),
+    plan.passes[p].signature = wrappingAdd(
+        wrappingAdd(wrappingMul(plan.passes[p].signature, 31), cmd.kind),
         wrappingMul(cmd.layer.raw, 7)
     )
     if damaged {
-        pass.dirty = true
+        plan.passes[p].dirty = true
     }
     if caCommandRequiresRefresh(cmd) {
-        pass.requiresRefresh = true
+        plan.passes[p].requiresRefresh = true
     }
-    if pass.hasBounds {
-        pass.bounds = caRectUnion(pass.bounds, cmd.worldBounds)
+    // Written in place: copying the pass out would copy every command it
+    // already holds, once per command emitted.
+    if plan.passes[p].hasBounds {
+        plan.passes[p].bounds = caRectUnion(plan.passes[p].bounds, cmd.worldBounds)
     } else {
-        pass.bounds = cmd.worldBounds
-        pass.hasBounds = true
+        plan.passes[p].bounds = cmd.worldBounds
+        plan.passes[p].hasBounds = true
     }
-    pass.cmds.append(move cmd)
-    plan.passes[passIndex.raw] = pass
+    plan.passes[p].cmds.append(move cmd)
     return
 }
 
 // How many passes the plan runs, and how many draws in a given pass — the
 // numbers a pass-planning test asserts.
-function caPlanPassCount(plan: borrow CARenderPlan) -> Int {
+public function caPlanPassCount(plan: borrow CARenderPlan) -> Int {
     return plan.passes.count
 }
 
-function caPlanDrawCount(plan: borrow CARenderPlan, passIndex: RenderPassId) -> Int {
+public function caPlanDrawCount(plan: borrow CARenderPlan, passIndex: RenderPassId) -> Int {
     if passIndex.raw < 0 || passIndex.raw >= plan.passes.count {
         return 0
     }

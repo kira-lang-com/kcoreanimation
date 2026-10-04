@@ -18,7 +18,7 @@ import KiraGraphics
 //  - slot 2: `slot2GroupId`; 0 means the atlas fallback, which keeps
 //    texture(2)/sampler(2) satisfied on streams that hold no glass.
 //  - slot 3: `slot3GroupId`, the near blur level, same fallback discipline.
-function uiPipelineForQuad(
+public function uiPipelineForQuad(
     state: borrow UiBatchState,
     modeCode: Int,
     requiresGeneric: Bool,
@@ -261,7 +261,7 @@ extend UiBatch {
 }
 
 
-function prepareBackground(state: borrow mut UiBatchState, graphics: borrow Graphics) {
+public function prepareBackground(state: borrow mut UiBatchState, graphics: borrow Graphics) {
     if !state.backgroundActive || state.backgroundParams.id == 0 {
         return
     }
@@ -271,7 +271,7 @@ function prepareBackground(state: borrow mut UiBatchState, graphics: borrow Grap
 
 // Native: it mutates the encoder, and a struct receiver has no seam
 // representation, so a mutating call is always same-engine.
-@Native
+public @Native
 function drawBackground(state: borrow mut UiBatchState, encoder: borrow mut RenderEncoder) {
     if !state.backgroundActive || state.backgroundPipeline.id == 0 || !state.externalBindReady {
         return

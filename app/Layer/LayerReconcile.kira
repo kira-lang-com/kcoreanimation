@@ -8,7 +8,7 @@ import Foundation
 // content states none. Applying the background over the content's own color
 // is what painted every label, glyph and transparent row in the description's
 // default.
-function caDescribedFill(layer: borrow CALayerDescription) -> CAColor {
+public function caDescribedFill(layer: borrow CALayerDescription) -> CAColor {
     match layer.content {
         Solid(s) -> return s.fill
         Text(t) -> return t.color
@@ -22,7 +22,7 @@ function caDescribedFill(layer: borrow CALayerDescription) -> CAColor {
 
 // A solid states its own outline: its corner, its border and that border's
 // width. Every other content takes the layer's.
-function caDescribedCornerRadius(layer: borrow CALayerDescription) -> Float {
+public function caDescribedCornerRadius(layer: borrow CALayerDescription) -> Float {
     match layer.content {
         Solid(s) -> return s.cornerRadius
         Text(t) -> return layer.cornerRadius
@@ -34,7 +34,7 @@ function caDescribedCornerRadius(layer: borrow CALayerDescription) -> Float {
     }
 }
 
-function caDescribedBorderWidth(layer: borrow CALayerDescription) -> Float {
+public function caDescribedBorderWidth(layer: borrow CALayerDescription) -> Float {
     match layer.content {
         Solid(s) -> return s.borderWidth
         Text(t) -> return layer.borderWidth
@@ -48,7 +48,7 @@ function caDescribedBorderWidth(layer: borrow CALayerDescription) -> Float {
 
 // A run states its weight on the font's axis. Every other content draws no
 // text and takes the regular weight a layer starts at.
-function caDescribedTextWeight(layer: borrow CALayerDescription) -> Float {
+public function caDescribedTextWeight(layer: borrow CALayerDescription) -> Float {
     match layer.content {
         Text(t) -> return t.weight
         Solid(s) -> return 400.0
@@ -60,7 +60,7 @@ function caDescribedTextWeight(layer: borrow CALayerDescription) -> Float {
     }
 }
 
-function caDescribedBorderColor(layer: borrow CALayerDescription) -> CAColor {
+public function caDescribedBorderColor(layer: borrow CALayerDescription) -> CAColor {
     match layer.content {
         Solid(s) -> return s.border
         Text(t) -> return layer.borderColor
@@ -74,7 +74,7 @@ function caDescribedBorderColor(layer: borrow CALayerDescription) -> CAColor {
 
 // `geometryImmediate` puts the layer where the layout says at once while every
 // other property animates as it would: what a live resize asks for.
-function caApplyLayerDescription(tree: borrow mut CALayerTree, id: LayerId, layer: borrow CALayerDescription, geometryImmediate: Bool = false) {
+public function caApplyLayerDescription(tree: borrow mut CALayerTree, id: LayerId, layer: borrow CALayerDescription, geometryImmediate: Bool = false) {
     tree.setContent(id, layer.content)
     if geometryImmediate {
         tree.beginTransaction(caImmediateTiming())
@@ -103,7 +103,8 @@ function caApplyLayerDescription(tree: borrow mut CALayerTree, id: LayerId, laye
     tree.setRenderTarget(id, layer.renderTarget, RenderTargetId(0))
     tree.setBlur(id, layer.blur)
     tree.setCapturesBackdrop(id, layer.capturesBackdrop)
-    tree.setHit(id, layer.hittable, layer.interactive, layer.hitKey)
+    tree.setHit(id, layer.hittable, layer.interactive, layer.slidesPress, layer.hitKey)
+    tree.setScrolls(id, layer.scrollAxis != .None)
     tree.setLevel(id, layer.level)
     tree.setRemoval(id, layer.removal)
     return
@@ -113,13 +114,21 @@ function caApplyLayerDescription(tree: borrow mut CALayerTree, id: LayerId, laye
 // Animation's does: there is nothing on screen for it to move from. Animating
 // them would grow every view that appears out of the top-leading corner, from
 // the zero size and position a fresh layer starts at.
-function caReconcileLayer(tree: borrow mut CALayerTree, parent: LayerId, layer: borrow CALayerDescription, geometryImmediate: Bool = false) -> LayerId {
+public function caReconcileLayer(tree: borrow mut CALayerTree, parent: LayerId, layer: borrow CALayerDescription, geometryImmediate: Bool = false) -> LayerId {
     var id = tree.matchChild(parent, layer.key)
     let appearing = id == caNoLayer()
     if appearing {
         id = tree.makeLayer(parent, layer.key, layer.content)
     }
     tree.reuse(id)
+    var timed = false
+    match layer.animation {
+        Inherit -> {}
+        Timed(timing) -> {
+            tree.beginTransaction(copy timing)
+            timed = true
+        }
+    }
     if appearing || layer.disablesActions {
         tree.beginTransaction(caImmediateTiming())
         caApplyLayerDescription(tree, id, layer)
@@ -132,10 +141,13 @@ function caReconcileLayer(tree: borrow mut CALayerTree, parent: LayerId, layer: 
         children.append(caReconcileLayer(tree, id, child, geometryImmediate))
     }
     tree.setChildren(id, move children)
+    if timed {
+        tree.commitTransaction()
+    }
     return id
 }
 
-function caReconcile(tree: borrow mut CALayerTree, root: borrow CALayerDescription, geometryImmediate: Bool = false) -> LayerId {
+public function caReconcile(tree: borrow mut CALayerTree, root: borrow CALayerDescription, geometryImmediate: Bool = false) -> LayerId {
     tree.beginReconcile()
     var rootId = tree.rootId
     if rootId == caNoLayer() {
@@ -155,11 +167,11 @@ function caReconcile(tree: borrow mut CALayerTree, root: borrow CALayerDescripti
 // A window being resized: every layer takes the new layout's frame at once, as
 // UIKit's content follows a live resize, while a fade, a color or a press that
 // was already running carries on rather than jumping to its end.
-function caReconcileResizing(tree: borrow mut CALayerTree, root: borrow CALayerDescription) -> LayerId {
+public function caReconcileResizing(tree: borrow mut CALayerTree, root: borrow CALayerDescription) -> LayerId {
     return caReconcile(tree, root, true)
 }
 
-function caReconcileImmediate(tree: borrow mut CALayerTree, root: borrow CALayerDescription) -> LayerId {
+public function caReconcileImmediate(tree: borrow mut CALayerTree, root: borrow CALayerDescription) -> LayerId {
     tree.beginTransaction(caImmediateTiming())
     let rootId = caReconcile(tree, root)
     tree.commitTransaction()

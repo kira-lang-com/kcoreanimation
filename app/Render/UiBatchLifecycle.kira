@@ -139,7 +139,12 @@ extend UiBatch {
         if !state.atlasDirty || state.atlasTexture.id == 0 || pointerIsNull(state.atlasPixels) {
             return
         }
-        graphics.updateTextureBytes(state.atlasTexture, state.atlasPixels, state.atlasW * state.atlasH * 4)
+        // Only the shelves written since the last upload go up.
+        let top = state.atlasDirtyTop < 0 ? 0 : state.atlasDirtyTop
+        let bottom = state.atlasDirtyBottom > state.atlasH ? state.atlasH : state.atlasDirtyBottom
+        if bottom > top {
+            graphics.updateTextureRows(state.atlasTexture, state.atlasPixels, top, bottom - top)
+        }
         state.atlasDirty = false
         return
     }
@@ -185,7 +190,7 @@ extend UiBatch {
 // visible content stays crisp on Retina while the glass refracts the
 // example-matching blur pyramid. Streams past the two allocated up front are created
 // here, on the first frame that actually stacks glass.
-function openStream(state: borrow mut UiBatchState, graphics: borrow Graphics) {
+public function openStream(state: borrow mut UiBatchState, graphics: borrow Graphics) {
     state.streams[state.streamIndex.raw].quadCount = state.quadCount
     let nextStream = DrawStreamId(state.streamIndex.raw + 1)
     createDrawStream(state, graphics, nextStream)

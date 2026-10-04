@@ -4,13 +4,13 @@ import Foundation
 // A collision-free spelling for hosts that also expose their own design-token
 // `Color`. Package imports are flat in Kira, so the distinct name is the type
 // boundary rather than a module qualifier.
-type FoundationColor = Color
+public type FoundationColor = Color
 
-function foundationRgba(r: Float, g: Float, b: Float, a: Float) -> FoundationColor {
+public function foundationRgba(r: Float, g: Float, b: Float, a: Float) -> FoundationColor {
     return Color { r: r, g: g, b: b, a: a }
 }
 
-struct Glow {
+public struct Glow {
     let color: Color = Color {
         r: 0.0,
         g: 0.0,
@@ -21,12 +21,12 @@ struct Glow {
     let intensity: Float = 0.0
 }
 
-enum FoundationShape {
+public enum FoundationShape {
     RegularRoundedRect
     Squircle
 }
 
-enum FoundationMaterial {
+public enum FoundationMaterial {
     Flat
     Frosted
     // REAL liquid glass (Metal path): the content rendered behind the surface is
@@ -61,7 +61,7 @@ enum FoundationMaterial {
 // hands back the fills the platform authors, blend modes and all. What used to be
 // here (an evenly spaced 0..1 amount times a 0.3 ceiling) was a guess at the shape
 // of that table, and a guess and the table cannot both be the answer.
-enum FoundationFrost {
+public enum FoundationFrost {
     // Untinted: the refracted backdrop shows through as it is. The one step with no
     // entry in the table — no platform material is fully clear.
     Translucent
@@ -90,7 +90,7 @@ enum FoundationFrost {
 //
 // The named steps stay for a surface that genuinely wants one (and for the kitchen
 // editor, whose job is to show the range).
-enum FoundationBlur {
+public enum FoundationBlur {
     // Follow the frost step. What a surface gets when it says nothing.
     Step
     // The backdrop arrives sharp: refraction, rims and wash only, and whatever is
@@ -106,7 +106,7 @@ enum FoundationBlur {
 
 // The blur dial (0..1) a NAMED step means. The pyramid itself is fixed (half-res,
 // eight gaussian iterations); this is how far the glass reads across it.
-function foundationBlurMix(blur: borrow FoundationBlur) -> Float {
+public function foundationBlurMix(blur: borrow FoundationBlur) -> Float {
     match blur {
         // A raw Surface has no frost step to follow, so Step means the blur of the
         // platform's default material — Regular, which FoundationFrost calls High.
@@ -126,7 +126,7 @@ function foundationBlurMix(blur: borrow FoundationBlur) -> Float {
 // capture. The dial's own split (CAGlassMaterial.blurNearSplit, 0.25) is
 // what puts the near level there, so the whole ramp is spent crossing sharp ->
 // near and never touches the far level at all.
-function foundationFrostBlur(frost: borrow FoundationFrost) -> Float {
+public function foundationFrostBlur(frost: borrow FoundationFrost) -> Float {
     match frost {
         Translucent -> return 0.0
         Light -> return 0.05
@@ -138,7 +138,7 @@ function foundationFrostBlur(frost: borrow FoundationFrost) -> Float {
 }
 
 // The dial a surface ends up with: the frost step's own blur unless it named one.
-function foundationBlurAmount(
+public function foundationBlurAmount(
     blur: borrow FoundationBlur,
     frost: borrow FoundationFrost,
 ) -> Float {
@@ -156,7 +156,7 @@ function foundationBlurAmount(
 // The rim-highlight scale a surface ends up shading with: the requested strength
 // when edge lighting is on, and zero when it is off, which removes the hairline and
 // the inner bloom without touching the lens, wash or shadow.
-function foundationEdgeLightingScale(enabled: Bool, strength: Float) -> Float {
+public function foundationEdgeLightingScale(enabled: Bool, strength: Float) -> Float {
     if enabled {
         return strength
     }
@@ -166,7 +166,7 @@ function foundationEdgeLightingScale(enabled: Bool, strength: Float) -> Float {
 // The same material, carrying `stack`'s upper layer and lower blend mode. The lower
 // layer's color and opacity are the surface fill, which the caller sets from
 // `stack.lower` — see foundationTintFill.
-function foundationGlassMaterialWithTint(
+public function foundationGlassMaterialWithTint(
     base: borrow CAGlassMaterial,
     stack: borrow FoundationTintStack,
 ) -> CAGlassMaterial {
@@ -204,7 +204,7 @@ function foundationGlassMaterialWithTint(
 // belongs: a surface that names no material still has an edge. `edgeRefraction`
 // scales the stroke and the sheen in the shader but never touched the inner rim,
 // so `edgeLighting: false` could not remove it — this is what does.
-function foundationGlassMaterialEdgeLit(
+public function foundationGlassMaterialEdgeLit(
     base: borrow CAGlassMaterial,
     enabled: Bool,
 ) -> CAGlassMaterial {
@@ -264,7 +264,7 @@ function foundationGlassMaterialEdgeLit(
 
 // The surface fill a tint stack's LOWER layer is: its color, with the layer's
 // opacity as the alpha the compositor reads the wash strength from.
-function foundationTintFill(stack: borrow FoundationTintStack) -> Color {
+public function foundationTintFill(stack: borrow FoundationTintStack) -> Color {
     return Color {
         r: stack.lower.color.r,
         g: stack.lower.color.g,
@@ -277,7 +277,7 @@ function foundationTintFill(stack: borrow FoundationTintStack) -> Color {
 // table and is one longer than it, so Translucent keeps its own meaning — no tint
 // at all, which no platform material is — and the five that do tint are the five
 // the platform ships, in order.
-function foundationFrostStyle(frost: borrow FoundationFrost) -> FoundationMaterialStyle {
+public function foundationFrostStyle(frost: borrow FoundationFrost) -> FoundationMaterialStyle {
     match frost {
         Translucent -> return .Ultrathin
         Light -> return .Ultrathin
@@ -291,7 +291,7 @@ function foundationFrostStyle(frost: borrow FoundationFrost) -> FoundationMateri
 // The fills a frost step means, straight out of the platform table. Translucent is
 // the one step with no entry: it is clear glass, so it gets an empty stack rather
 // than the thinnest material.
-function foundationFrostStack(
+public function foundationFrostStack(
     frost: borrow FoundationFrost,
     scheme: borrow FoundationScheme,
 ) -> FoundationTintStack {
@@ -305,12 +305,12 @@ function foundationFrostStack(
     }
 }
 
-enum FoundationEffect {
+public enum FoundationEffect {
     BackdropGlow(Glow)
     LayerGlow(Glow)
 }
 
-struct FoundationTextPaint {
+public struct FoundationTextPaint {
     let content: String
     let color: Color = Color {
         r: 0.08,
@@ -322,7 +322,7 @@ struct FoundationTextPaint {
     let weight: Float = 400.0
 }
 
-struct FoundationSurfacePaint {
+public struct FoundationSurfacePaint {
     let fill: Color = Color {
         r: 1.0,
         g: 1.0,
@@ -343,12 +343,12 @@ struct FoundationSurfacePaint {
     let shape: FoundationShape = .RegularRoundedRect
 }
 
-struct FoundationHitRegionPaint {
+public struct FoundationHitRegionPaint {
     let disabled: Bool = false
     let onPress: () -> Void
 }
 
-enum FoundationPaint {
+public enum FoundationPaint {
     None
     Text(FoundationTextPaint)
     Surface(FoundationSurfacePaint)

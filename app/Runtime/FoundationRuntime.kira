@@ -10,7 +10,7 @@ import Foundation
 
 // The page an ordinary window is cleared to: the paper an interface is drawn
 // on, and what shows wherever it draws nothing.
-function foundationPageColor() -> Color {
+public function foundationPageColor() -> Color {
     return Color {
         r: 0.96,
         g: 0.95,
@@ -22,12 +22,12 @@ function foundationPageColor() -> Color {
 // The page a TRANSPARENT window is cleared to: the desktop's key color, so
 // every pixel the interface does not paint is a hole rather than paper. See
 // KiraGraphics' Public/WindowComposition.kira.
-function foundationTransparentPage() -> Color {
+public function foundationTransparentPage() -> Color {
     return graphicsTransparentKey()
 }
 
 // Which of the two a window is drawn on.
-function foundationPageFor(transparent: Bool) -> Color {
+public function foundationPageFor(transparent: Bool) -> Color {
     if transparent {
         return foundationTransparentPage()
     }
@@ -38,7 +38,7 @@ function foundationPageFor(transparent: Bool) -> Color {
 // held and the input-method composition in flight. The runner writes it before
 // it builds, and the input read side (FoundationInputSnapshot.kira) publishes
 // it to the ambient slot store for camera/tool code in any package.
-struct FoundationUiContext {
+public struct FoundationUiContext {
     var frameCount: Int = 0
     var viewport: Size = Size {}
     var pointerX: Float = 0.0
@@ -77,7 +77,7 @@ struct FoundationUiContext {
 
 // Bit for a held key in keysMask — macOS virtual keycodes for the fly keys:
 // A=0, S=1, D=2, F=3, W=13, Q=12, E=14. Zero for keys we do not track.
-function foundationKeyBit(keyCode: Int) -> Int {
+public function foundationKeyBit(keyCode: Int) -> Int {
     if keyCode == 13 { return 1 }   // W
     if keyCode == 0 { return 2 }    // A
     if keyCode == 1 { return 4 }    // S
@@ -92,7 +92,7 @@ function foundationKeyBit(keyCode: Int) -> Int {
 // rather than an angle: these are the four a layout can answer without knowing
 // how large the surface came out, and an angle over a box whose aspect changes
 // is a gradient that shears as the window resizes.
-enum FoundationGradient {
+public enum FoundationGradient {
     None
     // Top to bottom.
     Down
@@ -104,7 +104,7 @@ enum FoundationGradient {
 
 // The gradient axis a described surface fills along, as the compositor's layer
 // content spells it.
-function foundationLayerGradientAxis(gradient: borrow FoundationGradient) -> Int {
+public function foundationLayerGradientAxis(gradient: borrow FoundationGradient) -> Int {
     match gradient {
         None -> return 0
         Down -> return 1
@@ -115,7 +115,7 @@ function foundationLayerGradientAxis(gradient: borrow FoundationGradient) -> Int
 
 // Build a Graphics handle from the active frame so the backend can create
 // resources and submit batched draws on whichever backend the runtime selected.
-function foundationFrameGraphics(frame: borrow RenderFrame) -> Graphics {
+public function foundationFrameGraphics(frame: borrow RenderFrame) -> Graphics {
     return Graphics {
         userData: frame.userData,
         backend: frame.backend,
@@ -125,15 +125,15 @@ function foundationFrameGraphics(frame: borrow RenderFrame) -> Graphics {
 
 // Per-frame duration (seconds) for the live FPS readout, from whichever clock
 // the backend keeps it on.
-@Native
+public @Native
 function foundationFrameDuration(frame: borrow RenderFrame) -> Float {
     return frame.statistics().frameSeconds
 }
 
 // No-op default for a runner's `engineFrame` hook.
-function foundationNoopEngineFrame(frame: borrow mut RenderFrame) {
+public function foundationNoopEngineFrame(frame: borrow mut RenderFrame) {
     let ignored = frame.backend
     return
 }
 
-function foundationNoContinuousRebuild() -> Bool { return false }
+public function foundationNoContinuousRebuild() -> Bool { return false }

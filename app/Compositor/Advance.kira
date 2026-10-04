@@ -3,7 +3,7 @@ import KiraGraphics
 // Advance presentation state from the graphics frame's absolute monotonic
 // clock. Animation progress depends on this timestamp, never on how many
 // frames happened to be submitted between two samples.
-function caCompositorAdvance(compositor: borrow mut Compositor, frame: borrow RenderFrame) -> Bool {
+public function caCompositorAdvance(compositor: borrow mut Compositor, frame: borrow RenderFrame) -> Bool {
     let now = Float(frame.monotonicNanoseconds()) / 1000000000.0
     return compositor.tree.sampleAt(now)
 }

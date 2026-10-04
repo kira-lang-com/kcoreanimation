@@ -21,8 +21,8 @@ Package KCoreAnimation {
                 NativeTarget { triple: "x86_64-linux-gnu", staticLib: "NativeLibs/../generated/native/x86_64-linux-gnu/libkiratext.a", systemLibs: ["stdc++"] },
                 NativeTarget { triple: "aarch64-linux-gnu", systemLibs: ["stdc++"] },
                 NativeTarget { triple: "aarch64-macos-none", staticLib: "NativeLibs/../generated/native/aarch64-macos/libkiratext.a", systemLibs: ["c++"] },
-                NativeTarget { triple: "aarch64-ios-none", staticLib: "NativeLibs/../generated/native/aarch64-ios/libkiratext.a" },
-                NativeTarget { triple: "aarch64-ios-simulator", staticLib: "NativeLibs/../generated/native/aarch64-ios-simulator/libkiratext.a" },
+                NativeTarget { triple: "aarch64-ios-none", staticLib: "NativeLibs/../generated/native/aarch64-ios/libkiratext.a", systemLibs: ["c++"] },
+                NativeTarget { triple: "aarch64-ios-sim", staticLib: "NativeLibs/../generated/native/aarch64-ios-simulator/libkiratext.a", systemLibs: ["c++"] },
                 NativeTarget { triple: "wasm32-emscripten-unknown", staticLib: "NativeLibs/../generated/native/wasm32-emscripten/libkiratext.a" }
             ],
         },
@@ -38,7 +38,7 @@ Package KCoreAnimation {
                 NativeTarget { triple: "aarch64-linux-gnu" },
                 NativeTarget { triple: "aarch64-macos-none", staticLib: "NativeLibs/../generated/native/aarch64-macos/libkirastatestore.a" },
                 NativeTarget { triple: "aarch64-ios-none", staticLib: "NativeLibs/../generated/native/aarch64-ios/libkirastatestore.a" },
-                NativeTarget { triple: "aarch64-ios-simulator", staticLib: "NativeLibs/../generated/native/aarch64-ios-simulator/libkirastatestore.a" },
+                NativeTarget { triple: "aarch64-ios-sim", staticLib: "NativeLibs/../generated/native/aarch64-ios-simulator/libkirastatestore.a" },
                 NativeTarget { triple: "wasm32-emscripten-unknown", staticLib: "NativeLibs/../generated/native/wasm32-emscripten/libkirastatestore.a" }
             ],
         },
@@ -54,7 +54,7 @@ Package KCoreAnimation {
                 NativeTarget { triple: "aarch64-linux-gnu" },
                 NativeTarget { triple: "aarch64-macos-none", staticLib: "NativeLibs/../generated/native/aarch64-macos/libkiraicon.a" },
                 NativeTarget { triple: "aarch64-ios-none", staticLib: "NativeLibs/../generated/native/aarch64-ios/libkiraicon.a" },
-                NativeTarget { triple: "aarch64-ios-simulator", staticLib: "NativeLibs/../generated/native/aarch64-ios-simulator/libkiraicon.a" },
+                NativeTarget { triple: "aarch64-ios-sim", staticLib: "NativeLibs/../generated/native/aarch64-ios-simulator/libkiraicon.a" },
                 NativeTarget { triple: "wasm32-emscripten-unknown", staticLib: "NativeLibs/../generated/native/wasm32-emscripten/libkiraicon.a" }
             ],
         }

@@ -9,7 +9,7 @@ import KiraGraphics
 // four ways horizontally so a run positioned at a fractional pen stays evenly
 // spaced instead of snapping. Both are what let one atlas serve every run.
 
-function glyphSizeKey(sizePx: Float) -> Int {
+public function glyphSizeKey(sizePx: Float) -> Int {
     var s = Int(sizePx)
     if s < 1 {
         s = 1
@@ -35,7 +35,20 @@ function glyphSizeKey(sizePx: Float) -> Int {
 //
 // TEXT ONLY. Surfaces, borders and glass are analytic — their edges come from an
 // SDF evaluated per pixel, which is already exact and has nothing to gain.
-function textOversample() -> Float { return 2.0 }
+public function textOversample() -> Float { return 2.0 }
+
+// The oversample a backing of `scale` device pixels per point draws text at.
+//
+// A Retina backing already resolves every point to four samples or more, and
+// is shown as it is, which is all the oversample above buys a 1x window; on
+// top of it, the glyphs are four times the pixels to rasterize and to keep in
+// the atlas for nothing anyone sees -- six times on a 3x phone.
+public function textOversampleAt(scale: Float) -> Float {
+    if scale >= 2.0 {
+        return 1.0
+    }
+    return textOversample()
+}
 
 // How many horizontal positions within a pixel a glyph may be rasterized at.
 //
@@ -51,10 +64,10 @@ function textOversample() -> Float { return 2.0 }
 //
 // So the atlas pays for it: four phases of a 2x bitmap. That is more than the
 // original scheme held, and it is what the look is made of.
-function glyphSubpixelPhases() -> Int { return 4 }
+public function glyphSubpixelPhases() -> Int { return 4 }
 
 // The phase a pen position falls in, and the 26.6 outline shift that phase means.
-function glyphPhaseOf(devicePen: Float) -> Int {
+public function glyphPhaseOf(devicePen: Float) -> Int {
     let whole = Float(Int(devicePen))
     var frac = devicePen - whole
     if frac < 0.0 {
@@ -74,8 +87,8 @@ function glyphPhaseOf(devicePen: Float) -> Int {
 // RASTER grid, which oversampling has made finer than the device grid, so the
 // oversample factor is part of the conversion: a half-device-pixel phase is a whole
 // raster pixel at 2x.
-function glyphPhaseOffset(phase: Int) -> Int {
-    return phase * 64 * Int(textOversample()) / glyphSubpixelPhases()
+public function glyphPhaseOffset(phase: Int, oversample: Float) -> Int {
+    return phase * 64 * Int(oversample) / glyphSubpixelPhases()
 }
 
 // A weight as a cache bucket: one per ten units of the variable axis, so 400
@@ -84,13 +97,13 @@ function glyphPhaseOffset(phase: Int) -> Int {
 // The axis is continuous and a weight animates across it, so the buckets have
 // to be finer than the eye can tell apart frame to frame; ten units is a
 // twentieth of the way from regular to semibold.
-function glyphWeightKey(weight: Float) -> Int {
+public function glyphWeightKey(weight: Float) -> Int {
     return Int(min(max(weight / 10.0, 10.0), 90.0) + 0.5)
 }
 
 // The axis value a bucket is rasterized at, so every glyph cached under one
 // is the same outline, whichever weight inside it was asked for first.
-function glyphWeightAxis(weightKey: Int) -> Float {
+public function glyphWeightAxis(weightKey: Int) -> Float {
     return Float(weightKey) * 10.0
 }
 
@@ -100,14 +113,14 @@ function glyphWeightAxis(weightKey: Int) -> Float {
 // 'a' is not the regular one. Keying on character and size alone serves the
 // first weight rasterized at that size to every run after it, so which weight a
 // label lands in depends on the order the panel was built in.
-function glyphCacheKey(codepoint: Int, sizeKey: Int, weightKey: Int, phase: Int) -> Int {
+public function glyphCacheKey(codepoint: Int, sizeKey: Int, weightKey: Int, phase: Int) -> Int {
     return ((codepoint * 1024 + sizeKey) * 100 + weightKey) * glyphSubpixelPhases() + phase
 }
 
 // Whether a new entry may go in the glyph hash: there is a free slot for it, and
 // the table stays under three quarters full so a probe stays short. When it may
 // not, the atlas is marked exhausted like one with no room left in it.
-function glyphCacheHasRoom(state: borrow mut UiBatchState, homeSlot: Int) -> Bool {
+public function glyphCacheHasRoom(state: borrow mut UiBatchState, homeSlot: Int) -> Bool {
     if homeSlot < 0 || (state.glyphs.count + 1) * 4 > state.glyphHashKeys.count * 3 {
         state.atlasExhausted = true
         return false
@@ -123,7 +136,7 @@ function glyphCacheHasRoom(state: borrow mut UiBatchState, homeSlot: Int) -> Boo
 // everything can, and a shelf packer has no cheaper way to give back a single
 // slot. A window settles on a set of glyphs that fits, so this happens once in a
 // long while — after the atlas filled, at the top of the frame that follows.
-function resetGlyphAtlas(state: borrow mut UiBatchState) {
+public function resetGlyphAtlas(state: borrow mut UiBatchState) {
     state.glyphs = []
     state.glyphHashKeys = zeroedInts(glyphCacheCapacity())
     state.glyphHashVals = zeroedInts(glyphCacheCapacity())
@@ -135,6 +148,8 @@ function resetGlyphAtlas(state: borrow mut UiBatchState) {
     }
     state.atlasPixels = allocateBytes(U64(state.atlasW * state.atlasH * 4))
     state.atlasDirty = true
+    state.atlasDirtyTop = 0
+    state.atlasDirtyBottom = state.atlasH
     state.atlasExhausted = false
     return
 }
@@ -146,7 +161,7 @@ function resetGlyphAtlas(state: borrow mut UiBatchState) {
 // upload: the coverage becomes RGBA (the shader multiplies the glyph's color by
 // all four channels), the destination is the row-major atlas image, and the one
 // upload the frame does replaces the whole thing.
-@Native
+public @Native
 function atlasBlitCoverage(state: borrow mut UiBatchState, coverage: RawPtr, pitch: Int, atlasX: Int, atlasY: Int, width: Int, height: Int) {
     if pointerIsNull(state.atlasPixels) {
         return
@@ -166,6 +181,17 @@ function atlasBlitCoverage(state: borrow mut UiBatchState, coverage: RawPtr, pit
             col += 1
         }
         row += 1
+    }
+    if !state.atlasDirty {
+        state.atlasDirtyTop = atlasY
+        state.atlasDirtyBottom = atlasY + height
+    } else {
+        if atlasY < state.atlasDirtyTop {
+            state.atlasDirtyTop = atlasY
+        }
+        if atlasY + height > state.atlasDirtyBottom {
+            state.atlasDirtyBottom = atlasY + height
+        }
     }
     state.atlasDirty = true
     return

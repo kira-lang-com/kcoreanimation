@@ -1,12 +1,12 @@
 import Foundation
 import KiraGraphics
 
-struct CARegisteredRenderTarget {
+public struct CARegisteredRenderTarget {
     var id: RenderTargetId = RenderTargetId(0)
     var texture: GraphicsTexture = GraphicsTexture {}
 }
 
-struct CACachedPassTarget {
+public struct CACachedPassTarget {
     var owner: LayerId = LayerId(0)
     var targetId: RenderTargetId = RenderTargetId(0)
     var texture: GraphicsTexture = GraphicsTexture {}
@@ -17,15 +17,18 @@ struct CACachedPassTarget {
     var valid: Bool = false
 }
 
-class CAPassBatchSlot {
+public class CAPassBatchSlot {
     var batch: UiBatch
 }
 
-class Compositor {
+public class Compositor {
     var tree: CALayerTree = CALayerTree {}
     var registeredTargets: [CARegisteredRenderTarget] = []
     var cachedTargets: [CACachedPassTarget] = []
     var passBatches: [CAPassBatchSlot] = []
+    // Pass targets destroyed since the root batch last heard; see
+    // `retireTexture`.
+    var retiredTextures: [TextureHandle] = []
 
     function registerRenderTarget(id: RenderTargetId, texture: GraphicsTexture) {
         for index in 0..self.registeredTargets.count {

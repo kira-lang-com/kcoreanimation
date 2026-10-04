@@ -1,13 +1,13 @@
 // Nominal IDs used across KCoreAnimation. These are intentionally distinct from
 // Int so unrelated indices/handles cannot be passed across subsystem boundaries
 // by accident. Convert to `.raw` only at array/FFI seams.
-distinct RenderPassId = Int
-distinct RenderTargetId = Int
-distinct TextureHandle = Int
-distinct DrawStreamId = Int
-distinct GlassLayerId = Int
-distinct RetainedNodeId = Int
-distinct StateSlotId = Int
-distinct ComputePipelineId = Int
-distinct LayoutNodeIndex = Int
-distinct LayerSlot = Int
+public distinct RenderPassId = Int
+public distinct RenderTargetId = Int
+public distinct TextureHandle = Int
+public distinct DrawStreamId = Int
+public distinct GlassLayerId = Int
+public distinct RetainedNodeId = Int
+public distinct StateSlotId = Int
+public distinct ComputePipelineId = Int
+public distinct LayoutNodeIndex = Int
+public distinct LayerSlot = Int

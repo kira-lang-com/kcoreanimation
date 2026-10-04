@@ -11,7 +11,7 @@ import Foundation
 // parent before its children, siblings in order, hoisted overlays last (by
 // level), each walked from the canvas root so it escapes ancestor clips.
 
-struct CADrawItem {
+public struct CADrawItem {
     var layer: LayerId = LayerId(0)
     var content: CAContent = .Empty
     var transform: CAAffineTransform = CAAffineTransform {}
@@ -41,10 +41,12 @@ struct CADrawItem {
     var groupOpacity: Bool = false
     var hit: Bool = false
     var interactive: Bool = false
+    var slidesPress: Bool = false
     var hitKey: Int = 0
+    var scrolls: Bool = false
 }
 
-@Derive(Copy)
+public @Derive(Copy)
 struct CAWalkFrame {
     var id: LayerId = LayerId(0)
     var world: CAAffineTransform = CAAffineTransform {}
@@ -59,12 +61,12 @@ struct CAWalkFrame {
     var glassWashLuma: Float = 1.0
 }
 
-function caRootFrame(id: LayerId) -> CAWalkFrame {
+public function caRootFrame(id: LayerId) -> CAWalkFrame {
     return CAWalkFrame { id: id }
 }
 
 // A layer's own transform, about its anchor, from its presentation values.
-function caLocalTransform(node: borrow CALayerNode) -> CAAffineTransform {
+public function caLocalTransform(node: borrow CALayerNode) -> CAAffineTransform {
     let w = node.boundsW.presentation
     let h = node.boundsH.presentation
     let ax = node.anchorX * w
@@ -78,7 +80,7 @@ function caLocalTransform(node: borrow CALayerNode) -> CAAffineTransform {
 }
 
 // A layer's deformation, about its center, in its own coordinates.
-function caDeformTransform(node: borrow CALayerNode) -> CAAffineTransform {
+public function caDeformTransform(node: borrow CALayerNode) -> CAAffineTransform {
     let d = node.deformation
     let cx = node.boundsW.presentation * 0.5
     let cy = node.boundsH.presentation * 0.5
@@ -89,11 +91,11 @@ function caDeformTransform(node: borrow CALayerNode) -> CAAffineTransform {
 // Where a layer's deformation carries a point already placed at rest, in the
 // space `rest` places the layer in: the picture of what it holds, drawn at
 // rest, is deformed through this.
-function caDeformAcross(rest: borrow CAAffineTransform, node: borrow CALayerNode) -> CAAffineTransform {
+public function caDeformAcross(rest: borrow CAAffineTransform, node: borrow CALayerNode) -> CAAffineTransform {
     return caConcat(caConcat(rest, caDeformTransform(node)), caInvert(rest))
 }
 
-function caDrawItemFor(node: borrow CALayerNode, frame: borrow CAWalkFrame, world: borrow CAAffineTransform, opacity: Float) -> CADrawItem {
+public function caDrawItemFor(node: borrow CALayerNode, frame: borrow CAWalkFrame, world: borrow CAAffineTransform, opacity: Float) -> CADrawItem {
     let w = node.boundsW.presentation
     let h = node.boundsH.presentation
     let lengthScale = caLengthScale(world)
@@ -126,13 +128,15 @@ function caDrawItemFor(node: borrow CALayerNode, frame: borrow CAWalkFrame, worl
         groupOpacity: node.groupOpacity,
         hit: node.hit,
         interactive: node.interactive,
-        hitKey: node.hitKey
+        slidesPress: node.slidesPress,
+        hitKey: node.hitKey,
+        scrolls: node.scrolls
     }
 }
 
 // The frame a node's children inherit: the node's world and effective opacity,
 // and its own world AABB intersected into the clip when it clips.
-function caChildFrame(node: borrow CALayerNode, frame: borrow CAWalkFrame, world: borrow CAAffineTransform, opacity: Float) -> CAWalkFrame {
+public function caChildFrame(node: borrow CALayerNode, frame: borrow CAWalkFrame, world: borrow CAAffineTransform, opacity: Float) -> CAWalkFrame {
     var out = frame
     out.world = world
     out.opacity = opacity
@@ -164,7 +168,7 @@ function caChildFrame(node: borrow CALayerNode, frame: borrow CAWalkFrame, world
 // One subtree, in paint order, appended to `out`. Recursion carries the
 // accumulator as `borrow mut`; a hoisted child is skipped here and drawn from
 // the canvas root by the overlay pass.
-function caFlattenInto(tree: borrow CALayerTree, frame: borrow CAWalkFrame, out: borrow mut [CADrawItem]) {
+public function caFlattenInto(tree: borrow CALayerTree, frame: borrow CAWalkFrame, out: borrow mut [CADrawItem]) {
     var idx = LayerSlot(0)
     match tree.nodeSlot(frame.id) {
         None -> { return }
@@ -194,7 +198,7 @@ function caFlattenInto(tree: borrow CALayerTree, frame: borrow CAWalkFrame, out:
 }
 
 // The overlays in draw order: by level (lower first), stable within a level.
-function caOverlayLevel(tree: borrow CALayerTree, id: LayerId) -> Int {
+public function caOverlayLevel(tree: borrow CALayerTree, id: LayerId) -> Int {
     var idx = LayerSlot(0)
     match tree.nodeSlot(id) {
         None -> { return 0 }
@@ -206,17 +210,17 @@ function caOverlayLevel(tree: borrow CALayerTree, id: LayerId) -> Int {
     }
 }
 
-struct CAOverlayOrder {
+public struct CAOverlayOrder {
     let id: LayerId
     let level: Int = 0
     let ordinal: Int = 0
 }
 
-function caOverlayBefore(a: borrow CAOverlayOrder, b: borrow CAOverlayOrder) -> Bool {
+public function caOverlayBefore(a: borrow CAOverlayOrder, b: borrow CAOverlayOrder) -> Bool {
     return a.level < b.level || (a.level == b.level && a.ordinal < b.ordinal)
 }
 
-function caMergeOverlayOrders(values: borrow [CAOverlayOrder], start: Int, end: Int) -> [CAOverlayOrder] {
+public function caMergeOverlayOrders(values: borrow [CAOverlayOrder], start: Int, end: Int) -> [CAOverlayOrder] {
     if end - start <= 1 {
         var one: [CAOverlayOrder] = []
         if start < end { one.append(values[start]) }
@@ -248,7 +252,7 @@ function caMergeOverlayOrders(values: borrow [CAOverlayOrder], start: Int, end: 
     return merged
 }
 
-function caOrderedOverlays(tree: borrow CALayerTree) -> [LayerId] {
+public function caOrderedOverlays(tree: borrow CALayerTree) -> [LayerId] {
     var entries: [CAOverlayOrder] = []
     for ordinal in 0..tree.overlays.count {
         let id = tree.overlays[ordinal]
@@ -261,7 +265,7 @@ function caOrderedOverlays(tree: borrow CALayerTree) -> [LayerId] {
 }
 
 // The whole frame's draw list: the in-place tree, then every hoisted overlay.
-function caFlatten(tree: borrow CALayerTree) -> [CADrawItem] {
+public function caFlatten(tree: borrow CALayerTree) -> [CADrawItem] {
     var out: [CADrawItem] = []
     if tree.rootId == LayerId(0) {
         return out
@@ -273,6 +277,6 @@ function caFlatten(tree: borrow CALayerTree) -> [CADrawItem] {
     return out
 }
 
-function caFlattenCount(tree: borrow CALayerTree) -> Int {
+public function caFlattenCount(tree: borrow CALayerTree) -> Int {
     return caFlatten(tree).count
 }

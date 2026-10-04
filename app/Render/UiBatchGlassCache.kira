@@ -10,7 +10,7 @@
 // Cached-interior surface slots; surfaces past the cap render live.
 import Foundation
 
-function glassCacheMaxSurfaces() -> Int { return 32 }
+public function glassCacheMaxSurfaces() -> Int { return 32 }
 
 // Compare (and store) this surface's cache key at the current push-order
 // slot. True means every input matches the interior already in the cache;
@@ -23,8 +23,7 @@ function glassCacheMaxSurfaces() -> Int { return 32 }
 // through `k27`, compared by a hand-written loop over a flat array — one
 // argument out of order was a silent cache hit on the wrong surface, and
 // nothing named what any of them measured.
-@Derive(Equatable, Clone)
-struct GlassSurfaceKey {
+public struct GlassSurfaceKey: Copyable {
     // Where the touch highlight is and how hard it burns. In the key because it
     // CHANGES THE INTERIOR PIXELS: without it a lit surface matches last frame's
     // unlit cache entry, the interior is presented from that copy, and the light
@@ -88,13 +87,13 @@ struct GlassSurfaceKey {
 // the surface is, how big, its tint, its wash, its light. Two surfaces with the
 // same key have the same interior by definition, so content IS identity here and
 // the scan needs nothing the key does not already carry.
-function glassCacheKeyMatch(state: borrow mut UiBatchState, fresh: borrow GlassSurfaceKey) -> Bool {
+public function glassCacheKeyMatch(state: borrow mut UiBatchState, fresh: borrow GlassSurfaceKey) -> Bool {
     var slot = 0
     var hit = -1
     var free = -1
     while slot < glassCacheMaxSurfaces() && slot < state.glassCacheKeySet.count {
         if state.glassCacheClaimed[slot] == 0 {
-            if state.glassCacheKeySet[slot] != 0 && eq_GlassSurfaceKey(state.glassCacheKeys[slot], fresh) {
+            if state.glassCacheKeySet[slot] != 0 && state.glassCacheKeys[slot] == fresh {
                 hit = slot
                 slot = glassCacheMaxSurfaces()
             } else if free < 0 {
@@ -118,7 +117,7 @@ function glassCacheKeyMatch(state: borrow mut UiBatchState, fresh: borrow GlassS
     if free < 0 {
         return false
     }
-    state.glassCacheKeys[free] = clone_GlassSurfaceKey(fresh)
+    state.glassCacheKeys[free] = copy fresh
     state.glassCacheKeySet[free] = 1
     state.glassCacheClaimed[free] = 1
     if state.probeGlassLayers {
@@ -130,7 +129,7 @@ function glassCacheKeyMatch(state: borrow mut UiBatchState, fresh: borrow GlassS
 }
 
 // Remember a dirty surface's interior quads so the cache pass re-renders them.
-function glassCacheRecordRange(state: borrow mut UiBatchState, stream: DrawStreamId, start: Int, bandCount: Int, lensCount: Int, coreCount: Int) {
+public function glassCacheRecordRange(state: borrow mut UiBatchState, stream: DrawStreamId, start: Int, bandCount: Int, lensCount: Int, coreCount: Int) {
     if bandCount + lensCount + coreCount <= 0 {
         return
     }

@@ -22,7 +22,7 @@ import Foundation
 // Overlays are walked from the canvas root, unclipped, after the root subtree —
 // a hoisted menu escapes its ancestors' clips.
 
-@Derive(Copy)
+public @Derive(Copy)
 struct CAPlanFrame {
     var id: LayerId = LayerId(0)
     var pass: RenderPassId = RenderPassId(0)
@@ -38,13 +38,16 @@ struct CAPlanFrame {
     var glassWashLuma: Float = 1.0
 }
 
-function caPlanUnclipped(id: LayerId, pass: RenderPassId) -> CAPlanFrame {
+public function caPlanUnclipped(id: LayerId, pass: RenderPassId) -> CAPlanFrame {
     return CAPlanFrame { id: id, pass: pass }
 }
 
-function caNodeDrawCmd(node: borrow CALayerNode, world: borrow CAAffineTransform, opacity: Float, frame: borrow CAPlanFrame) -> CADrawCmd {
-    let w = node.boundsW.presentation
-    let h = node.boundsH.presentation
+public function caNodeDrawCmd(node: borrow CALayerNode, at: borrow CAAffineTransform, opacity: Float, frame: borrow CAPlanFrame) -> CADrawCmd {
+    // Drawn where its platter is, which is its own box unless a press is
+    // still sliding onto it.
+    let world = caConcat(at, caTranslation(node.platterX.presentation, node.platterY.presentation))
+    let w = node.boundsW.presentation + node.platterW.presentation
+    let h = node.boundsH.presentation + node.platterH.presentation
     let lengthScale = caLengthScale(world)
     return CADrawCmd {
         layer: node.id,
@@ -77,12 +80,12 @@ function caNodeDrawCmd(node: borrow CALayerNode, world: borrow CAAffineTransform
     }
 }
 
-function caNodeHasShadow(node: borrow CALayerNode) -> Bool {
+public function caNodeHasShadow(node: borrow CALayerNode) -> Bool {
     let color = caColorChannelPresentation(node.shadowColor)
     return node.shadowOpacity.presentation > 0.0 && color.a > 0.0
 }
 
-function caShadowCmd(node: borrow CALayerNode, world: borrow CAAffineTransform, opacity: Float, frame: borrow CAPlanFrame) -> CADrawCmd {
+public function caShadowCmd(node: borrow CALayerNode, world: borrow CAAffineTransform, opacity: Float, frame: borrow CAPlanFrame) -> CADrawCmd {
     let width = node.boundsW.presentation
     let height = node.boundsH.presentation
     let lengthScale = caLengthScale(world)
@@ -127,7 +130,7 @@ function caShadowCmd(node: borrow CALayerNode, world: borrow CAAffineTransform, 
     }
 }
 
-function caCompositeCmd(layer: LayerId, bounds: borrow Rect, opacity: Float, frame: borrow CAPlanFrame, sourcePass: RenderPassId) -> CADrawCmd {
+public function caCompositeCmd(layer: LayerId, bounds: borrow Rect, opacity: Float, frame: borrow CAPlanFrame, sourcePass: RenderPassId) -> CADrawCmd {
     return CADrawCmd {
         layer: layer,
         kind: caCompositeKind(),
@@ -152,7 +155,7 @@ function caCompositeCmd(layer: LayerId, bounds: borrow Rect, opacity: Float, fra
 
 // Presentation state inherited by a node's children: world transform, clip, and
 // the enclosing glass wash adaptive text must measure against.
-function caPlanChildFrame(node: borrow CALayerNode, frame: borrow CAPlanFrame, world: borrow CAAffineTransform) -> CAPlanFrame {
+public function caPlanChildFrame(node: borrow CALayerNode, frame: borrow CAPlanFrame, world: borrow CAAffineTransform) -> CAPlanFrame {
     var out = frame
     out.world = world
     if node.clip {
@@ -180,7 +183,7 @@ function caPlanChildFrame(node: borrow CALayerNode, frame: borrow CAPlanFrame, w
     return out
 }
 
-function caPlanNode(tree: borrow CALayerTree, frame: borrow CAPlanFrame, plan: borrow mut CARenderPlan) {
+public function caPlanNode(tree: borrow CALayerTree, frame: borrow CAPlanFrame, plan: borrow mut CARenderPlan) {
     var idx = LayerSlot(0)
     match tree.nodeSlot(frame.id) {
         None -> { return }
@@ -197,7 +200,11 @@ function caPlanNode(tree: borrow CALayerTree, frame: borrow CAPlanFrame, plan: b
     let isGroup = node.groupOpacity && node.opacity.presentation < 1.0 && node.childIds.count > 0
     let isTarget = node.renderTarget && node.childIds.count > 0
     let isBlurred = node.blur > 0.0 && node.childIds.count > 0
-    let isDeformed = !caDeformationIsIdentity(node.deformation) && node.childIds.count > 0
+    // What a deformed layer holds goes into a picture, unless some of it is
+    // ink burned or dodged into the glass -- a picture drawn apart has no
+    // glass under it to burn into, and the ink would be lost -- in which case
+    // it is drawn live through the deformation, as glass is.
+    let isDeformed = !caDeformationIsIdentity(node.deformation) && node.childIds.count > 0 && !caPlanInksIntoBackdrop(tree, node)
     let childFrame = caPlanChildFrame(node, frame, isDeformed ? rest : world)
 
     if isGroup || isTarget || isBlurred || isDeformed {
@@ -305,7 +312,7 @@ function caPlanNode(tree: borrow CALayerTree, frame: borrow CAPlanFrame, plan: b
     return
 }
 
-function caPlan(tree: borrow CALayerTree) -> CARenderPlan {
+public function caPlan(tree: borrow CALayerTree) -> CARenderPlan {
     var plan = CARenderPlan {}
     if tree.rootId == LayerId(0) {
         return plan
@@ -316,4 +323,34 @@ function caPlan(tree: borrow CALayerTree) -> CARenderPlan {
         caPlanNode(tree, caPlanUnclipped(overlayId, RenderPassId(0)), plan)
     }
     return plan
+}
+
+// Whether anything `node` holds inks by burning or dodging what is under it,
+// as a symbol set into glass does.
+public function caPlanInksIntoBackdrop(tree: borrow CALayerTree, node: borrow CALayerNode) -> Bool {
+    for childId in node.childIds {
+        match tree.nodeSlot(childId) {
+            None -> { continue }
+            Some(slot) -> {
+                let child = tree.nodes[slot.raw]
+                match child.content {
+                    Icon(icon) -> {
+                        if icon.blend != .Normal {
+                            return true
+                        }
+                    }
+                    Empty -> {}
+                    Solid(s) -> {}
+                    Text(t) -> {}
+                    Texture(x) -> {}
+                    Glass(g) -> {}
+                    Gradient(g) -> {}
+                }
+                if caPlanInksIntoBackdrop(tree, child) {
+                    return true
+                }
+            }
+        }
+    }
+    return false
 }

@@ -12,7 +12,7 @@ import KiraGraphics
 // stream 0 sits under all glass and takes the frame's defaults, and stream j
 // refracts glass layer j-1's capture. Returned as the bind group ids
 // drawStream takes.
-function glassSharpStreamGroup(state: borrow mut UiBatchState, stream: DrawStreamId) -> BindGroup {
+public function glassSharpStreamGroup(state: borrow mut UiBatchState, stream: DrawStreamId) -> BindGroup {
     return match stream.raw <= 0 {
         true -> shareBindGroup(state.emptyGroup)
         false -> match stream.raw {
@@ -26,7 +26,7 @@ function glassSharpStreamGroup(state: borrow mut UiBatchState, stream: DrawStrea
 }
 
 // Both blurred levels, in the one group they share.
-function glassSoftNearStreamGroup(state: borrow mut UiBatchState, stream: DrawStreamId) -> BindGroup {
+public function glassSoftNearStreamGroup(state: borrow mut UiBatchState, stream: DrawStreamId) -> BindGroup {
     if stream.raw <= 0 {
         return shareBindGroup(state.emptyGroup)
     }
@@ -61,7 +61,7 @@ extend UiBatch {
 // Add one capture bound, coalescing overlap with an existing region. Bounds arrive
 // in layout order; adjacent swatches and dock controls therefore fold into one
 // growing union instead of replaying their overlapping blur halos independently.
-function glassMergeCaptureBound(state: borrow mut UiBatchState, x0: Float, y0: Float, x1: Float, y1: Float) {
+public function glassMergeCaptureBound(state: borrow mut UiBatchState, x0: Float, y0: Float, x1: Float, y1: Float) {
     var i = 0
     while i < state.captureRectCount {
         let base = i * 4
@@ -97,7 +97,7 @@ function glassMergeCaptureBound(state: borrow mut UiBatchState, x0: Float, y0: F
 // Create (or re-create after a resize) the interior-cache texture, its
 // nearest-texel sampler and the bind group that rides the atlas slot around
 // copy runs. A fresh texture invalidates every key: nothing cached yet.
-function glassEnsureInteriorCache(state: borrow mut UiBatchState, graphics: borrow Graphics) {
+public function glassEnsureInteriorCache(state: borrow mut UiBatchState, graphics: borrow Graphics) {
     // Exactly the drawable, from the backend. The cache pass rasterizes the same
     // quads as the composite and the copy quads read the result back at their own
     // device position, so one texel per swapchain pixel is not an optimization —
@@ -158,7 +158,7 @@ function glassEnsureInteriorCache(state: borrow mut UiBatchState, graphics: borr
 
 // The cache pass: clear on first use, preserve previously cached interiors on
 // every later one.
-function glassInteriorCachePass(state: borrow mut UiBatchState) -> RenderPassDescriptor {
+public function glassInteriorCachePass(state: borrow mut UiBatchState) -> RenderPassDescriptor {
     var load: LoadAction = .Load
     if !state.glassCacheCleared {
         load = .Clear
@@ -191,7 +191,7 @@ function glassInteriorCachePass(state: borrow mut UiBatchState) -> RenderPassDes
 // Re-render each dirty surface's interior quads into the cache with the same
 // pipelines, bind groups and index ranges the live path would use — the cache
 // holds exactly the bytes the composite would have produced.
-function glassDrawCacheRanges(state: borrow mut UiBatchState, encoder: borrow mut RenderEncoder) {
+public function glassDrawCacheRanges(state: borrow mut UiBatchState, encoder: borrow mut RenderEncoder) {
     encoder.setIndexBuffer(state.indexBuffer, .Uint32)
     encoder.setBindGroup(atlasBindGroup(), state.atlasGroup)
     var r = 0

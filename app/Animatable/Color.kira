@@ -9,14 +9,14 @@ import Foundation
 // property animation of `backgroundColor` should look like. Every color channel
 // crossfade in the layer tree goes through here.
 
-function caSrgbToLinear(c: Float) -> Float {
+public function caSrgbToLinear(c: Float) -> Float {
     if c <= 0.04045 {
         return c / 12.92
     }
     return pow((c + 0.055) / 1.055, 2.4)
 }
 
-function caLinearToSrgb(c: Float) -> Float {
+public function caLinearToSrgb(c: Float) -> Float {
     let v = clamp(c, 0.0, 1.0)
     if v <= 0.0031308 {
         return v * 12.92
@@ -25,15 +25,23 @@ function caLinearToSrgb(c: Float) -> Float {
 }
 
 // One OKLab coordinate. Its own struct so the lerp reads as three numbers moving.
-@Derive(Lerp)
-struct CAOklab {
+public struct CAOklab {
     var l: Float = 0.0
     var a: Float = 0.0
     var b: Float = 0.0
     var alpha: Float = 1.0
 }
 
-function caColorToOklab(color: borrow CAColor) -> CAOklab {
+public function lerp(from: borrow CAOklab, to: borrow CAOklab, amount: Float) -> CAOklab {
+    return CAOklab {
+        l: lerp(from.l, to.l, amount),
+        a: lerp(from.a, to.a, amount),
+        b: lerp(from.b, to.b, amount),
+        alpha: lerp(from.alpha, to.alpha, amount)
+    }
+}
+
+public function caColorToOklab(color: borrow CAColor) -> CAOklab {
     let r = caSrgbToLinear(color.r)
     let g = caSrgbToLinear(color.g)
     let b = caSrgbToLinear(color.b)
@@ -51,7 +59,7 @@ function caColorToOklab(color: borrow CAColor) -> CAOklab {
     }
 }
 
-function caOklabToColor(lab: borrow CAOklab) -> CAColor {
+public function caOklabToColor(lab: borrow CAOklab) -> CAColor {
     let lc = lab.l + 0.3963377774 * lab.a + 0.2158037573 * lab.b
     let mc = lab.l - 0.1055613458 * lab.a - 0.0638541728 * lab.b
     let sc = lab.l - 0.0894841775 * lab.a - 1.2914855480 * lab.b
@@ -77,7 +85,7 @@ function caOklabToColor(lab: borrow CAOklab) -> CAColor {
 // would darken toward that black on its way out: a light band fading in or out
 // went through dark gray. Weighted, a clear end has no say in the color, and
 // only the alpha moves.
-function caColorLerp(from: borrow CAColor, to: borrow CAColor, t: Float) -> CAColor {
+public function caColorLerp(from: borrow CAColor, to: borrow CAColor, t: Float) -> CAColor {
     let a = caColorToOklab(from)
     let b = caColorToOklab(to)
     let alpha = a.alpha + (b.alpha - a.alpha) * t

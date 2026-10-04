@@ -14,7 +14,7 @@ import KiraGraphics
 // buffer, and how many quads it holds. The ACTIVE stream's fields are mirrored into
 // UiBatchState's contentsPtr/frameBase/quadCount so every emit path
 // stays stream-agnostic; switching streams writes the live count back here.
-struct UiStream {
+public struct UiStream {
     var buffer: GraphicsBuffer = emptyGraphicsBuffer()
     var contentsPtr: RawPtr
     var frameBase: Int = 0
@@ -42,7 +42,7 @@ struct UiStream {
 // An unallocated stream slot. A zero buffer id is what marks it: no backend hands
 // out id 0, so whoever reaches the slot first can tell it apart from a live one and
 // create its buffer in place.
-function placeholderStream() -> UiStream {
+public function placeholderStream() -> UiStream {
     return UiStream {
         contentsPtr: nullPointer()
     }
@@ -51,7 +51,7 @@ function placeholderStream() -> UiStream {
 // Give an unallocated slot its own vertex buffer, bind group and mode table. Called
 // the first time a frame reaches the slot — the first frame that stacks glass that
 // deep, or the first HUD refresh — so an app that never uses one pays nothing.
-function createDrawStream(state: borrow mut UiBatchState, graphics: borrow Graphics, index: DrawStreamId) {
+public function createDrawStream(state: borrow mut UiBatchState, graphics: borrow Graphics, index: DrawStreamId) {
     if state.streams[index.raw].buffer.id != 0 {
         return
     }
@@ -78,7 +78,7 @@ function createDrawStream(state: borrow mut UiBatchState, graphics: borrow Graph
 // own capture has been taken, so one shared pair would already have been overwritten.
 // Layer 0's capture is the only one every glass frame needs; the rest are created
 // the first time a frame stacks that deep (glassEnsureLayerScene).
-struct UiGlassLayer {
+public struct UiGlassLayer {
     // Capture of everything under layer k+1. `sceneSharpGroup` is how mode 3
     // reads it (the sharp tap); the blur dispatch binds the texture directly.
     var sceneTexture: GraphicsTexture = emptyGraphicsTexture()
@@ -96,7 +96,7 @@ struct UiGlassLayer {
     var softNearGroup: BindGroup = emptyBindGroup()
 }
 
-struct UiGlyphSlot {
+public struct UiGlyphSlot {
     var key: Int = 0
     var atlasX: Int = 0
     var atlasY: Int = 0
@@ -108,7 +108,7 @@ struct UiGlyphSlot {
     var valid: Bool = false
 }
 
-struct UiBatchState {
+public struct UiBatchState {
     // One reusable empty bind group for draw slots that have no resource. Creating
     // an empty group is not free: it allocates a native state object, and the
     // compositor needs this sentinel on every stream and every glass pass.
@@ -285,6 +285,9 @@ struct UiBatchState {
     // than the one-per-glyph the sub-region path cost on the backend that does.
     var atlasPixels: RawPtr
     var atlasDirty: Bool = false
+    // The rows of the atlas written since its last upload, `[top, bottom)`.
+    var atlasDirtyTop: Int = 0
+    var atlasDirtyBottom: Int = 0
     // Whether something failed to find room this frame — in the atlas, or in the
     // hash that points into it. What did not fit is drawn without ink this once
     // and is not cached, and the next frame starts the atlas over.

@@ -32,7 +32,7 @@ import KiraGraphics
 // So a reach is clamped to what the shorter half-extent leaves room for. Above
 // that the authored figure is untouched, which is every surface at rest; below
 // it the effect narrows with the surface instead of swallowing it.
-function glassReachFor(authored: Float, halfW: Float, halfH: Float) -> Float {
+public function glassReachFor(authored: Float, halfW: Float, halfH: Float) -> Float {
     var shorter = halfW
     if halfH < shorter {
         shorter = halfH
@@ -49,7 +49,7 @@ function glassReachFor(authored: Float, halfW: Float, halfH: Float) -> Float {
 // blurs are `edgeLightDodgeBlur` and `edgeLightBurnBlur` in
 // Shaders/GlassCommon.ksl, and a sigma is half a blur; the two literals here
 // must match them.
-function glassEdgeLightReach(material: borrow CAGlassMaterial) -> Float {
+public function glassEdgeLightReach(material: borrow CAGlassMaterial) -> Float {
     if material.edgeLightBurn < 1.0 {
         return 30.0 * 1.5
     }

@@ -26,14 +26,14 @@ import Foundation
 // Which of the document's two color schemes a surface is shading against.
 // "IC - Light" and "IC - Dark" are also in the set; they are byte-identical to
 // Light and Dark, so they are not separate cases here.
-enum FoundationScheme {
+public enum FoundationScheme {
     Light
     Dark
 }
 
 // The document's material ladder, thinnest to most opaque. These are the platform's
 // own names, kept so the table reads as the document reads.
-enum FoundationMaterialStyle {
+public enum FoundationMaterialStyle {
     Ultrathin
     Thin
     Regular
@@ -43,7 +43,7 @@ enum FoundationMaterialStyle {
 
 // The blend modes the tables actually use. A layer is composited onto what is
 // already there with one of these, at the layer's own opacity.
-enum FoundationBlendMode {
+public enum FoundationBlendMode {
     Normal
     // "Linear Dodge (Add)": base + layer.
     LinearDodge
@@ -61,7 +61,7 @@ enum FoundationBlendMode {
 
 // The id the vertex carries for a blend mode. The shader switches on this number,
 // so the mapping is part of the compositor's contract — append, never renumber.
-function foundationBlendId(mode: borrow FoundationBlendMode) -> Float {
+public function foundationBlendId(mode: borrow FoundationBlendMode) -> Float {
     match mode {
         Normal -> return 0.0
         LinearDodge -> return 1.0
@@ -79,7 +79,7 @@ function foundationBlendId(mode: borrow FoundationBlendMode) -> Float {
 // fields and has to be read back — the compositor hands the wash to the batch as
 // numbers, and anything downstream that needs to REASON about the material (rather
 // than shade it) has only those numbers to go on. Exact inverse of foundationBlendId.
-function foundationBlendModeFromId(id: Float) -> FoundationBlendMode {
+public function foundationBlendModeFromId(id: Float) -> FoundationBlendMode {
     if id < 0.5 { return .Normal }
     if id < 1.5 { return .LinearDodge }
     if id < 2.5 { return .ColorDodge }
@@ -93,7 +93,7 @@ function foundationBlendModeFromId(id: Float) -> FoundationBlendMode {
 }
 
 // One fill in a material's stack: what color, how opaque, blended how.
-struct FoundationTintLayer {
+public struct FoundationTintLayer {
     let color: Color = Color {
         r: 1.0,
         g: 1.0,
@@ -105,7 +105,7 @@ struct FoundationTintLayer {
 }
 
 // A material's fills, in the document's order. Two is all any of them use.
-struct FoundationTintStack {
+public struct FoundationTintStack {
     let lower: FoundationTintLayer = FoundationTintLayer {}
     let upper: FoundationTintLayer = FoundationTintLayer {}
     // The document's own background-blur radius for this material, in points.
@@ -113,7 +113,7 @@ struct FoundationTintStack {
 }
 
 // A neutral gray, written the way the document writes it: one 0-255 channel value.
-function foundationGray(level: Float) -> Color {
+public function foundationGray(level: Float) -> Color {
     let channel = level / 255.0
     return Color {
         r: channel,
@@ -123,17 +123,17 @@ function foundationGray(level: Float) -> Color {
     }
 }
 
-function foundationWhite() -> Color {
+public function foundationWhite() -> Color {
     return foundationGray(255.0)
 }
 
-function foundationBlack() -> Color {
+public function foundationBlack() -> Color {
     return foundationGray(0.0)
 }
 
 // The other one. A scheme change is a move between two tables, and the move needs
 // to know where it came from.
-function foundationSchemeOther(scheme: borrow FoundationScheme) -> FoundationScheme {
+public function foundationSchemeOther(scheme: borrow FoundationScheme) -> FoundationScheme {
     match scheme {
         Light -> return .Dark
         Dark -> return .Light
@@ -161,7 +161,7 @@ function foundationSchemeOther(scheme: borrow FoundationScheme) -> FoundationSch
 
 // One channel through one blend mode. Mirrors blendChannel in Shaders/UiBatch.ksl —
 // the ids come from foundationBlendId above, and the two must agree.
-function foundationBlendChannel(base: Float, layer: Float, mode: Float) -> Float {
+public function foundationBlendChannel(base: Float, layer: Float, mode: Float) -> Float {
     if mode < 0.5 {
         return layer
     }
@@ -213,7 +213,7 @@ function foundationBlendChannel(base: Float, layer: Float, mode: Float) -> Float
 }
 
 // What one layer does to a backdrop channel, at its own opacity.
-function foundationApplyLayer(base: Float, layer: borrow FoundationTintLayer, channel: Int) -> Float {
+public function foundationApplyLayer(base: Float, layer: borrow FoundationTintLayer, channel: Int) -> Float {
     if layer.alpha <= 0.0 {
         return base
     }
@@ -229,7 +229,7 @@ function foundationApplyLayer(base: Float, layer: borrow FoundationTintLayer, ch
 }
 
 // The whole stack applied to one backdrop channel.
-function foundationApplyStack(base: Float, stack: borrow FoundationTintStack, channel: Int) -> Float {
+public function foundationApplyStack(base: Float, stack: borrow FoundationTintStack, channel: Int) -> Float {
     let lower = foundationApplyLayer(base, stack.lower, channel)
     return foundationApplyLayer(lower, stack.upper, channel)
 }
@@ -237,7 +237,7 @@ function foundationApplyStack(base: Float, stack: borrow FoundationTintStack, ch
 // The single normal-blend layer that best reproduces a stack, found by probing it
 // against black and against white. A normal layer satisfies out = base(1-a) + c*a,
 // so the two probes give a = 1 - (white - black) and c = black / a directly.
-function foundationTintStackEquivalent(stack: borrow FoundationTintStack) -> FoundationTintLayer {
+public function foundationTintStackEquivalent(stack: borrow FoundationTintStack) -> FoundationTintLayer {
     let atBlackR = foundationApplyStack(0.0, stack, 0)
     let atBlackG = foundationApplyStack(0.0, stack, 1)
     let atBlackB = foundationApplyStack(0.0, stack, 2)
@@ -266,7 +266,7 @@ function foundationTintStackEquivalent(stack: borrow FoundationTintStack) -> Fou
     }
 }
 
-function clamp01(value: Float) -> Float {
+public function clamp01(value: Float) -> Float {
     if value < 0.0 {
         return 0.0
     }
@@ -279,7 +279,7 @@ function clamp01(value: Float) -> Float {
 // Partway from one material to another, `progress` running 0 (still entirely
 // `from`) to 1 (arrived at `to`). Both ends are the exact stack; everything between
 // is the interpolated equivalent described above.
-function foundationTintStackCrossfade(
+public function foundationTintStackCrossfade(
     from: borrow FoundationTintStack,
     to: borrow FoundationTintStack,
     progress: Float,
@@ -319,7 +319,7 @@ function foundationTintStackCrossfade(
 
 // The same stack at a fraction of its opacity. Colors and blend modes untouched —
 // only how much of each layer is there.
-function foundationTintStackFaded(
+public function foundationTintStackFaded(
     stack: borrow FoundationTintStack,
     amount: Float,
 ) -> FoundationTintStack {
@@ -341,7 +341,7 @@ function foundationTintStackFaded(
 // The same stack in a different hue: every layer's color multiplied by `tint`,
 // every opacity and blend mode left alone. White is the identity, which is why a
 // surface that names no tint gets the platform's table untouched.
-function foundationTintStackShaded(
+public function foundationTintStackShaded(
     stack: borrow FoundationTintStack,
     tint: borrow Color,
 ) -> FoundationTintStack {
@@ -374,7 +374,7 @@ function foundationTintStackShaded(
 // _Materials/Mode Options, Mode=Light. Each row is the variant's fill list read
 // bottom to top.
 
-function foundationMaterialTintLight(style: borrow FoundationMaterialStyle) -> FoundationTintStack {
+public function foundationMaterialTintLight(style: borrow FoundationMaterialStyle) -> FoundationTintStack {
     match style {
         // #FFFFFF 7% normal, then #FFFFFF 3% color dodge.
         Ultrathin -> return FoundationTintStack {
@@ -412,7 +412,7 @@ function foundationMaterialTintLight(style: borrow FoundationMaterialStyle) -> F
 
 // _Materials/Mode Options, Mode=Dark.
 
-function foundationMaterialTintDark(style: borrow FoundationMaterialStyle) -> FoundationTintStack {
+public function foundationMaterialTintDark(style: borrow FoundationMaterialStyle) -> FoundationTintStack {
     match style {
         // #000000 2% normal.
         Ultrathin -> return FoundationTintStack {
@@ -447,7 +447,7 @@ function foundationMaterialTintDark(style: borrow FoundationMaterialStyle) -> Fo
     }
 }
 
-function foundationMaterialTint(
+public function foundationMaterialTint(
     style: borrow FoundationMaterialStyle,
     scheme: borrow FoundationScheme,
 ) -> FoundationTintStack {
@@ -469,7 +469,7 @@ function foundationMaterialTint(
 // layer of #F6F6F6 at alpha 0.73. The two-layer form is what is written here,
 // because it is what the document says.
 
-function foundationLiquidGlassTint(scheme: borrow FoundationScheme) -> FoundationTintStack {
+public function foundationLiquidGlassTint(scheme: borrow FoundationScheme) -> FoundationTintStack {
     match scheme {
         // #FFFFFF 70% lighten, then #BFBFBF 10% darken.
         Light -> return FoundationTintStack {
@@ -496,14 +496,14 @@ function foundationLiquidGlassTint(scheme: borrow FoundationScheme) -> Foundatio
 //
 //   Light:  #DBDBDB linear burn x3,  ambient  black 25%, Y 8, blur 48
 //   Dark:   #A6A6A6 linear burn x3,  ambient  black 45%, Y 8, blur 48
-function foundationLiquidGlassBorderInk(scheme: borrow FoundationScheme) -> Float {
+public function foundationLiquidGlassBorderInk(scheme: borrow FoundationScheme) -> Float {
     match scheme {
         Light -> return 219.0 / 255.0
         Dark -> return 166.0 / 255.0
     }
 }
 
-function foundationLiquidGlassAmbientAlpha(scheme: borrow FoundationScheme) -> Float {
+public function foundationLiquidGlassAmbientAlpha(scheme: borrow FoundationScheme) -> Float {
     match scheme {
         Light -> return 0.25
         Dark -> return 0.45
@@ -515,7 +515,7 @@ function foundationLiquidGlassAmbientAlpha(scheme: borrow FoundationScheme) -> F
 // collection bound to the "Ultrathin - Light" example frame (224:56301). Fills are
 // opaque grays; labels are what text on the material inks itself.
 
-function foundationVibrantFill(level: Int, scheme: borrow FoundationScheme) -> Color {
+public function foundationVibrantFill(level: Int, scheme: borrow FoundationScheme) -> Color {
     match scheme {
         Light -> {
             // Primary #CCCCCC, secondary #E0E0E0, tertiary #EDEDED.
@@ -532,7 +532,7 @@ function foundationVibrantFill(level: Int, scheme: borrow FoundationScheme) -> C
     }
 }
 
-function foundationVibrantLabel(level: Int, scheme: borrow FoundationScheme) -> Color {
+public function foundationVibrantLabel(level: Int, scheme: borrow FoundationScheme) -> Color {
     match scheme {
         Light -> {
             // Primary #000000; secondary and tertiary are both #3D3D3D over a
@@ -548,7 +548,7 @@ function foundationVibrantLabel(level: Int, scheme: borrow FoundationScheme) -> 
 }
 
 // #0000001F — the non-opaque separator that rides on every material.
-function foundationSeparator(scheme: borrow FoundationScheme) -> Color {
+public function foundationSeparator(scheme: borrow FoundationScheme) -> Color {
     match scheme {
         Light -> return Color { r: 0.0, g: 0.0, b: 0.0, a: 31.0 / 255.0 }
         Dark -> return Color { r: 1.0, g: 1.0, b: 1.0, a: 31.0 / 255.0 }

@@ -8,7 +8,7 @@ import Foundation
 //   | a  c  tx |
 //   | b  d  ty |
 //   | 0  0  1  |
-@Derive(Copy)
+public @Derive(Copy)
 struct CAAffineTransform {
     var a: Float = 1.0
     var b: Float = 0.0
@@ -18,50 +18,50 @@ struct CAAffineTransform {
     var ty: Float = 0.0
 }
 
-function caIdentity() -> CAAffineTransform {
+public function caIdentity() -> CAAffineTransform {
     return CAAffineTransform {}
 }
 
-function caTranslation(x: Float, y: Float) -> CAAffineTransform {
+public function caTranslation(x: Float, y: Float) -> CAAffineTransform {
     return CAAffineTransform { a: 1.0, b: 0.0, c: 0.0, d: 1.0, tx: x, ty: y }
 }
 
-function caScaleTransform(sx: Float, sy: Float) -> CAAffineTransform {
+public function caScaleTransform(sx: Float, sy: Float) -> CAAffineTransform {
     return CAAffineTransform { a: sx, b: 0.0, c: 0.0, d: sy, tx: 0.0, ty: 0.0 }
 }
 
-function caRotation(radians: Float) -> CAAffineTransform {
+public function caRotation(radians: Float) -> CAAffineTransform {
     let cs = cos(radians)
     let sn = sin(radians)
     return CAAffineTransform { a: cs, b: sn, c: -sn, d: cs, tx: 0.0, ty: 0.0 }
 }
 
-function caIsIdentity(t: borrow CAAffineTransform) -> Bool {
+public function caIsIdentity(t: borrow CAAffineTransform) -> Bool {
     return t.a == 1.0 && t.b == 0.0 && t.c == 0.0 && t.d == 1.0 && t.tx == 0.0 && t.ty == 0.0
 }
 
-function caScaleX(t: borrow CAAffineTransform) -> Float {
+public function caScaleX(t: borrow CAAffineTransform) -> Float {
     return sqrt(t.a * t.a + t.b * t.b)
 }
 
-function caScaleY(t: borrow CAAffineTransform) -> Float {
+public function caScaleY(t: borrow CAAffineTransform) -> Float {
     return sqrt(t.c * t.c + t.d * t.d)
 }
 
-function caLengthScale(t: borrow CAAffineTransform) -> Float {
+public function caLengthScale(t: borrow CAAffineTransform) -> Float {
     return min(caScaleX(t), caScaleY(t))
 }
 
 // The scale text under `t` is shown at, exactly: text is set at its own size
 // and its glyphs scaled by this, so it follows a scale as smoothly as the
 // layers around it do.
-function caTextScale(t: borrow CAAffineTransform) -> Float {
+public function caTextScale(t: borrow CAAffineTransform) -> Float {
     return sqrt(max(caScaleX(t) * caScaleY(t), 0.0001))
 }
 
 // `outer` applied to the result of `inner`: outer * inner, so a child's own
 // transform composes under its parent's.
-function caConcat(outer: borrow CAAffineTransform, inner: borrow CAAffineTransform) -> CAAffineTransform {
+public function caConcat(outer: borrow CAAffineTransform, inner: borrow CAAffineTransform) -> CAAffineTransform {
     return CAAffineTransform {
         a: outer.a * inner.a + outer.c * inner.b,
         b: outer.b * inner.a + outer.d * inner.b,
@@ -72,22 +72,22 @@ function caConcat(outer: borrow CAAffineTransform, inner: borrow CAAffineTransfo
     }
 }
 
-function caApplyX(t: borrow CAAffineTransform, x: Float, y: Float) -> Float {
+public function caApplyX(t: borrow CAAffineTransform, x: Float, y: Float) -> Float {
     return t.a * x + t.c * y + t.tx
 }
 
-function caApplyY(t: borrow CAAffineTransform, x: Float, y: Float) -> Float {
+public function caApplyY(t: borrow CAAffineTransform, x: Float, y: Float) -> Float {
     return t.b * x + t.d * y + t.ty
 }
 
-function caApplyPoint(t: borrow CAAffineTransform, x: Float, y: Float) -> Point {
+public function caApplyPoint(t: borrow CAAffineTransform, x: Float, y: Float) -> Point {
     return Point { x: caApplyX(t, x, y), y: caApplyY(t, x, y) }
 }
 
 // The axis-aligned bounding box of a rectangle carried through the transform.
 // Rotation turns a rect into a quad, so the four corners are mapped and the
 // extremes taken — the box a clip or a damage rect is measured in.
-function caApplyRect(t: borrow CAAffineTransform, rect: borrow Rect) -> Rect {
+public function caApplyRect(t: borrow CAAffineTransform, rect: borrow Rect) -> Rect {
     let x0 = rect.x
     let y0 = rect.y
     let x1 = rect.x + rect.width
@@ -110,11 +110,11 @@ function caApplyRect(t: borrow CAAffineTransform, rect: borrow Rect) -> Rect {
 // The inverse, for hit testing: a screen point is carried back into a layer's
 // own coordinates and tested against its untransformed bounds, so a rotated or
 // scaled layer is pressable where it is drawn rather than where it was laid out.
-function caDeterminant(t: borrow CAAffineTransform) -> Float {
+public function caDeterminant(t: borrow CAAffineTransform) -> Float {
     return t.a * t.d - t.b * t.c
 }
 
-function caInvert(t: borrow CAAffineTransform) -> CAAffineTransform {
+public function caInvert(t: borrow CAAffineTransform) -> CAAffineTransform {
     let det = caDeterminant(t)
     if det == 0.0 {
         // A degenerate transform (a zero scale) maps everything to a line and
@@ -143,7 +143,7 @@ function caInvert(t: borrow CAAffineTransform) -> CAAffineTransform {
 // about its center in the vertex stage) rather than an axis-aligned bounding box.
 // Assumes a shear-free transform (translate/rotate/scale), which UI composition
 // produces.
-@Derive(Copy)
+public @Derive(Copy)
 struct CAOrientedQuad {
     var centerX: Float = 0.0
     var centerY: Float = 0.0
@@ -153,7 +153,7 @@ struct CAOrientedQuad {
     var rotSin: Float = 0.0
 }
 
-function caOrientedQuad(world: borrow CAAffineTransform, width: Float, height: Float) -> CAOrientedQuad {
+public function caOrientedQuad(world: borrow CAAffineTransform, width: Float, height: Float) -> CAOrientedQuad {
     let center = caApplyPoint(world, width / 2.0, height / 2.0)
     let sx = sqrt(world.a * world.a + world.b * world.b)
     let sy = sqrt(world.c * world.c + world.d * world.d)
@@ -173,10 +173,10 @@ function caOrientedQuad(world: borrow CAAffineTransform, width: Float, height: F
     }
 }
 
-function caRectContains(rect: borrow Rect, x: Float, y: Float) -> Bool {
+public function caRectContains(rect: borrow Rect, x: Float, y: Float) -> Bool {
     return x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height
 }
 
-function caLocalContains(width: Float, height: Float, x: Float, y: Float) -> Bool {
+public function caLocalContains(width: Float, height: Float, x: Float, y: Float) -> Bool {
     return x >= 0.0 && x <= width && y >= 0.0 && y <= height
 }

@@ -100,13 +100,26 @@ static void icon_set_free(IconPathSet *set) {
 
 /* ------------------------------------------------------------------- hash */
 
+/* Every symbol lookup hashes its whole SVG source, a kilobyte or two, several
+ * times per rebuild -- so the source is folded eight bytes per step rather than
+ * one. Only this process compares the values; nothing stores them. */
 int64_t kira_icon_hash(const char *svg_utf8) {
     if (svg_utf8 == NULL) return 0;
-    uint64_t hash = 1469598103934665603ULL; /* FNV offset basis */
-    for (const unsigned char *p = (const unsigned char *)svg_utf8; *p != 0; p++) {
-        hash ^= (uint64_t)(*p);
-        hash *= 1099511628211ULL; /* FNV prime */
+    size_t length = strlen(svg_utf8);
+    uint64_t hash = 1469598103934665603ULL ^ ((uint64_t)length * 0x9E3779B97F4A7C15ULL);
+    size_t at = 0;
+    for (; at + 8 <= length; at += 8) {
+        uint64_t word;
+        memcpy(&word, svg_utf8 + at, 8);
+        hash = (hash ^ word) * 0xFF51AFD7ED558CCDULL;
+        hash ^= hash >> 32;
     }
+    for (; at < length; at++) {
+        hash = (hash ^ (unsigned char)svg_utf8[at]) * 1099511628211ULL;
+    }
+    hash ^= hash >> 29;
+    hash *= 0xC4CEB9FE1A85EC53ULL;
+    hash ^= hash >> 32;
     hash &= 0x7FFFFFFFFFFFFFFFULL;
     if (hash == 0) hash = 1;
     return (int64_t)hash;
@@ -591,10 +604,14 @@ static void icon_xf_apply(const IconXf *xf, IconPathSet *set) {
  *
  * Measured off a small rasterization rather than off the path data, because ink
  * is what the STROKES cover and not where the outlines run. The answers are
- * cached: a bar redraws the same handful of symbols every frame.
+ * cached: every frame measures every symbol on screen several times over (top,
+ * bottom, aspect, density), so a miss is a full parse and rasterization. The
+ * cache is hash-addressed and sized well past any screen's symbol set — a page
+ * of forty symbols through a 32-entry ring missed on every call and spent most
+ * of each frame re-measuring.
  */
 #define ICON_INK_PROBE 64
-#define ICON_INK_CACHE 32
+#define ICON_INK_CACHE 1024
 
 typedef struct {
     int64_t hash;
@@ -609,7 +626,6 @@ typedef struct {
 } IconInkEntry;
 
 static IconInkEntry icon_ink_cache[ICON_INK_CACHE];
-static int32_t icon_ink_next = 0;
 
 static int32_t icon_ink_measure(const char *svg_utf8, IconInkEntry *out) {
     uint8_t *probe = (uint8_t *)malloc((size_t)ICON_INK_PROBE * (size_t)ICON_INK_PROBE);
@@ -645,18 +661,23 @@ static int32_t icon_ink_measure(const char *svg_utf8, IconInkEntry *out) {
 static const IconInkEntry *icon_ink_entry(const char *svg_utf8) {
     if (svg_utf8 == NULL) return NULL;
     int64_t hash = kira_icon_hash(svg_utf8);
-    for (int32_t i = 0; i < ICON_INK_CACHE; i++) {
-        if (icon_ink_cache[i].valid && icon_ink_cache[i].hash == hash) {
-            return &icon_ink_cache[i];
-        }
+    uint32_t home = (uint32_t)((uint64_t)hash % (uint64_t)ICON_INK_CACHE);
+    uint32_t slot = home;
+    for (int32_t probe = 0; probe < ICON_INK_CACHE; probe++) {
+        IconInkEntry *entry = &icon_ink_cache[slot];
+        if (!entry->valid) break;
+        if (entry->hash == hash) return entry;
+        slot = (slot + 1) % ICON_INK_CACHE;
     }
     IconInkEntry measured;
     memset(&measured, 0, sizeof(measured));
     if (!icon_ink_measure(svg_utf8, &measured)) return NULL;
     measured.hash = hash;
-    int32_t slot = icon_ink_next;
+    /* A full table (more distinct symbols than slots) overwrites the home slot,
+     * which can strand a later probe chain; that costs a re-measure, never a
+     * wrong answer, since every hit is checked against the hash. */
+    if (icon_ink_cache[slot].valid) slot = home;
     icon_ink_cache[slot] = measured;
-    icon_ink_next = (icon_ink_next + 1) % ICON_INK_CACHE;
     return &icon_ink_cache[slot];
 }
 

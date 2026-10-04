@@ -11,13 +11,13 @@ import Foundation
 // where a sum of per-frame deltas rounded to. `caChannelSampleAt` is the source
 // of truth; the delta form (`advance`) is the same thing sampled at clock+dt.
 
-enum CAAnimMode {
+public enum CAAnimMode {
     Immediate
     Ease
     Spring
 }
 
-struct CAChannel {
+public struct CAChannel {
     var model: Float = 0.0
     var presentation: Float = 0.0
     var animating: Bool = false
@@ -30,11 +30,11 @@ struct CAChannel {
     var spring: MotionSpringState = MotionSpringState {}
 }
 
-function caChannel(value: Float) -> CAChannel {
+public function caChannel(value: Float) -> CAChannel {
     return CAChannel { model: value, presentation: value, animating: false, mode: .Immediate }
 }
 
-function caChannelSetImmediate(ch: borrow mut CAChannel, target: Float) {
+public function caChannelSetImmediate(ch: borrow mut CAChannel, target: Float) {
     ch.model = target
     ch.presentation = target
     ch.animating = false
@@ -42,7 +42,7 @@ function caChannelSetImmediate(ch: borrow mut CAChannel, target: Float) {
     return
 }
 
-function caChannelStartEase(ch: borrow mut CAChannel, target: Float, duration: Float, easing: MotionEasing, now: Float) {
+public function caChannelStartEase(ch: borrow mut CAChannel, target: Float, duration: Float, easing: MotionEasing, now: Float) {
     if target == ch.presentation {
         caChannelSetImmediate(ch, target)
         return
@@ -62,13 +62,13 @@ function caChannelStartEase(ch: borrow mut CAChannel, target: Float, duration: F
 // new one — a flick caught mid-flight does not restart from rest. The spring's
 // own elapsed is synced to absolute time first, so the retarget samples the real
 // current point before it resets.
-function caChannelStartSpring(ch: borrow mut CAChannel, spring: MotionSpring, now: Float) {
+public function caChannelStartSpring(ch: borrow mut CAChannel, spring: MotionSpring, now: Float, velocity: Float = 0.0) {
     let target = spring.target
     if ch.mode == .Spring && ch.animating {
         ch.spring.elapsed = max(now - ch.startTime, 0.0)
         motionSpringRetarget(ch.spring, target)
     } else {
-        ch.spring = motionSpringStart(move spring, ch.presentation, 0.0)
+        ch.spring = motionSpringStart(move spring, ch.presentation, velocity)
     }
     ch.model = target
     ch.startTime = now
@@ -79,7 +79,7 @@ function caChannelStartSpring(ch: borrow mut CAChannel, spring: MotionSpring, no
 
 // Sample at absolute time `now`; returns whether the channel is still moving. A
 // settled channel writes its exact target so nothing drifts short of it.
-function caChannelSampleAt(ch: borrow mut CAChannel, now: Float) -> Bool {
+public function caChannelSampleAt(ch: borrow mut CAChannel, now: Float) -> Bool {
     if !ch.animating {
         return false
     }
@@ -113,7 +113,7 @@ function caChannelSampleAt(ch: borrow mut CAChannel, now: Float) -> Bool {
     }
 }
 
-function caChannelVelocity(ch: borrow CAChannel, now: Float) -> Float {
+public function caChannelVelocity(ch: borrow CAChannel, now: Float) -> Float {
     if ch.mode == .Spring && ch.animating {
         let sample = motionSpringSample(ch.spring, max(now - ch.startTime, 0.0))
         return sample.velocity
@@ -125,28 +125,28 @@ function caChannelVelocity(ch: borrow CAChannel, now: Float) -> Float {
 // channel that carries the same ease/spring machinery every scalar does. The
 // presentation color is the OKLab mix at the progress value, so a color fade
 // is timed exactly like a position and interrupts the same way.
-struct CAColorChannel {
+public struct CAColorChannel {
     var from: CAColor = CAColor {}
     var model: CAColor = CAColor {}
     var progress: CAChannel = CAChannel { model: 1.0, presentation: 1.0 }
 }
 
-function caColorChannel(color: CAColor) -> CAColorChannel {
+public function caColorChannel(color: CAColor) -> CAColorChannel {
     return CAColorChannel { from: color, model: color, progress: caChannel(1.0) }
 }
 
-function caColorChannelModel(ch: borrow CAColorChannel) -> CAColor {
+public function caColorChannelModel(ch: borrow CAColorChannel) -> CAColor {
     return ch.model
 }
 
-function caColorChannelPresentation(ch: borrow CAColorChannel) -> CAColor {
+public function caColorChannelPresentation(ch: borrow CAColorChannel) -> CAColor {
     return caColorLerp(ch.from, ch.model, ch.progress.presentation)
 }
 
 // Retarget the color: the current presentation becomes the new origin and the
 // progress restarts 0->1 toward the new color, so an interrupted fade continues
 // from where it visibly is rather than snapping to the old endpoint.
-function caColorChannelSet(ch: borrow mut CAColorChannel, target: borrow CAColor, immediate: Bool, spring: Bool, curve: borrow MotionCurveName, duration: Float, easing: MotionEasing, reducedMotion: Bool, now: Float) {
+public function caColorChannelSet(ch: borrow mut CAColorChannel, target: borrow CAColor, immediate: Bool, timing: borrow CATiming, now: Float) {
     if immediate {
         ch.from = target
         ch.model = target
@@ -156,18 +156,18 @@ function caColorChannelSet(ch: borrow mut CAColorChannel, target: borrow CAColor
     ch.from = caColorChannelPresentation(ch)
     ch.model = target
     caChannelSetImmediate(ch.progress, 0.0)
-    if spring {
-        caChannelStartSpring(ch.progress, motionCurveFor(curve, 1.0, reducedMotion), now)
+    if timing.mode == .Spring {
+        caChannelStartSpring(ch.progress, caTimingSpring(timing, 1.0), now, timing.velocity)
     } else {
-        var dur = duration
-        if reducedMotion && dur > 0.2 {
+        var dur = timing.duration
+        if timing.reducedMotion && dur > 0.2 {
             dur = 0.2
         }
-        caChannelStartEase(ch.progress, 1.0, dur, move easing, now)
+        caChannelStartEase(ch.progress, 1.0, dur, caEaseCopy(timing.easing), now)
     }
     return
 }
 
-function caColorChannelSampleAt(ch: borrow mut CAColorChannel, now: Float) -> Bool {
+public function caColorChannelSampleAt(ch: borrow mut CAColorChannel, now: Float) -> Bool {
     return caChannelSampleAt(ch.progress, now)
 }

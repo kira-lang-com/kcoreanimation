@@ -20,7 +20,7 @@ import KiraGraphics
 // native library to draw a rectangle is not portable. The cost is per-float
 // writes through the runtime's raw-memory helpers, which are on every native
 // link line and need no platform to have anything.
-@Native
+public @Native
 function writeQuadRecord(
     ptr: RawPtr, baseFloats: U64,
     px0: Float, py0: Float, px1: Float, py1: Float,
@@ -91,7 +91,7 @@ function writeQuadRecord(
 // The material block that follows a record: what a liquid-glass surface shades
 // itself with. Mode 3 is the only mode whose shader reads any of it, so it is the
 // only mode that writes it.
-@Native
+public @Native
 function writeQuadMaterial(
     ptr: RawPtr, baseFloats: U64,
     m0: Float, m1: Float, m2: Float, m3: Float,
@@ -132,13 +132,13 @@ function writeQuadMaterial(
 // (fopen/fwrite/fclose live in the Metal backend's foreign surface and are reused
 // below through their Kira functions; a second @FFI.Extern binding of the same C
 // symbol would be dropped).
-@FFI.Extern { library: kiratext, symbol: fread, abi: c }
+public @FFI.Extern { library: kiratext, symbol: fread, abi: c }
 function readFileBytes(ptr: RawPtr, size: U64, count: U64, stream: RawPtr): U64
 
 // Copy a Kira string's UTF-8 bytes into a NUL-terminated C buffer (caller frees).
 // Needed because fopen's one program-wide binding takes a RawPtr path (the shape
 // the image-dump hook needed for getenv-returned paths).
-@Native
+public @Native
 function allocateCPath(path: borrow String) -> RawPtr {
     let buf = allocateBytes(U64(path.count * 4 + 1))
     let indexSlot: int32_t_ptr = allocateBytes(8)
@@ -188,7 +188,7 @@ function allocateCPath(path: borrow String) -> RawPtr {
 // that refused the upload are different problems with different fixes, and
 // answering both with a zero is what hid the first one behind a message about
 // the second.
-function loadRgbaTexture(graphics: borrow Graphics, path: borrow String, width: Int, height: Int) -> Result<Int, ResourceFailure> {
+public function loadRgbaTexture(graphics: borrow Graphics, path: borrow String, width: Int, height: Int) -> Result<Int, ResourceFailure> {
     let total = width * height * 4
     let pixels = readFileRange(path, 0, total)
     if pixels.count != total {
@@ -216,21 +216,21 @@ function loadRgbaTexture(graphics: borrow Graphics, path: borrow String, width: 
 // this: a missing variable and a variable set to "" both fail to open a file and
 // both return 0. The difference is intent — an empty value is a run saying "no
 // image here", which callers use to skip their fallback paths entirely.
-function environmentValueIsEmpty(name: borrow String) -> Bool {
+public function environmentValueIsEmpty(name: borrow String) -> Bool {
     return environmentIsSet(name) && environmentValue(name).count == 0
 }
 
 // As above, but the path is the VALUE of environment variable `envName` (the
 // image-dump-style hookup for scripted runs).
-function loadRgbaTextureFromEnvironment(graphics: borrow Graphics, envName: borrow String, width: Int, height: Int) -> Result<Int, ResourceFailure> {
+public function loadRgbaTextureFromEnvironment(graphics: borrow Graphics, envName: borrow String, width: Int, height: Int) -> Result<Int, ResourceFailure> {
     if !environmentIsSet(envName) {
         return .Error(.AssetUnreadable)
     }
     return loadRgbaTexture(graphics, environmentValue(envName), width, height)
 }
 
-function glyphBitmapSize() -> U64 { return 32 }
-function verticalMetricsSize() -> U64 { return 12 }
+public function glyphBitmapSize() -> U64 { return 32 }
+public function verticalMetricsSize() -> U64 { return 12 }
 
 // The gradient block that follows the material one: the color the far end of
 // the quad takes, and which way "far" runs.
@@ -239,7 +239,7 @@ function verticalMetricsSize() -> U64 { return 12 }
 // record's slot is reused by whatever quad lands in it next, so a block left
 // unwritten carries the last gradient that occupied it — a flat surface would
 // inherit a fade from a quad two frames ago.
-@Native
+public @Native
 function writeQuadGradient(
     ptr: RawPtr, baseFloats: U64,
     r: Float, g: Float, b: Float, a: Float, axis: Float,
@@ -270,7 +270,7 @@ function writeQuadGradient(
 // reason the gradient block is: a ring slot is reused, and an unwritten block
 // carries whatever the last quad to occupy it left there — which for this one
 // would be a phantom second shape.
-function writeQuadMorph(
+public function writeQuadMorph(
     ptr: RawPtr, baseFloats: U64,
     x: Float, y: Float, halfW: Float, halfH: Float, radius: Float, blend: Float,
 ) {
@@ -292,7 +292,7 @@ function writeQuadMorph(
 // encode the squircle in `mode` (0.25), but a glass surface's `mode` already
 // says which of the five region pipelines the patch belongs to, and there is no
 // room left in it for what SHAPE the surface is.
-function writeQuadShapeKind(ptr: RawPtr, baseFloats: U64, kind: Float) {
+public function writeQuadShapeKind(ptr: RawPtr, baseFloats: U64, kind: Float) {
     writeFloat32(ptr, (baseFloats + U64(65)) * U64(4), kind)
     return
 }
@@ -306,7 +306,7 @@ function writeQuadShapeKind(ptr: RawPtr, baseFloats: U64, kind: Float) {
 //
 // The identity is (1, 0), which is what every quad that is not turned carries,
 // and the rotation below reduces to exactly the unrotated corner for it.
-function writeQuadRotation(ptr: RawPtr, baseFloats: U64, cosine: Float, sine: Float) {
+public function writeQuadRotation(ptr: RawPtr, baseFloats: U64, cosine: Float, sine: Float) {
     writeFloat32(ptr, (baseFloats + U64(66)) * U64(4), cosine)
     writeFloat32(ptr, (baseFloats + U64(67)) * U64(4), sine)
     return

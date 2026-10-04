@@ -12,9 +12,11 @@ import Foundation
 //
 // A press is also reported against the interactive surface it landed on, if
 // any: the topmost `interactive` layer under the point, whatever control is on
-// top of it. The control acts; the surface moves with the press.
+// top of it. The control acts; the surface moves with the press. And it is
+// reported against the innermost scrolling layer the point is in, which is
+// where a wheel or a pan over it goes.
 
-struct CAHitResult {
+public struct CAHitResult {
     var hit: Bool = false
     var layer: LayerId = LayerId(0)
     var hitKey: Int = 0
@@ -38,9 +40,15 @@ struct CAHitResult {
     var surfaceY: Float = 0.0
     var surfaceWidth: Float = 0.0
     var surfaceHeight: Float = 0.0
+    // Whether a press held on that surface slides between its controls.
+    var surfaceSlides: Bool = false
+    // The innermost scrolling layer under the point, zero when there is none:
+    // its layer and key.
+    var scrollLayer: LayerId = LayerId(0)
+    var scrollKey: Int = 0
 }
 
-function caDrawItemContainsPoint(item: borrow CADrawItem, x: Float, y: Float) -> Bool {
+public function caDrawItemContainsPoint(item: borrow CADrawItem, x: Float, y: Float) -> Bool {
     if item.opacity <= 0.0 {
         return false
     }
@@ -56,15 +64,16 @@ function caDrawItemContainsPoint(item: borrow CADrawItem, x: Float, y: Float) ->
     )
 }
 
-function caHitTest(items: borrow [CADrawItem], x: Float, y: Float) -> CAHitResult {
+public function caHitTest(items: borrow [CADrawItem], x: Float, y: Float) -> CAHitResult {
     // Back to front: the last item that covers the point is the one on top. The
-    // walk goes on past the control for the surface it sits on, which is
-    // painted before it.
+    // walk goes on past the control for the surface it sits on, and the
+    // scrolling layer it sits in, which are painted before it.
     var result = CAHitResult {}
     var surfaceFound = false
+    var scrollFound = false
     for k in 0..items.count {
         let item = items[items.count - 1 - k]
-        let wanted = (item.hit && !result.hit) || (item.interactive && !surfaceFound)
+        let wanted = (item.hit && !result.hit) || (item.interactive && !surfaceFound) || (item.scrolls && !scrollFound)
         if !wanted || !caDrawItemContainsPoint(item, x, y) {
             continue
         }
@@ -85,8 +94,14 @@ function caHitTest(items: borrow [CADrawItem], x: Float, y: Float) -> CAHitResul
             result.surfaceY = caApplyY(inv, x, y)
             result.surfaceWidth = item.localWidth
             result.surfaceHeight = item.localHeight
+            result.surfaceSlides = item.slidesPress
         }
-        if result.hit && surfaceFound {
+        if item.scrolls && !scrollFound {
+            scrollFound = true
+            result.scrollLayer = item.layer
+            result.scrollKey = item.hitKey
+        }
+        if result.hit && surfaceFound && scrollFound {
             return result
         }
     }
@@ -95,7 +110,7 @@ function caHitTest(items: borrow [CADrawItem], x: Float, y: Float) -> CAHitResul
 
 // The window-space box of a drawn item: its four corners carried through its
 // transform, and the upright rectangle around them.
-function caHitBounds(result: borrow mut CAHitResult, item: borrow CADrawItem) {
+public function caHitBounds(result: borrow mut CAHitResult, item: borrow CADrawItem) {
     let w = item.localWidth
     let h = item.localHeight
     let t = item.transform
@@ -119,6 +134,6 @@ function caHitBounds(result: borrow mut CAHitResult, item: borrow CADrawItem) {
 }
 
 // Hit test straight from the tree: flatten this frame's presentation and pick.
-function caHitTestTree(tree: borrow CALayerTree, x: Float, y: Float) -> CAHitResult {
+public function caHitTestTree(tree: borrow CALayerTree, x: Float, y: Float) -> CAHitResult {
     return caHitTest(caFlatten(tree), x, y)
 }

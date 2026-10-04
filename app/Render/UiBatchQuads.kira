@@ -260,7 +260,7 @@ extend UiBatch {
 // Kept rather than rebuilt because an id here names a shared surface, which
 // outlives the frame -- so a window holding three components pays three
 // creations for the run of the process, not three per frame.
-function externalCacheEnsure(state: borrow mut UiBatchState, graphics: borrow Graphics, textureId: TextureHandle) {
+public function externalCacheEnsure(state: borrow mut UiBatchState, graphics: borrow Graphics, textureId: TextureHandle) {
     if textureId.raw <= 0 {
         return
     }
@@ -277,7 +277,7 @@ function externalCacheEnsure(state: borrow mut UiBatchState, graphics: borrow Gr
     return
 }
 
-function externalCacheGroup(state: borrow UiBatchState, textureId: TextureHandle) -> BindGroup {
+public function externalCacheGroup(state: borrow UiBatchState, textureId: TextureHandle) -> BindGroup {
         for index in 0..state.externalCacheIds.count {
         if state.externalCacheIds[index] == textureId {
             return shareBindGroup(state.externalCacheGroups[index])
@@ -294,7 +294,7 @@ function externalCacheGroup(state: borrow UiBatchState, textureId: TextureHandle
 // the texture in a slot mode 2 never reads, and the tap fell back to the group
 // underneath it -- which is the glyph atlas, so a sidebar mid-swipe crossfaded
 // into a page of packed glyphs.
-function secondaryCacheEnsure(state: borrow mut UiBatchState, graphics: borrow Graphics, textureId: TextureHandle) {
+public function secondaryCacheEnsure(state: borrow mut UiBatchState, graphics: borrow Graphics, textureId: TextureHandle) {
     if textureId.raw <= 0 {
         return
     }
@@ -314,7 +314,7 @@ function secondaryCacheEnsure(state: borrow mut UiBatchState, graphics: borrow G
     return
 }
 
-function secondaryCacheGroup(state: borrow UiBatchState, textureId: TextureHandle) -> BindGroup {
+public function secondaryCacheGroup(state: borrow UiBatchState, textureId: TextureHandle) -> BindGroup {
         for index in 0..state.secondaryCacheIds.count {
         if state.secondaryCacheIds[index] == textureId {
             return shareBindGroup(state.secondaryCacheGroups[index])
@@ -325,7 +325,7 @@ function secondaryCacheGroup(state: borrow UiBatchState, textureId: TextureHandl
 }
 
 // The texture a given quad crossfades towards, or 0 for one that does not.
-function quadSecondaryAt(state: borrow UiBatchState, modeStream: DrawStreamId, quad: Int) -> TextureHandle {
+public function quadSecondaryAt(state: borrow UiBatchState, modeStream: DrawStreamId, quad: Int) -> TextureHandle {
     if quad < 0 || quad >= state.streams[modeStream.raw].quadSecondaries.count {
         return TextureHandle(0)
     }
@@ -333,11 +333,60 @@ function quadSecondaryAt(state: borrow UiBatchState, modeStream: DrawStreamId, q
 }
 
 // The external texture a given quad samples, or 0 for one that samples none.
-function quadExternalAt(state: borrow UiBatchState, modeStream: DrawStreamId, quad: Int) -> TextureHandle {
+public function quadExternalAt(state: borrow UiBatchState, modeStream: DrawStreamId, quad: Int) -> TextureHandle {
     if quad < 0 || quad >= state.streams[modeStream.raw].quadExternals.count {
         return TextureHandle(0)
     }
     return state.streams[modeStream.raw].quadExternals[quad]
+}
+
+// A texture this batch may have bound is gone. Its id goes back into
+// circulation, and whatever the batch kept under it would bind the id's next
+// occupant -- or the freed slot itself, whose word is by then the link to the
+// next free id. So every group made for it goes with it.
+extend UiBatch {
+    function forgetTexture(graphics: borrow Graphics, textureId: TextureHandle) {
+        var state = nativeRecover<UiBatchState>(self.storage)
+        var externalIds: [TextureHandle] = []
+        var externalGroups: [BindGroup] = []
+        for index in 0..state.externalCacheIds.count {
+            if state.externalCacheIds[index] == textureId {
+                graphics.destroyBindGroup(state.externalCacheGroups[index])
+            } else {
+                externalIds.append(state.externalCacheIds[index])
+                externalGroups.append(shareBindGroup(state.externalCacheGroups[index]))
+            }
+        }
+        state.externalCacheIds = move externalIds
+        state.externalCacheGroups = move externalGroups
+        var secondaryIds: [TextureHandle] = []
+        var secondaryGroups: [BindGroup] = []
+        for index in 0..state.secondaryCacheIds.count {
+            if state.secondaryCacheIds[index] == textureId {
+                graphics.destroyBindGroup(state.secondaryCacheGroups[index])
+            } else {
+                secondaryIds.append(state.secondaryCacheIds[index])
+                secondaryGroups.append(shareBindGroup(state.secondaryCacheGroups[index]))
+            }
+        }
+        state.secondaryCacheIds = move secondaryIds
+        state.secondaryCacheGroups = move secondaryGroups
+        // The backdrop slots are filed under an id too; left bound, the next
+        // texture to take it would read as the same backdrop.
+        if state.externalBindReady && state.externalTextureId == textureId {
+            graphics.destroyBindGroup(state.externalGroup)
+            state.externalGroup = unboundBindGroup()
+            state.externalTextureId = TextureHandle(0)
+            state.externalBindReady = false
+        }
+        if state.secondaryExternalBindReady && state.secondaryExternalTextureId == textureId {
+            graphics.destroyBindGroup(state.secondaryExternalGroup)
+            state.secondaryExternalGroup = unboundBindGroup()
+            state.secondaryExternalTextureId = TextureHandle(0)
+            state.secondaryExternalBindReady = false
+        }
+        return
+    }
 }
 
 // Register the external texture the frame's BACKDROP reads: what glass blurs and

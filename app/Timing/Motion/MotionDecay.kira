@@ -15,13 +15,13 @@ import Foundation
 // A rate rather than a deceleration, and per MILLISECOND rather than per
 // second, because that is the unit the constant is stated in: after one
 // millisecond a fling is moving at 0.998 of its speed, after two at 0.998².
-function motionDecayRateNormal() -> Float {
+public function motionDecayRateNormal() -> Float {
     return 0.998
 }
 
 // The faster stop, for surfaces that should not coast: a picker, a short list
 // where a normal fling would run off the end and bounce every time.
-function motionDecayRateFast() -> Float {
+public function motionDecayRateFast() -> Float {
     return 0.99
 }
 
@@ -36,14 +36,14 @@ function motionDecayRateFast() -> Float {
 // The integral of `v₀·rateᵗ` from zero to infinity, which is `-v₀/ln(rate)`.
 // The `rate/(1-rate)` form seen in the wild is the discrete sum of the same
 // series and agrees with this to about a part in a thousand.
-function motionDecayProjection(velocity: Float, rate: Float) -> Float {
+public function motionDecayProjection(velocity: Float, rate: Float) -> Float {
     let perMillisecond = velocity / 1000.0
     let decay = log(clamp(rate, 0.0001, 0.9999))
     return -perMillisecond / decay
 }
 
 // How far a fling has traveled `seconds` in.
-function motionDecayOffset(velocity: Float, rate: Float, seconds: Float) -> Float {
+public function motionDecayOffset(velocity: Float, rate: Float, seconds: Float) -> Float {
     let perMillisecond = velocity / 1000.0
     let decay = log(clamp(rate, 0.0001, 0.9999))
     let milliseconds = max(seconds, 0.0) * 1000.0
@@ -52,16 +52,49 @@ function motionDecayOffset(velocity: Float, rate: Float, seconds: Float) -> Floa
 
 // How fast it is still moving `seconds` in. A release that lands mid-fling
 // hands this to whatever takes over, so the two are one continuous motion.
-function motionDecayVelocity(velocity: Float, rate: Float, seconds: Float) -> Float {
+public function motionDecayVelocity(velocity: Float, rate: Float, seconds: Float) -> Float {
     return velocity * pow(rate, max(seconds, 0.0) * 1000.0)
 }
 
-// When a fling has slowed to where it is no longer worth a frame.
-//
-// Half a point per second: below that the animation would keep asking for
-// frames to move a distance no display can show.
-function motionDecayIsSpent(velocity: Float) -> Bool {
-    return abs(velocity) < 0.5
+// What is left of a speed after `milliseconds` of decay: `rateᵗ`.
+public function motionDecayKept(rate: Float, milliseconds: Float) -> Float {
+    return exp(milliseconds * log(clamp(rate, 0.0001, 0.9999)))
+}
+
+// How far a fling moving at `velocity` points per millisecond goes in
+// `milliseconds`: the platform's own step, the sum of `v·rateⁿ` over each
+// millisecond, `v·rate·(1 − rateᵗ)/(1 − rate)`. It is taken frame by frame
+// from wherever the fling has got to, so a frame of any length lands where the
+// same throw would on a display of any rate.
+public function motionDecayTravel(velocity: Float, rate: Float, milliseconds: Float) -> Float {
+    let f = clamp(rate, 0.0001, 0.9999)
+    return velocity * f * (1.0 - motionDecayKept(f, milliseconds)) / (1.0 - f)
+}
+
+// When a fling has slowed to where it is no longer worth a frame: ten points
+// a second, the platform's own floor.
+public function motionDecayIsSpent(velocity: Float) -> Bool {
+    return abs(velocity) < 10.0
+}
+
+// --- the edge --------------------------------------------------------------
+
+// How fast a surface thrown past its end is drawn back to it, per
+// millisecond. Not a spring: everything past the edge is multiplied by
+// `e^(−0.01005·t)`, so the surface runs out past the end on what speed it has
+// left, slows, and comes home along a curve that never overshoots it.
+public function motionBounceRate() -> Float {
+    return 0.01005
+}
+
+// What is left of a distance past the edge after `milliseconds`.
+public function motionBounceKept(milliseconds: Float) -> Float {
+    return exp(-motionBounceRate() * milliseconds)
+}
+
+// How close to its edge a returning surface is home: half a point.
+public function motionBounceIsHome(overshoot: Float) -> Bool {
+    return abs(overshoot) < 0.5
 }
 
 // --- rubber banding --------------------------------------------------------
@@ -77,7 +110,7 @@ function motionDecayIsSpent(velocity: Float) -> Bool {
 // `dimension` is what the pull is measured against — the viewport's own length
 // along the axis. It sets the scale at which the resistance builds, which is
 // why the same gesture on a tall list and a short one feels the same.
-function motionRubberBand(offset: Float, dimension: Float, constant: Float) -> Float {
+public function motionRubberBand(offset: Float, dimension: Float, constant: Float) -> Float {
     if offset <= 0.0 {
         return 0.0
     }
@@ -85,9 +118,16 @@ function motionRubberBand(offset: Float, dimension: Float, constant: Float) -> F
     return (offset * d * constant) / (d + constant * offset)
 }
 
-// The constant the platform uses. Smaller is stiffer.
-function motionRubberBandConstant() -> Float {
+// The constant the platform uses under a finger. Smaller is stiffer.
+public function motionRubberBandConstant() -> Float {
     return 0.55
+}
+
+// The constant under two fingers on a trackpad: the platform's for a large
+// one, stiffer than a finger on the glass, since the content is not under the
+// fingers that pull it.
+public function motionRubberBandConstantTrackpad() -> Float {
+    return 0.17
 }
 
 // The pull that produced a given resistance — the inverse of the above.
@@ -97,7 +137,7 @@ function motionRubberBandConstant() -> Float {
 // position stands for, or the finger and the content come apart: the gesture
 // would add its movement to a distance that had already been compressed, and
 // the surface would jump.
-function motionRubberBandInverse(banded: Float, dimension: Float, constant: Float) -> Float {
+public function motionRubberBandInverse(banded: Float, dimension: Float, constant: Float) -> Float {
     if banded <= 0.0 {
         return 0.0
     }
@@ -115,14 +155,14 @@ function motionRubberBandInverse(banded: Float, dimension: Float, constant: Floa
 // A surface is pulled past its start with a negative overshoot and past its end
 // with a positive one, and the curve is symmetric, so the sign is taken off,
 // the resistance applied, and the sign put back.
-function motionRubberBandSigned(overshoot: Float, dimension: Float, constant: Float) -> Float {
+public function motionRubberBandSigned(overshoot: Float, dimension: Float, constant: Float) -> Float {
     if overshoot < 0.0 {
         return -motionRubberBand(-overshoot, dimension, constant)
     }
     return motionRubberBand(overshoot, dimension, constant)
 }
 
-function motionRubberBandInverseSigned(banded: Float, dimension: Float, constant: Float) -> Float {
+public function motionRubberBandInverseSigned(banded: Float, dimension: Float, constant: Float) -> Float {
     if banded < 0.0 {
         return -motionRubberBandInverse(-banded, dimension, constant)
     }
@@ -136,7 +176,7 @@ function motionRubberBandInverseSigned(banded: Float, dimension: Float, constant
 // Taken against the PROJECTED destination rather than the release point, which
 // is what makes a flick move by one item and a hard throw move by several. A
 // snap computed from where the finger left would ignore how hard it was thrown.
-function motionSnapNearest(destination: Float, pitch: Float, origin: Float) -> Float {
+public function motionSnapNearest(destination: Float, pitch: Float, origin: Float) -> Float {
     if pitch <= 0.0 {
         return destination
     }
@@ -147,7 +187,7 @@ function motionSnapNearest(destination: Float, pitch: Float, origin: Float) -> F
 // The snap position at most one step from where the surface started, for
 // surfaces that advance by exactly one item per gesture however hard it is
 // thrown — a page carousel rather than a free list.
-function motionSnapNextPage(current: Float, destination: Float, pitch: Float, origin: Float) -> Float {
+public function motionSnapNextPage(current: Float, destination: Float, pitch: Float, origin: Float) -> Float {
     if pitch <= 0.0 {
         return destination
     }

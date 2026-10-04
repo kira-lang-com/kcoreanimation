@@ -4,7 +4,7 @@
 // frame may use different materials, animation may move them, and the retained
 // content signature can account for every shader-visible input without reaching
 // into the legacy paint package.
-struct CAGlassMaterial {
+public struct CAGlassMaterial {
     let edgeStrokeStrength: Float = 0.0
     let edgeStrokeDarken: Float = 0.62
     let edgeStrokePeak: Float = 0.9
@@ -40,4 +40,37 @@ struct CAGlassMaterial {
     // nothing, so the defaults are glass without it.
     let edgeLightDodge: Float = 0.0
     let edgeLightBurn: Float = 1.0
+}
+
+// Glass with no edge of its own -- no hairlines along its rim, no inner rim,
+// no sheen, no light along its top and bottom, and nothing bent at its edge --
+// for glass whose edges meet something rather than stand free, as a sidebar
+// meets the column beside it. Its blur and its wash are left as they were.
+public function caGlassEdgeless(glass: CAGlass) -> CAGlass {
+    var edgeless = move glass
+    let base = edgeless.material
+    edgeless.edgeRefraction = 0.0
+    edgeless.material = CAGlassMaterial {
+        lensMaxBend: base.lensMaxBend,
+        refractionReach: base.refractionReach,
+        blurNearSplit: base.blurNearSplit,
+        // The lines burn in these grays, and white burns nothing.
+        borderSpread: 0.0,
+        borderSideOffset: 0.0,
+        borderSideSpread: 0.0,
+        borderGray: 1.0,
+        borderSideGray: 1.0,
+        innerRimStrength: 0.0,
+        washBlend: base.washBlend,
+        washUpperR: base.washUpperR,
+        washUpperG: base.washUpperG,
+        washUpperB: base.washUpperB,
+        washUpperAlpha: base.washUpperAlpha,
+        washUpperBlend: base.washUpperBlend
+    }
+    edgeless.sizing.ringTone = CAGlassRamp {}
+    edgeless.sizing.sideTone = CAGlassRamp {}
+    edgeless.sizing.lightDodge = CAGlassRamp {}
+    edgeless.sizing.lightBurn = CAGlassRamp {}
+    return edgeless
 }

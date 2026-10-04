@@ -12,7 +12,7 @@ import Foundation
 // pointer button, fly-key mask and modifiers through the ambient slot store,
 // without a path to the app state. ---
 
-struct FoundationInputSnapshot {
+public struct FoundationInputSnapshot {
     var button: Int = 0
     var keysMask: Int = 0
     var shift: Bool = false
@@ -36,11 +36,11 @@ struct FoundationInputSnapshot {
     var pressBoundsH: Float = 0.0
 }
 
-function foundationInputSlotKey() -> String {
+public function foundationInputSlotKey() -> String {
     return "foundation.input"
 }
 
-function foundationWriteInputSnapshot(ui: borrow FoundationUiContext) {
+public function foundationWriteInputSnapshot(ui: borrow FoundationUiContext) {
     if stateSlotHas(foundationInputSlotKey()) == false {
         stateSlotPut(foundationInputSlotKey(), nativeUserData(nativeState(FoundationInputSnapshot {})))
     }
@@ -56,7 +56,7 @@ function foundationWriteInputSnapshot(ui: borrow FoundationUiContext) {
 }
 
 // Held pointer button: 0 none, 1 left, 2 right, 3 middle.
-function foundationInputButton() -> Int {
+public function foundationInputButton() -> Int {
     if stateSlotHas(foundationInputSlotKey()) == false {
         return 0
     }
@@ -65,7 +65,7 @@ function foundationInputButton() -> Int {
 }
 
 // True while the given fly key is held (bit from foundationKeyBit).
-function foundationInputKeyHeld(bit: Int) -> Bool {
+public function foundationInputKeyHeld(bit: Int) -> Bool {
     if bit <= 0 {
         return false
     }
@@ -77,7 +77,7 @@ function foundationInputKeyHeld(bit: Int) -> Bool {
     return (mask / bit) - ((mask / bit) / 2) * 2 == 1
 }
 
-function foundationInputShift() -> Bool {
+public function foundationInputShift() -> Bool {
     if stateSlotHas(foundationInputSlotKey()) == false {
         return false
     }
@@ -86,7 +86,7 @@ function foundationInputShift() -> Bool {
 }
 
 // Record the bounds of the region a click just fired on (see foundationEndPress).
-function foundationWritePressBounds(ui: borrow FoundationUiContext, bounds: borrow Rect) {
+public function foundationWritePressBounds(ui: borrow FoundationUiContext, bounds: borrow Rect) {
     if stateSlotHas(foundationInputSlotKey()) == false {
         stateSlotPut(foundationInputSlotKey(), nativeUserData(nativeState(FoundationInputSnapshot {})))
     }
@@ -99,7 +99,7 @@ function foundationWritePressBounds(ui: borrow FoundationUiContext, bounds: borr
 }
 
 // Bounds of the button the last left-click fired on (for anchoring popups).
-function foundationPressBoundsX() -> Float {
+public function foundationPressBoundsX() -> Float {
     if stateSlotHas(foundationInputSlotKey()) == false {
         return 0.0
     }
@@ -107,7 +107,7 @@ function foundationPressBoundsX() -> Float {
     return snapshot.pressBoundsX
 }
 
-function foundationPressBoundsY() -> Float {
+public function foundationPressBoundsY() -> Float {
     if stateSlotHas(foundationInputSlotKey()) == false {
         return 0.0
     }
@@ -115,7 +115,7 @@ function foundationPressBoundsY() -> Float {
     return snapshot.pressBoundsY
 }
 
-function foundationPressBoundsW() -> Float {
+public function foundationPressBoundsW() -> Float {
     if stateSlotHas(foundationInputSlotKey()) == false {
         return 0.0
     }
@@ -123,7 +123,7 @@ function foundationPressBoundsW() -> Float {
     return snapshot.pressBoundsW
 }
 
-function foundationPressBoundsH() -> Float {
+public function foundationPressBoundsH() -> Float {
     if stateSlotHas(foundationInputSlotKey()) == false {
         return 0.0
     }
@@ -133,7 +133,7 @@ function foundationPressBoundsH() -> Float {
 
 // True when `key` is the region currently under the pointer — the primitive the
 // widget layer uses to give every button a default hover state.
-function foundationHovered(key: Int) -> Bool {
+public function foundationHovered(key: Int) -> Bool {
     if key == 0 {
         return false
     }
@@ -145,15 +145,15 @@ function foundationHovered(key: Int) -> Bool {
 // so an app flips it once instead of threading it through every dropdown.
 //   0 = below, left-aligned (default)   1 = below, right-aligned
 //   2 = above, left-aligned             3 = above, right-aligned
-struct FoundationMenuSettings {
+public struct FoundationMenuSettings {
     var placement: Int = 0
 }
 
-function foundationMenuSettingsSlotKey() -> String {
+public function foundationMenuSettingsSlotKey() -> String {
     return "foundation.menu.settings"
 }
 
-function foundationSetMenuPlacement(placement: Int) {
+public function foundationSetMenuPlacement(placement: Int) {
     if stateSlotHas(foundationMenuSettingsSlotKey()) == false {
         stateSlotPut(foundationMenuSettingsSlotKey(), nativeUserData(nativeState(FoundationMenuSettings {})))
     }
@@ -162,7 +162,7 @@ function foundationSetMenuPlacement(placement: Int) {
     return
 }
 
-function foundationMenuPlacement() -> Int {
+public function foundationMenuPlacement() -> Int {
     if stateSlotHas(foundationMenuSettingsSlotKey()) == false {
         return 0
     }
@@ -171,7 +171,7 @@ function foundationMenuPlacement() -> Int {
 }
 
 // Latest published pointer position (logical pixels).
-function foundationPointerX() -> Float {
+public function foundationPointerX() -> Float {
     if stateSlotHas(foundationInputSlotKey()) == false {
         return 0.0
     }
@@ -179,7 +179,7 @@ function foundationPointerX() -> Float {
     return snapshot.pointerX
 }
 
-function foundationPointerY() -> Float {
+public function foundationPointerY() -> Float {
     if stateSlotHas(foundationInputSlotKey()) == false {
         return 0.0
     }
@@ -188,7 +188,7 @@ function foundationPointerY() -> Float {
 }
 
 // Region currently under the pointer (0 = none). Pointer moves update it.
-function foundationHoveredKey() -> Int {
+public function foundationHoveredKey() -> Int {
     if stateSlotHas(foundationInputSlotKey()) == false {
         return 0
     }
@@ -196,7 +196,7 @@ function foundationHoveredKey() -> Int {
     return snapshot.hoveredKey
 }
 
-function foundationWriteViewportSnapshot(width: Float, height: Float) {
+public function foundationWriteViewportSnapshot(width: Float, height: Float) {
     if stateSlotHas(foundationInputSlotKey()) == false {
         stateSlotPut(foundationInputSlotKey(), nativeUserData(nativeState(FoundationInputSnapshot {})))
     }
@@ -206,7 +206,7 @@ function foundationWriteViewportSnapshot(width: Float, height: Float) {
     return
 }
 
-function foundationViewportWidth() -> Float {
+public function foundationViewportWidth() -> Float {
     if stateSlotHas(foundationInputSlotKey()) == false {
         return 0.0
     }
@@ -214,7 +214,7 @@ function foundationViewportWidth() -> Float {
     return snapshot.viewW
 }
 
-function foundationViewportHeight() -> Float {
+public function foundationViewportHeight() -> Float {
     if stateSlotHas(foundationInputSlotKey()) == false {
         return 0.0
     }

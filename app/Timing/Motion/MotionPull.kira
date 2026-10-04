@@ -21,7 +21,7 @@ import Foundation
 // last frame's velocity is a lag that reads as the deformation trailing the
 // movement it is supposed to be part of.
 
-struct MotionPullState {
+public struct MotionPullState {
     // What the caller applies: the displacement actually shown, after
     // resistance.
     var x: Float = 0.0
@@ -68,6 +68,9 @@ struct MotionPullState {
     var roomTop: Float = 100000.0
     var roomRight: Float = 100000.0
     var roomBottom: Float = 100000.0
+    // Whether it hangs from above, as a menu's card does; see
+    // `motionPullHangs`.
+    var hangs: Bool = false
 }
 
 // The ceiling a pull's rubber band bends toward, as a share of the glass's
@@ -75,24 +78,24 @@ struct MotionPullState {
 // large panel gives no more than a button does. It is set well above where a
 // pull ever gets, so there is no wall -- the glass keeps giving, each point
 // harder won than the last.
-function motionPullReachShare() -> Float {
-    return 0.4
+public function motionPullReachShare() -> Float {
+    return 0.25
 }
 
-function motionPullReachLimit() -> Float {
-    return 18.0
+public function motionPullReachLimit() -> Float {
+    return 11.0
 }
 
 // How much of that reach a sideways pull gets. Glass sits much firmer side to
 // side than up and down: pulled across, it barely gives.
-function motionPullSidewaysShare() -> Float {
-    return 0.4
+public function motionPullSidewaysShare() -> Float {
+    return 0.3
 }
 
 // The rubber band a pull works against: much stiffer than a scroll view's
 // overscroll, so the glass gives a little from the first point and then
 // hardly at all -- a finger dragged a long way off still has it barely moved.
-function motionPullStiffness() -> Float {
+public function motionPullStiffness() -> Float {
     return 0.15
 }
 
@@ -106,28 +109,28 @@ function motionPullStiffness() -> Float {
 // leans the way of its short side. Read off the platform's back-and-forward
 // capsule, 112 by 52 held: eleven points down, 0.80 wide and 1.16 tall; nine to
 // the side, 1.06 and 0.94; nine each way, 0.91 and 1.09.
-function motionPullLeanAlong() -> Float {
+public function motionPullLeanAlong() -> Float {
     return 0.8
 }
 
-function motionPullLeanAcross() -> Float {
+public function motionPullLeanAcross() -> Float {
     return 1.0
 }
 
 // How near an edge has to be to hold glass in, and the least of its reach it
 // keeps however close the edge: against one, glass still gives a hair, so
 // pulling at it never feels like hitting a wall -- but only a hair.
-function motionPullNearEdge() -> Float {
+public function motionPullNearEdge() -> Float {
     return 80.0
 }
 
-function motionPullEdgeShare() -> Float {
+public function motionPullEdgeShare() -> Float {
     return 0.03
 }
 
 // Tells the pull how far the element sits from the edges of what bounds it --
 // the window, for glass laid on it.
-function motionPullRoom(state: borrow mut MotionPullState, left: Float, top: Float, right: Float, bottom: Float) {
+public function motionPullRoom(state: borrow mut MotionPullState, left: Float, top: Float, right: Float, bottom: Float) {
     state.roomLeft = max(left, 0.0)
     state.roomTop = max(top, 0.0)
     state.roomRight = max(right, 0.0)
@@ -135,16 +138,26 @@ function motionPullRoom(state: borrow mut MotionPullState, left: Float, top: Flo
     return
 }
 
+// The element hangs from above, as a menu's card hangs from what opened it:
+// it is not pulled up at all, and toward an edge it is near it gives nothing,
+// not even the hair other glass keeps. A finger going back up to the menu
+// it came from leaves it where it rests.
+public function motionPullHangs(state: borrow mut MotionPullState) {
+    state.hangs = true
+    return
+}
+
 // The reach a pull has toward an edge `room` points away, out of `reach`: all
 // of it clear of the edge, and falling away on a square as the edge nears, so
-// glass a little way off an edge already barely moves toward it.
-function motionPullReachToward(reach: Float, room: Float) -> Float {
+// glass a little way off an edge already barely moves toward it. Glass that
+// hangs keeps none of it at the edge.
+public function motionPullReachToward(reach: Float, room: Float, hangs: Bool) -> Float {
     let clear = min(room / motionPullNearEdge(), 1.0)
-    return reach * max(clear * clear, motionPullEdgeShare())
+    return reach * max(clear * clear, hangs ? 0.0 : motionPullEdgeShare())
 }
 
 // Sizes the pull to the element it moves.
-function motionPullFit(state: borrow mut MotionPullState, width: Float, height: Float) {
+public function motionPullFit(state: borrow mut MotionPullState, width: Float, height: Float) {
     state.width = max(width, 1.0)
     state.height = max(height, 1.0)
     state.reach = min(min(state.width, state.height) * motionPullReachShare(), motionPullReachLimit())
@@ -156,7 +169,7 @@ function motionPullFit(state: borrow mut MotionPullState, width: Float, height: 
 // Separate from the state because it is the ANSWER: a host reads one of these
 // per frame and applies it, and nothing it contains is state that survives to
 // the next frame.
-struct MotionDeformation {
+public struct MotionDeformation {
     // Where the element sits, relative to where layout put it.
     let x: Float = 0.0
     let y: Float = 0.0
@@ -175,7 +188,7 @@ struct MotionDeformation {
 }
 
 // The press goes down.
-function motionPullPress(state: borrow mut MotionPullState, pointerX: Float, pointerY: Float, reducedMotion: Bool) {
+public function motionPullPress(state: borrow mut MotionPullState, pointerX: Float, pointerY: Float, reducedMotion: Bool) {
     state.held = true
     state.dragging = false
     state.returning = false
@@ -188,7 +201,7 @@ function motionPullPress(state: borrow mut MotionPullState, pointerX: Float, poi
     return
 }
 
-function motionPullPressTarget(state: borrow mut MotionPullState, target: Float, reducedMotion: Bool) {
+public function motionPullPressTarget(state: borrow mut MotionPullState, target: Float, reducedMotion: Bool) {
     // Down and up are different springs. Going down is quick and mostly damped;
     // coming back up is slower and bouncier, and that asymmetry is most of what
     // makes the material feel elastic rather than animated.
@@ -204,7 +217,7 @@ function motionPullPressTarget(state: borrow mut MotionPullState, target: Float,
 
 // A spring honoring the viewer's motion preference, for one built by hand
 // rather than picked by name.
-function motionCurveShape(spring: MotionSpring, reducedMotion: Bool) -> MotionSpring {
+public function motionCurveShape(spring: MotionSpring, reducedMotion: Bool) -> MotionSpring {
     if reducedMotion {
         return motionCurveReduced(spring)
     }
@@ -212,7 +225,7 @@ function motionCurveShape(spring: MotionSpring, reducedMotion: Bool) -> MotionSp
 }
 
 // The pointer moves while held.
-function motionPullMove(state: borrow mut MotionPullState, pointerX: Float, pointerY: Float, delta: Float) {
+public function motionPullMove(state: borrow mut MotionPullState, pointerX: Float, pointerY: Float, delta: Float) {
     if state.held == false {
         return
     }
@@ -237,12 +250,15 @@ function motionPullMove(state: borrow mut MotionPullState, pointerX: Float, poin
     // at which it stops resisting and starts traveling freely.
     let constant = motionPullStiffness()
     let roomX = state.rawX < 0.0 ? state.roomLeft : state.roomRight
-    let roomY = state.rawY < 0.0 ? state.roomTop : state.roomBottom
-    state.x = motionPullResisted(state.rawX, motionPullReachToward(state.reach * motionPullSidewaysShare(), roomX), constant)
-    state.y = motionPullResisted(state.rawY, motionPullReachToward(state.reach, roomY), constant)
+    var roomY = state.rawY < 0.0 ? state.roomTop : state.roomBottom
+    if state.hangs && state.rawY < 0.0 {
+        roomY = 0.0
+    }
+    state.x = motionPullResisted(state.rawX, motionPullReachToward(state.reach * motionPullSidewaysShare(), roomX, state.hangs), constant)
+    state.y = motionPullResisted(state.rawY, motionPullReachToward(state.reach, roomY, state.hangs), constant)
 
     if delta > 0.0 {
-        let alpha = 1.0 - exp(-delta / motionScrollVelocityTau())
+        let alpha = 1.0 - exp(-delta / motionPullVelocityTau())
         let instantX = (state.x - previousX) / delta
         let instantY = (state.y - previousY) / delta
         state.velocityX += (instantX - state.velocityX) * alpha
@@ -251,13 +267,18 @@ function motionPullMove(state: borrow mut MotionPullState, pointerX: Float, poin
     return
 }
 
+// How much of the recent past a release's velocity is taken from.
+public function motionPullVelocityTau() -> Float {
+    return 0.04
+}
+
 // The resisted displacement for a signed pull, against an element's own reach.
 //
 // The curve is `motionRubberBandSigned`; what this adds is that a reach may be
 // zero, for a control that must not travel at all while still swelling under
 // the press. The rubber band's scale cannot be zero, so the case is answered
 // here rather than by flooring it to one and moving a point anyway.
-function motionPullResisted(pull: Float, reach: Float, constant: Float) -> Float {
+public function motionPullResisted(pull: Float, reach: Float, constant: Float) -> Float {
     if reach <= 0.0 {
         return 0.0
     }
@@ -266,7 +287,7 @@ function motionPullResisted(pull: Float, reach: Float, constant: Float) -> Float
 
 // The press lifts. The element springs home from wherever it is, at whatever
 // speed it was moving.
-function motionPullRelease(state: borrow mut MotionPullState, reducedMotion: Bool) {
+public function motionPullRelease(state: borrow mut MotionPullState, reducedMotion: Bool) {
     state.held = false
     state.dragging = false
     state.returning = true
@@ -287,7 +308,7 @@ function motionPullRelease(state: borrow mut MotionPullState, reducedMotion: Boo
 //
 // The second answer — whether anything is still moving — is what a host uses to
 // decide whether to ask for another frame.
-function motionPullAdvance(state: borrow mut MotionPullState, delta: Float, reducedMotion: Bool) -> MotionDeformation {
+public function motionPullAdvance(state: borrow mut MotionPullState, delta: Float, reducedMotion: Bool) -> MotionDeformation {
     if state.returning {
         let sampleX = motionSpringAdvance(state.springX, delta)
         let sampleY = motionSpringAdvance(state.springY, delta)
@@ -327,19 +348,19 @@ function motionPullAdvance(state: borrow mut MotionPullState, delta: Float, redu
 // Barely any, and soon spent: the shape is the pull's, held where the finger
 // holds it. Swept from edge to edge, glass does not wobble after the finger --
 // speed only firms up the lean a touch.
-function motionStretchGain() -> Float {
+public function motionStretchGain() -> Float {
     return 0.00008
 }
 
-function motionStretchLimit() -> Float {
+public function motionStretchLimit() -> Float {
     return 0.04
 }
 
 // What an element's lean bends toward, however it is pulled or moved: a capsule
 // held hard over goes a little tall and narrow, never a sliver. Approached on a
 // curve, so it firms up rather than stops.
-function motionPullLeanLimit() -> Float {
-    return 0.16
+public function motionPullLeanLimit() -> Float {
+    return 0.1
 }
 
 // The scale a press lifts an element to, given its shorter side.
@@ -347,12 +368,12 @@ function motionPullLeanLimit() -> Float {
 // It GROWS. A control that shrank under a press reads as a key being pushed
 // into a surface; glass comes up to meet the finger. The rise is a fixed number
 // of points rather than a proportion — see `motionPressLift`.
-function motionPressLiftFor(extent: Float) -> Float {
+public function motionPressLiftFor(extent: Float) -> Float {
     return motionPressLiftScale(extent)
 }
 
 // Builds the frame's answer from the state and the press amount.
-function motionDeformationFor(state: borrow MotionPullState, press: Float) -> MotionDeformation {
+public function motionDeformationFor(state: borrow MotionPullState, press: Float) -> MotionDeformation {
     let stretch = state.stretchAmount
     let speed = hypot(state.velocityX, state.velocityY)
     let pressScale = 1.0 + (motionPressLiftFor(min(state.width, state.height)) - 1.0) * press
@@ -385,12 +406,12 @@ function motionDeformationFor(state: borrow MotionPullState, press: Float) -> Mo
 // The threshold is on the RAW pull rather than the resisted displacement,
 // because resistance makes the shown distance asymptotic — a threshold set in
 // shown points can become one the user cannot physically reach.
-function motionPullCommitted(state: borrow MotionPullState, threshold: Float) -> Bool {
+public function motionPullCommitted(state: borrow MotionPullState, threshold: Float) -> Bool {
     return hypot(state.rawX, state.rawY) >= threshold
 }
 
 // Whether the element still needs frames.
-function motionPullMoving(state: borrow MotionPullState) -> Bool {
+public function motionPullMoving(state: borrow MotionPullState) -> Bool {
     if state.held || state.returning {
         return true
     }

@@ -7,7 +7,7 @@ import Foundation
 // A fresh layer's appearance channels take their initial values from its
 // content, so a `.Solid` built with a fill and a radius draws with them and a
 // later `setFillColor`/`setCornerRadius` animates from there.
-function caInitAppearanceFromContent(node: borrow mut CALayerNode) {
+public function caInitAppearanceFromContent(node: borrow mut CALayerNode) {
     match node.content {
         Empty -> {
             return
@@ -42,7 +42,7 @@ function caInitAppearanceFromContent(node: borrow mut CALayerNode) {
     }
 }
 
-function caSampleNode(node: borrow mut CALayerNode, now: Float) -> Bool {
+public function caSampleNode(node: borrow mut CALayerNode, now: Float) -> Bool {
     var moving = false
     if caChannelSampleAt(node.posX, now) {
         moving = true
@@ -90,6 +90,18 @@ function caSampleNode(node: borrow mut CALayerNode, now: Float) -> Bool {
         moving = true
     }
     if caColorChannelSampleAt(node.fillColor, now) {
+        moving = true
+    }
+    if caChannelSampleAt(node.platterX, now) {
+        moving = true
+    }
+    if caChannelSampleAt(node.platterY, now) {
+        moving = true
+    }
+    if caChannelSampleAt(node.platterW, now) {
+        moving = true
+    }
+    if caChannelSampleAt(node.platterH, now) {
         moving = true
     }
     if caColorChannelSampleAt(node.borderColor, now) {

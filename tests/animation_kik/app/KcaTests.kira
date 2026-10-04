@@ -117,7 +117,7 @@ construct CaTransformRotatedHit() extends Test {
         let box = tree.makeLayer(root, 5, .Solid(CASolid {}))
         tree.beginTransaction(caImmediateTiming())
         tree.setFrame(box, 100.0, 100.0, 200.0, 100.0)
-        tree.setHit(box, true, true, 7)
+        tree.setHit(box, true, true, false, 7)
         tree.setRotation(box, 1.5707963267948966)
         tree.commitTransaction()
         let inside = caHitTestTree(tree, 200.0, 240.0)
@@ -150,7 +150,7 @@ construct CaClipHitRespected() extends Test {
         tree.setFrame(panel, 100.0, 100.0, 200.0, 200.0)
         tree.setClip(panel, true)
         tree.setFrame(child, 50.0, 50.0, 400.0, 400.0)
-        tree.setHit(child, true, true, 9)
+        tree.setHit(child, true, true, false, 9)
         tree.commitTransaction()
         // child world spans (150,150)-(550,550); panel clip is (100,100)-(300,300).
         let inside = caHitTestTree(tree, 250.0, 250.0)

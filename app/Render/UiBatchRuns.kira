@@ -70,7 +70,7 @@ extend UiBatch {
         // nothing on screen at all.
         let maxPx = glyphAtlasSize() - 2 * atlasGutter()
         let devPxLong = devPxW > devPxH ? devPxW : devPxH
-        var longPx = Int(devPxLong * textOversample() + 0.5)
+        var longPx = Int(devPxLong * textOversampleAt(scale) + 0.5)
         if longPx > maxPx {
             longPx = Int(devPxLong + 0.5)
         }
@@ -289,7 +289,7 @@ extend UiBatch {
         // read back from the rasterizer after this — advances, bearings, bitmap extents,
         // vertical metrics — is therefore in RASTER pixels, and is divided by
         // `rasterScale` (not `scale`) on the way back into points.
-        let rasterScale = scale * textOversample()
+        let rasterScale = scale * textOversampleAt(scale)
         // A run under a scale is laid out once at its own size about its own
         // origin -- every whole-pixel decision below included -- and the
         // finished glyphs are scaled onto the screen from there. The text is
@@ -457,7 +457,7 @@ extend UiBatch {
                     if slotIdx < 0 {
                         let glyphIndex = kira_text_face_glyph_index(state.face, U32(codepoint))
                         let bm: kira_text_glyph_bitmap_ptr = allocateBytes(glyphBitmapSize())
-                        let rendered = kira_text_face_render_glyph_offset(state.face, glyphIndex, I32(glyphPhaseOffset(phase)), bm)
+                        let rendered = kira_text_face_render_glyph_offset(state.face, glyphIndex, I32(glyphPhaseOffset(phase, textOversampleAt(scale))), bm)
                         if rendered != 0 {
                             let gwp = Int(bm.width)
                             let ghp = Int(bm.rows)
@@ -530,7 +530,7 @@ extend UiBatch {
                             // extents come back from the rasterizer in raster pixels, so
                             // at 2x oversampling an odd one lands the edge on a half
                             // pixel — which is where this went wrong.
-                            let overs = textOversample()
+                            let overs = textOversampleAt(scale)
                             let leftDev = Float(Int(devicePen)) + Float(bearingX) / overs
                             let topDev = baselineDevice - Float(bearingY) / overs
                             let rightDev = leftDev + Float(gwpx) / overs

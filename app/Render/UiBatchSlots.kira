@@ -14,33 +14,33 @@ import KiraGraphics
 // buffer 0 holds the attribute stream). `Shaders/UiBatch.ksl` declares
 // verts, atlas, atlasSmp, external, externalSmp, backdrop, backdropSmp,
 // nearBlur, nearSmp — so these are the numbers the host has to bind against.
-function vertexBufferSlot() -> Int { return 0 }
-function atlasTextureSlot() -> Int { return 1 }
-function atlasSamplerSlot() -> Int { return 2 }
-function externalTextureSlot() -> Int { return 3 }
-function externalSamplerSlot() -> Int { return 4 }
-function backdropTextureSlot() -> Int { return 5 }
-function backdropSamplerSlot() -> Int { return 6 }
-function nearTextureSlot() -> Int { return 7 }
-function nearSamplerSlot() -> Int { return 8 }
+public function vertexBufferSlot() -> Int { return 0 }
+public function atlasTextureSlot() -> Int { return 1 }
+public function atlasSamplerSlot() -> Int { return 2 }
+public function externalTextureSlot() -> Int { return 3 }
+public function externalSamplerSlot() -> Int { return 4 }
+public function backdropTextureSlot() -> Int { return 5 }
+public function backdropSamplerSlot() -> Int { return 6 }
+public function nearTextureSlot() -> Int { return 7 }
+public function nearSamplerSlot() -> Int { return 8 }
 // The backdrop's second photograph and how far the frame stands between the two
 // — the crossfade the sharp tap reads through, so a scheme change needs no
 // full-resolution capture holding the blend. A group with one image binds it at
 // both, and the weight is then 0.
-function externalSecondTextureSlot() -> Int { return 9 }
-function externalSecondSamplerSlot() -> Int { return 10 }
-function backdropBlendSlot() -> Int { return 11 }
+public function externalSecondTextureSlot() -> Int { return 9 }
+public function externalSecondSamplerSlot() -> Int { return 10 }
+public function backdropBlendSlot() -> Int { return 11 }
 
 // The opaque background reads the photo through the compositor's own external
 // and backdrop groups, so `Shaders/UiBackground.ksl` writes those slots with
 // `@binding` and only its params slot is its own.
-function backgroundParamsSlot() -> Int { return 0 }
+public function backgroundParamsSlot() -> Int { return 0 }
 
 // Everything the composite's sharp tap reads, written into the one group that
 // carries it: the two backdrop photographs and the weight between them. A group
 // standing over a single image binds it as both, and the weight it is drawn
 // with is then 0 — one fetch, exactly as before there were two.
-function glassAddSharpBackdrop(
+public function glassAddSharpBackdrop(
     graphics: borrow Graphics,
     group: borrow BindGroup,
     first: borrow GraphicsTexture,
@@ -57,7 +57,7 @@ function glassAddSharpBackdrop(
 }
 
 // Which encoder group slot each of those is bound through (the encoder has four).
-function vertexBindGroup() -> Int { return 0 }
-function atlasBindGroup() -> Int { return 1 }
-function externalBindGroup() -> Int { return 2 }
-function softNearBindGroup() -> Int { return 3 }
+public function vertexBindGroup() -> Int { return 0 }
+public function atlasBindGroup() -> Int { return 1 }
+public function externalBindGroup() -> Int { return 2 }
+public function softNearBindGroup() -> Int { return 3 }

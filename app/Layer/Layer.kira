@@ -7,13 +7,13 @@ import Foundation
 // this is the request a widget's lowering records so the toolkit can lay the
 // retained tree out without a second tree beside it. Defaults describe a
 // fill-both leaf, so a description that sets nothing lays out as one.
-enum CAAxis {
+public enum CAAxis {
     None
     Row
     Column
 }
 
-struct CALayoutIntent {
+public struct CALayoutIntent {
     // For a container, the axis its sublayers stack along.
     var axis: CAAxis = .None
     // The gap between sublayers along `axis`.
@@ -70,7 +70,7 @@ struct CALayoutIntent {
 // A shadow cast under a layer's outline: its color (the alpha is how dark it
 // is), how far it blurs, and how far it falls from the layer. A clear color
 // casts none.
-struct CAShadow {
+public struct CAShadow {
     var color: CAColor = CAColor { a: 0.0 }
     var radius: Float = 0.0
     var offset: Point = Point {}
@@ -83,14 +83,14 @@ struct CAShadow {
 // layout and the layer's own scale have it, and that picture is deformed, so
 // text and icons stretch with the glass rather than reflowing or slipping
 // across it. The identity deforms nothing and costs nothing.
-struct CADeformation {
+public struct CADeformation {
     var x: Float = 0.0
     var y: Float = 0.0
     var scaleX: Float = 1.0
     var scaleY: Float = 1.0
 }
 
-function caDeformationIsIdentity(d: borrow CADeformation) -> Bool {
+public function caDeformationIsIdentity(d: borrow CADeformation) -> Bool {
     return d.x == 0.0 && d.y == 0.0 && d.scaleX == 1.0 && d.scaleY == 1.0
 }
 
@@ -98,7 +98,20 @@ function caDeformationIsIdentity(d: borrow CADeformation) -> Bool {
 // removal transition: it is kept where it last stood, eased to this scale and
 // opacity over `duration`, answering nothing, and only then taken out. A zero
 // duration -- the default -- takes it out at once.
-struct CARemoval {
+// How a described layer's changes reach the screen.
+//
+// `Inherit` takes whatever transaction the layers around it changed in -- the
+// implicit action, unless something above opened another. `Timed` opens one of
+// its own over the layer's whole subtree, as `CATransaction.begin` does around
+// a batch of sets: a navigation push states where its pages end up, once, and
+// the compositor moves them there on its spring frame by frame, with nothing
+// rebuilt in between.
+public enum CALayerAnimation {
+    Inherit
+    Timed: CATiming
+}
+
+public struct CARemoval {
     var scale: Float = 1.0
     var opacity: Float = 0.0
     var duration: Float = 0.0
@@ -106,7 +119,7 @@ struct CARemoval {
 
 // Declarative layer value consumed by the retained tree reconciler. Identity is
 // the sibling key; the CALayerTree owns the stable LayerId assigned to it.
-class CALayerDescription {
+public class CALayerDescription {
     var key: Int = 0
     var position: Point = Point {}
     var size: Size = Size {}
@@ -145,7 +158,17 @@ class CALayerDescription {
     // against this layer too, under its `hitKey`, so the surface can move with
     // the press while the control takes the action.
     var interactive: Bool = false
+    // Whether a press held on this interactive layer slides from control to
+    // control in it, as a menu's does: the finger goes down on one row, moves
+    // over the others, and the one it lifts on is the one chosen.
+    var slidesPress: Bool = false
     var hitKey: Int = 0
+    // The axis the layer scrolls its content along, as a `CAScrollLayer`: its
+    // sublayers are laid out as long as they want along it and shown through
+    // the layer's own box, and a hit test reports the innermost scrolling layer
+    // under a point, under its `hitKey`, so a wheel or a pan can be sent to
+    // it. `.None` for a layer that does not scroll.
+    var scrollAxis: CAAxis = .None
     // The wash the layer lights with while the pointer rests on it, as UIKit's
     // highlight hover effect: laid over its fill by the tree, which is told
     // what the pointer is over, so nothing above it rebuilds to show it. Clear
@@ -160,10 +183,22 @@ class CALayerDescription {
     // something already moves every frame, which an animation on top of it
     // would only drag behind.
     var disablesActions: Bool = false
+    // The transaction this layer and everything under it change in, as a
+    // `CATransaction` wrapped around them: a motion the caller describes once,
+    // at its end, for the compositor to carry there. See `CALayerAnimation`.
+    var animation: CALayerAnimation = .Inherit
     // How the layer leaves when it is no longer described. See `CARemoval`.
     var removal: CARemoval = CARemoval {}
     // How this layer wants to be sized and how it arranges its sublayers; a
     // toolkit's layout pass reads this and writes `position`/`size`.
     var layout: CALayoutIntent = CALayoutIntent {}
+    // The last two sizes a layout pass measured this layer at, by the width
+    // each was asked at: a pass asks one layer again at the widths it already
+    // answered, and every answer is a walk of the whole subtree. Negative
+    // widths answer nothing; the toolkit forgets them before each pass.
+    var measuredAt: Float = -1.0
+    var measured: Size = Size {}
+    var measuredAtLast: Float = -1.0
+    var measuredLast: Size = Size {}
     var sublayers: [CALayerDescription] = []
 }

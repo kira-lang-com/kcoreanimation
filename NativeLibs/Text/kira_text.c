@@ -24,9 +24,9 @@
 /* Bundled Inter variable font data (opsz 14..32, wght 100..900). */
 #include "kira_inter_font.h"
 
-/* Forward declaration: embedded Inter face loaded from the byte array above.
- * Defined further below alongside the draw-cache infrastructure. */
-static kira_text_face* kira_text_embedded_face(float pixel_size, float weight);
+/* Forward declaration: the shared face cache, which also holds the embedded
+ * Inter face loaded from the byte array above. Defined further below. */
+static kira_text_face* kira_text_cached_face(const char* path, float pixel_size, float weight);
 
 struct kira_text_engine {
     FT_Library library;
@@ -82,11 +82,10 @@ static float kira_text_f26dot6(FT_Pos value) {
  * (FT_Done_Face must precede FT_Done_FreeType), so the teardown disposes every
  * face before any engine. Faces from distinct engines are independent, so a
  * single faces-then-engines pass keeps every library alive while its faces are
- * torn down. The draw-cache/embedded-face statics (g_draw_engine,
- * g_embedded_engine, and their faces) route through these same create/destroy
- * paths, so they are tracked and reclaimed too; mid-run cache eviction and
- * embedded-face reload call kira_text_face_destroy, which unlinks first, so the
- * atexit sweep never double-frees an evicted face.
+ * torn down. The draw cache (g_draw_engine and its faces, the embedded Inter
+ * among them) routes through these same create/destroy paths, so it is tracked
+ * and reclaimed too; mid-run cache eviction calls kira_text_face_destroy, which
+ * unlinks first, so the atexit sweep never double-frees an evicted face.
  */
 typedef struct KiraTextEngineNode {
     kira_text_engine* engine;
@@ -776,7 +775,7 @@ const char* kira_text_probe_report(const char* font_path) {
 
     kira_text_face* face = NULL;
     if (strcmp(font_path, "<builtin>") == 0) {
-        face = kira_text_embedded_face(px, 400.0f);
+        face = kira_text_cached_face("<builtin>", px, 400.0f);
         if (face == NULL) {
             snprintf(report, sizeof(report),
                      "kira-text: ERROR could not load embedded Inter font");
@@ -830,53 +829,22 @@ const char* kira_text_probe_report(const char* font_path) {
     return report;
 }
 
-/* Embedded Inter font face — lazily loaded from the bundled byte array. */
-static kira_text_engine* g_embedded_engine = NULL;
-static kira_text_face*   g_embedded_face   = NULL;
-static float             g_embedded_ps     = 0.0f;
-static float             g_embedded_weight = 0.0f;
-
-static kira_text_face* kira_text_embedded_face(float pixel_size, float weight) {
-    if (g_embedded_face != NULL && g_embedded_ps == pixel_size && g_embedded_weight == weight) {
-        return g_embedded_face;
-    }
-    if (g_embedded_face != NULL) {
-        kira_text_face_destroy(g_embedded_face);
-        g_embedded_face = NULL;
-        g_embedded_ps = 0.0f;
-        g_embedded_weight = 0.0f;
-    }
-    if (g_embedded_engine == NULL) {
-        g_embedded_engine = kira_text_engine_create();
-        if (g_embedded_engine == NULL) return NULL;
-    }
-    g_embedded_face = kira_text_face_load_memory(
-        g_embedded_engine,
-        kira_inter_font_data,
-        (long)KIRA_INTER_FONT_SIZE,
-        0
-    );
-    if (g_embedded_face == NULL) return NULL;
-    if (!kira_text_face_set_pixel_size(g_embedded_face, pixel_size, weight)) {
-        kira_text_face_destroy(g_embedded_face);
-        g_embedded_face = NULL;
-        return NULL;
-    }
-    g_embedded_ps = pixel_size;
-    g_embedded_weight = weight;
-    return g_embedded_face;
-}
-
 /* Face cache: FT_New_Face parses the whole font, far too slow to repeat per
- * draw call. Cache a handful of faces keyed by (path, quantized pixel size,
- * weight).
+ * draw call. Faces are kept by (path, quantized pixel size, weight), the
+ * embedded Inter under its "<builtin>" sentinel beside the file-backed ones.
  *
  * Weight is part of the KEY, not a property set afterwards. A face carries its
  * variation coordinates, so two runs at the same size and different weights are
  * two different faces — keying on size alone hands the second run the first
  * one's weight, and which weight a label ends up drawn in then depends on the
- * order the panel happened to be built in. */
-#define KIRA_TEXT_DRAW_CACHE_SLOTS 16
+ * order the panel happened to be built in.
+ *
+ * Sized for a whole screen's worth of styles at once. A type-scale page sets
+ * more than sixteen (size, weight) pairs, and with sixteen slots every frame
+ * evicted faces it was about to ask for again: each miss re-opened the font
+ * file and re-parsed it, which made that page cost twice a frame on its own.
+ * The embedded face had a single slot and so thrashed on any second style. */
+#define KIRA_TEXT_DRAW_CACHE_SLOTS 128
 
 typedef struct {
     char            path[260];
@@ -885,16 +853,66 @@ typedef struct {
     kira_text_face* face;
 } kira_text_draw_cache_slot;
 
+/* Every cached face of one font file reads the same bytes, so the file is read
+ * once and its faces are made over it in memory. Opened by path, each face kept
+ * its own stream and went back to the disk for every glyph and every table it
+ * had not parsed yet, which a weight or size in motion asks of a new face each
+ * frame. Kept for the life of the process, as the cache's faces are. */
+#define KIRA_TEXT_FONT_FILES 16
+
+typedef struct {
+    char           path[260];
+    unsigned char* data;
+    long           size;
+} kira_text_font_file;
+
+static kira_text_font_file g_font_files[KIRA_TEXT_FONT_FILES];
+static int g_font_file_count = 0;
+
+static const unsigned char* kira_text_font_bytes(const char* path, long* size) {
+    for (int i = 0; i < g_font_file_count; i += 1) {
+        if (strcmp(g_font_files[i].path, path) == 0) {
+            *size = g_font_files[i].size;
+            return g_font_files[i].data;
+        }
+    }
+    if (g_font_file_count >= KIRA_TEXT_FONT_FILES || strlen(path) >= sizeof(g_font_files[0].path)) {
+        return NULL;
+    }
+    FILE* file = fopen(path, "rb");
+    if (file == NULL) {
+        return NULL;
+    }
+    unsigned char* data = NULL;
+    long length = 0;
+    if (fseek(file, 0, SEEK_END) == 0) {
+        length = ftell(file);
+    }
+    if (length > 0 && fseek(file, 0, SEEK_SET) == 0) {
+        data = (unsigned char*)malloc((size_t)length);
+        if (data != NULL && fread(data, 1, (size_t)length, file) != (size_t)length) {
+            free(data);
+            data = NULL;
+        }
+    }
+    fclose(file);
+    if (data == NULL) {
+        return NULL;
+    }
+    kira_text_font_file* entry = &g_font_files[g_font_file_count++];
+    snprintf(entry->path, sizeof(entry->path), "%s", path);
+    entry->data = data;
+    entry->size = length;
+    *size = length;
+    return data;
+}
+
 static kira_text_engine* g_draw_engine = NULL;
 static kira_text_draw_cache_slot g_draw_cache[KIRA_TEXT_DRAW_CACHE_SLOTS];
 static int g_draw_cache_count = 0;
+static int g_draw_cache_next = 0;
 
 static kira_text_face* kira_text_cached_face(const char* path, float pixel_size, float weight) {
-    /* The embedded Inter font is loaded from the bundled byte array. */
-    if (strcmp(path, "<builtin>") == 0) {
-        return kira_text_embedded_face(pixel_size, weight);
-    }
-
     if (g_draw_engine == NULL) {
         g_draw_engine = kira_text_engine_create();
         if (g_draw_engine == NULL) {
@@ -912,28 +930,81 @@ static kira_text_face* kira_text_cached_face(const char* path, float pixel_size,
         }
     }
 
-    kira_text_face* face = kira_text_face_load(g_draw_engine, path, 0);
+    /* The embedded Inter font is loaded from the bundled byte array. */
+    const unsigned char* bytes = NULL;
+    long length = 0;
+    if (strcmp(path, "<builtin>") == 0) {
+        bytes = kira_inter_font_data;
+        length = (long)KIRA_INTER_FONT_SIZE;
+    } else {
+        bytes = kira_text_font_bytes(path, &length);
+    }
+    kira_text_face* face = NULL;
+    if (bytes != NULL) {
+        /* The bytes outlive every face made over them, so no face owns them. */
+        FT_Face ft_face = NULL;
+        if (FT_New_Memory_Face(g_draw_engine->library, bytes, (FT_Long)length, 0, &ft_face) == 0) {
+            face = kira_text_face_wrap(ft_face, NULL);
+        }
+    } else {
+        face = kira_text_face_load(g_draw_engine, path, 0);
+    }
     if (face == NULL) {
         return NULL;
     }
-    kira_text_face_set_pixel_size(face, pixel_size, weight);
+    if (!kira_text_face_set_pixel_size(face, pixel_size, weight)) {
+        kira_text_face_destroy(face);
+        return NULL;
+    }
 
     kira_text_draw_cache_slot* slot;
     if (g_draw_cache_count < KIRA_TEXT_DRAW_CACHE_SLOTS) {
         slot = &g_draw_cache[g_draw_cache_count++];
     } else {
-        /* Evict the oldest slot. */
-        kira_text_face_destroy(g_draw_cache[0].face);
-        for (int i = 1; i < KIRA_TEXT_DRAW_CACHE_SLOTS; i += 1) {
-            g_draw_cache[i - 1] = g_draw_cache[i];
-        }
-        slot = &g_draw_cache[KIRA_TEXT_DRAW_CACHE_SLOTS - 1];
+        /* Full: replace slots in turn. */
+        slot = &g_draw_cache[g_draw_cache_next];
+        g_draw_cache_next = (g_draw_cache_next + 1) % KIRA_TEXT_DRAW_CACHE_SLOTS;
+        kira_text_face_destroy(slot->face);
     }
     snprintf(slot->path, sizeof(slot->path), "%s", path);
     slot->pixel_size_q = quantized;
     slot->weight_q = weight_q;
     slot->face = face;
     return face;
+}
+
+/* A run's width is asked for by layout and again by every frame that draws a
+ * wrapping label, and shaping it is the expensive part. It depends on nothing
+ * but the font, size, weight and text, so the answer is kept: hash-addressed,
+ * the home slot replaced when the probe finds no room. */
+#define KIRA_TEXT_RUN_CACHE 2048
+#define KIRA_TEXT_RUN_PROBE 8
+
+typedef struct {
+    uint64_t hash;
+    const char* font_path;
+    double pixel_size;
+    double weight;
+    char* text;
+    double width;
+} kira_text_run_entry;
+
+static kira_text_run_entry g_run_cache[KIRA_TEXT_RUN_CACHE];
+
+static uint64_t kira_text_run_hash(const char* font_path, const char* utf8, double pixel_size, double weight) {
+    uint64_t h = 1469598103934665603ULL;
+    for (const unsigned char* c = (const unsigned char*)utf8; *c; c++) {
+        h = (h ^ *c) * 1099511628211ULL;
+    }
+    for (const unsigned char* c = (const unsigned char*)font_path; *c; c++) {
+        h = (h ^ *c) * 1099511628211ULL;
+    }
+    uint64_t bits[2];
+    memcpy(&bits[0], &pixel_size, sizeof(double));
+    memcpy(&bits[1], &weight, sizeof(double));
+    h = (h ^ bits[0]) * 1099511628211ULL;
+    h = (h ^ bits[1]) * 1099511628211ULL;
+    return h;
 }
 
 double kira_text_measure_run(const char* font_path, const char* utf8, double pixel_size, double weight) {
@@ -944,11 +1015,46 @@ double kira_text_measure_run(const char* font_path, const char* utf8, double pix
     if (font_path == NULL) {
         return 0.0;
     }
+    uint64_t hash = kira_text_run_hash(font_path, utf8, pixel_size, weight);
+    size_t home = (size_t)(hash % KIRA_TEXT_RUN_CACHE);
+    size_t free_slot = home;
+    int found_free = 0;
+    for (size_t probe = 0; probe < KIRA_TEXT_RUN_PROBE; probe++) {
+        kira_text_run_entry* entry = &g_run_cache[(home + probe) % KIRA_TEXT_RUN_CACHE];
+        if (entry->text == NULL) {
+            if (!found_free) {
+                free_slot = (home + probe) % KIRA_TEXT_RUN_CACHE;
+                found_free = 1;
+            }
+            continue;
+        }
+        if (entry->hash == hash && entry->pixel_size == pixel_size && entry->weight == weight
+            && strcmp(entry->font_path, font_path) == 0 && strcmp(entry->text, utf8) == 0) {
+            return entry->width;
+        }
+    }
     kira_text_face* face = kira_text_cached_face(font_path, (float)pixel_size, (float)weight);
     if (face == NULL) {
         return 0.0;
     }
-    return (double)kira_text_measure_utf8(face, utf8, -1);
+    double width = (double)kira_text_measure_utf8(face, utf8, -1);
+    size_t text_len = strlen(utf8) + 1;
+    size_t path_len = strlen(font_path) + 1;
+    char* storage = (char*)malloc(text_len + path_len);
+    if (storage == NULL) {
+        return width;
+    }
+    memcpy(storage, utf8, text_len);
+    memcpy(storage + text_len, font_path, path_len);
+    kira_text_run_entry* slot = &g_run_cache[free_slot];
+    free(slot->text);
+    slot->hash = hash;
+    slot->font_path = storage + text_len;
+    slot->pixel_size = pixel_size;
+    slot->weight = weight;
+    slot->text = storage;
+    slot->width = width;
+    return width;
 }
 
 double kira_text_line_height(const char* font_path, double pixel_size, double weight) {
@@ -1013,16 +1119,19 @@ double kira_text_descent(const char* font_path, double pixel_size, double weight
  * the string, but steady frames only do two small key lookups. Horizontal values
  * are coordinates from the run origin; vertical values are positive distances
  * from the baseline: top is above it, bottom is below it. */
-#define KIRA_TEXT_INK_CACHE_SLOTS 128
-#define KIRA_TEXT_INK_CACHE_PATH_MAX 260
-#define KIRA_TEXT_INK_CACHE_TEXT_MAX 256
+/* A page asks for the ink of every label it lowers, four edges each, on every
+ * rebuild -- and a list page holds hundreds. The table is hash-addressed so a
+ * lookup costs one probe rather than a scan, and sized so a page's labels stay
+ * resident: a miss rasterizes the whole run at four times its size. */
+#define KIRA_TEXT_INK_CACHE_SLOTS 4096
+#define KIRA_TEXT_INK_CACHE_PROBE 8
 
 typedef struct {
-    int valid;
+    uint64_t hash;
     int pixel_size_q;
     int weight_q;
-    char path[KIRA_TEXT_INK_CACHE_PATH_MAX];
-    char text[KIRA_TEXT_INK_CACHE_TEXT_MAX];
+    char* text;
+    const char* path;
     float left;
     float right;
     float top;
@@ -1030,7 +1139,6 @@ typedef struct {
 } kira_text_ink_cache_slot;
 
 static kira_text_ink_cache_slot g_ink_cache[KIRA_TEXT_INK_CACHE_SLOTS];
-static int g_ink_cache_next = 0;
 
 static int kira_text_run_ink_bounds(
     kira_text_face* face,
@@ -1170,28 +1278,37 @@ static int kira_text_cached_ink_bounds(
      * the regular run's ink and then painted past it. */
     int weight_q = (int)(weight + 0.5);
 
-    if (path_len < KIRA_TEXT_INK_CACHE_PATH_MAX &&
-        text_len < KIRA_TEXT_INK_CACHE_TEXT_MAX) {
-        for (int i = 0; i < KIRA_TEXT_INK_CACHE_SLOTS; i += 1) {
-            kira_text_ink_cache_slot* slot = &g_ink_cache[i];
-            if (slot->valid && slot->pixel_size_q == pixel_size_q &&
-                slot->weight_q == weight_q &&
-                strcmp(slot->path, font_path) == 0 &&
-                strcmp(slot->text, utf8) == 0) {
-                if (out_left != NULL) {
-                    *out_left = (double)slot->left / raster_measure_scale;
-                }
-                if (out_right != NULL) {
-                    *out_right = (double)slot->right / raster_measure_scale;
-                }
-                if (out_top != NULL) {
-                    *out_top = (double)slot->top / raster_measure_scale;
-                }
-                if (out_bottom != NULL) {
-                    *out_bottom = (double)slot->bottom / raster_measure_scale;
-                }
-                return 1;
+    uint64_t hash = kira_text_run_hash(font_path, utf8, (double)pixel_size_q, (double)weight_q);
+    size_t home = (size_t)(hash % KIRA_TEXT_INK_CACHE_SLOTS);
+    size_t free_slot = home;
+    int found_free = 0;
+    for (size_t probe = 0; probe < KIRA_TEXT_INK_CACHE_PROBE; probe++) {
+        size_t at = (home + probe) % KIRA_TEXT_INK_CACHE_SLOTS;
+        kira_text_ink_cache_slot* slot = &g_ink_cache[at];
+        if (slot->text == NULL) {
+            if (!found_free) {
+                free_slot = at;
+                found_free = 1;
             }
+            continue;
+        }
+        if (slot->hash == hash && slot->pixel_size_q == pixel_size_q &&
+            slot->weight_q == weight_q &&
+            strcmp(slot->path, font_path) == 0 &&
+            strcmp(slot->text, utf8) == 0) {
+            if (out_left != NULL) {
+                *out_left = (double)slot->left / raster_measure_scale;
+            }
+            if (out_right != NULL) {
+                *out_right = (double)slot->right / raster_measure_scale;
+            }
+            if (out_top != NULL) {
+                *out_top = (double)slot->top / raster_measure_scale;
+            }
+            if (out_bottom != NULL) {
+                *out_bottom = (double)slot->bottom / raster_measure_scale;
+            }
+            return 1;
         }
     }
 
@@ -1204,15 +1321,17 @@ static int kira_text_cached_ink_bounds(
         return 0;
     }
 
-    if (path_len < KIRA_TEXT_INK_CACHE_PATH_MAX &&
-        text_len < KIRA_TEXT_INK_CACHE_TEXT_MAX) {
-        kira_text_ink_cache_slot* slot = &g_ink_cache[g_ink_cache_next];
-        g_ink_cache_next = (g_ink_cache_next + 1) % KIRA_TEXT_INK_CACHE_SLOTS;
-        slot->valid = 1;
+    char* storage = (char*)malloc(text_len + 1 + path_len + 1);
+    if (storage != NULL) {
+        memcpy(storage, utf8, text_len + 1);
+        memcpy(storage + text_len + 1, font_path, path_len + 1);
+        kira_text_ink_cache_slot* slot = &g_ink_cache[free_slot];
+        free(slot->text);
+        slot->hash = hash;
         slot->pixel_size_q = pixel_size_q;
         slot->weight_q = weight_q;
-        snprintf(slot->path, sizeof(slot->path), "%s", font_path);
-        snprintf(slot->text, sizeof(slot->text), "%s", utf8);
+        slot->text = storage;
+        slot->path = storage + text_len + 1;
         slot->left = left;
         slot->right = right;
         slot->top = top;

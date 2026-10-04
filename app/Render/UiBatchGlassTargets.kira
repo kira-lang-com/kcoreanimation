@@ -10,7 +10,7 @@ import KiraGraphics
 // glass allocates none of this.
 
 // Which grid column/row a pixel coordinate falls in, clamped to the grid.
-function glassCellIndex(value: Float, extent: Float, cells: Int) -> Int {
+public function glassCellIndex(value: Float, extent: Float, cells: Int) -> Int {
     if extent <= 0.0 {
         return 0
     }
@@ -25,7 +25,7 @@ function glassCellIndex(value: Float, extent: Float, cells: Int) -> Int {
 }
 
 // Record exact content bounds for the active glass layer.
-function glassMarkRect(state: borrow mut UiBatchState, x0: Float, y0: Float, x1: Float, y1: Float) {
+public function glassMarkRect(state: borrow mut UiBatchState, x0: Float, y0: Float, x1: Float, y1: Float) {
     let base = state.glassRectCount * 4
     if base + 3 < state.glassRects.count {
         state.glassRects[base] = x0
@@ -44,7 +44,7 @@ function glassMarkRect(state: borrow mut UiBatchState, x0: Float, y0: Float, x1:
 
 // Does this rect sit over anything the current glass layer has already drawn? A
 // glass surface that does must start its own layer to refract it.
-function glassLayerOccupied(state: borrow mut UiBatchState, x0: Float, y0: Float, x1: Float, y1: Float) -> Bool {
+public function glassLayerOccupied(state: borrow mut UiBatchState, x0: Float, y0: Float, x1: Float, y1: Float) -> Bool {
     var i = 0
     while i < state.glassRectCount {
         let base = i * 4
@@ -61,7 +61,7 @@ function glassLayerOccupied(state: borrow mut UiBatchState, x0: Float, y0: Float
 }
 
 // A render pass targeting one of the glass offscreen textures.
-function glassTexturePass(label: String, texture: borrow GraphicsTexture, r: Float, g: Float, b: Float, a: Float) -> RenderPassDescriptor {
+public function glassTexturePass(label: String, texture: borrow GraphicsTexture, r: Float, g: Float, b: Float, a: Float) -> RenderPassDescriptor {
     let target = RenderTarget {
         kind: .Texture,
         texture: texture,
@@ -93,7 +93,7 @@ function glassTexturePass(label: String, texture: borrow GraphicsTexture, r: Flo
     }
 }
 
-function glassDestroyTexture(graphics: borrow Graphics, texture: borrow GraphicsTexture) {
+public function glassDestroyTexture(graphics: borrow Graphics, texture: borrow GraphicsTexture) {
     if texture.id == 0 {
         return
     }
@@ -101,7 +101,7 @@ function glassDestroyTexture(graphics: borrow Graphics, texture: borrow Graphics
     return
 }
 
-function glassDestroyBindGroup(graphics: borrow Graphics, group: borrow BindGroup) {
+public function glassDestroyBindGroup(graphics: borrow Graphics, group: borrow BindGroup) {
     if group.id == 0 {
         return
     }
@@ -113,7 +113,7 @@ function glassDestroyBindGroup(graphics: borrow Graphics, group: borrow BindGrou
 // Metal command buffers retain every resource they encode until completion, so
 // prior in-flight frames remain valid while the registry can stop retaining the
 // old resize bucket immediately.
-function glassDestroyTargets(state: borrow mut UiBatchState, graphics: borrow Graphics) {
+public function glassDestroyTargets(state: borrow mut UiBatchState, graphics: borrow Graphics) {
     glassDestroyTexture(graphics, state.blurTextureA)
     glassDestroyTexture(graphics, state.blurTextureB)
     for layer in 0..state.glassLayers.count {
@@ -143,7 +143,7 @@ function glassDestroyTargets(state: borrow mut UiBatchState, graphics: borrow Gr
 // Attach all targets used by glass layer `layer`. Layer 0 is built with the first
 // glass frame; deeper layers are built only when a frame actually stacks that far,
 // so an ordinary one- or two-layer UI does not reserve the maximum chain.
-function glassEnsureLayerScene(state: borrow mut UiBatchState, graphics: borrow Graphics, layer: GlassLayerId) {
+public function glassEnsureLayerScene(state: borrow mut UiBatchState, graphics: borrow Graphics, layer: GlassLayerId) {
     if layer.raw < 0 || layer.raw >= state.glassLayers.count {
         return
     }

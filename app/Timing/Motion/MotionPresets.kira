@@ -11,7 +11,7 @@ import Foundation
 //
 // Damping is the fraction ζ. Where a source states a "bounce", it is 1 - ζ.
 
-enum MotionCurveName {
+public enum MotionCurveName {
     // No overshoot at all. The default for anything that moves because the
     // interface changed rather than because the user is dragging it.
     Smooth
@@ -38,7 +38,7 @@ enum MotionCurveName {
 }
 
 // The response and damping one name stands for.
-function motionCurve(name: borrow MotionCurveName, target: Float) -> MotionSpring {
+public function motionCurve(name: borrow MotionCurveName, target: Float) -> MotionSpring {
     return match name {
         Smooth -> MotionSpring { response: 0.5, damping: 1.0, target: target }
         Snappy -> MotionSpring { response: 0.5, damping: 0.85, target: target }
@@ -62,11 +62,11 @@ function motionCurve(name: borrow MotionCurveName, target: Float) -> MotionSprin
 // These are a shipping implementation's own mass/stiffness/damping, converted:
 // mass 1.36, stiffness 568, damping 39.7 for the press, and mass 2.0,
 // stiffness 460, damping 21.8 for the release.
-function motionLiftOn(target: Float) -> MotionSpring {
+public function motionLiftOn(target: Float) -> MotionSpring {
     return MotionSpring { response: 0.3075, damping: 0.7142, target: target }
 }
 
-function motionLiftOff(target: Float) -> MotionSpring {
+public function motionLiftOff(target: Float) -> MotionSpring {
     return MotionSpring { response: 0.4143, damping: 0.3594, target: target }
 }
 
@@ -82,19 +82,26 @@ function motionLiftOff(target: Float) -> MotionSpring {
 //
 // And it grows. A control that shrank under a press would read as a key being
 // pushed into a surface; glass comes UP to meet the finger.
-function motionPressLift() -> Float {
+// A pressed menu row's platter catching up with the finger sliding it to
+// another row: quick enough to sit under the finger, never trailing it, with
+// barely a trace of overshoot where it lands.
+public function motionPlatterFollow(target: Float) -> MotionSpring {
+    return MotionSpring { response: 0.16, damping: 0.88, target: target }
+}
+
+public function motionPressLift() -> Float {
     return 7.5
 }
 
 // The lift as a scale factor for an element whose shorter side is `extent`.
-function motionPressLiftScale(extent: Float) -> Float {
+public function motionPressLiftScale(extent: Float) -> Float {
     return 1.0 + motionPressLift() / max(extent, 1.0)
 }
 
 // A spring stated as a duration and a bounce, which is the other way the
 // platform spells one: `bounce: 0` is critically damped and `bounce: 0.3`
 // overshoots noticeably. Negative bounce is the overdamped side.
-function motionSpringFromBounce(duration: Float, bounce: Float, target: Float) -> MotionSpring {
+public function motionSpringFromBounce(duration: Float, bounce: Float, target: Float) -> MotionSpring {
     return MotionSpring {
         response: duration,
         damping: 1.0 - bounce,
@@ -115,7 +122,7 @@ function motionSpringFromBounce(duration: Float, bounce: Float, target: Float) -
 // go away entirely, and what remains is a short, plain settle. It is NOT a
 // jump to the final value — motion that vanishes takes the sense of where a
 // thing came from with it — except where the movement itself is the effect.
-function motionCurveReduced(spring: borrow MotionSpring) -> MotionSpring {
+public function motionCurveReduced(spring: borrow MotionSpring) -> MotionSpring {
     return MotionSpring {
         response: min(spring.response, 0.25),
         // Critical damping: the fastest approach with no overshoot, which is
@@ -128,7 +135,7 @@ function motionCurveReduced(spring: borrow MotionSpring) -> MotionSpring {
 // The spring a surface should actually animate with, given the viewer's
 // preference. Every animating surface in this package routes through here, so
 // honoring the preference is not something each one has to remember.
-function motionCurveFor(name: borrow MotionCurveName, target: Float, reducedMotion: Bool) -> MotionSpring {
+public function motionCurveFor(name: borrow MotionCurveName, target: Float, reducedMotion: Bool) -> MotionSpring {
     let spring = motionCurve(name, target)
     if reducedMotion {
         return motionCurveReduced(spring)
@@ -145,7 +152,7 @@ function motionCurveFor(name: borrow MotionCurveName, target: Float, reducedMoti
 // A spring is the better answer for anything a gesture can interrupt, because
 // an easing has no velocity to inherit and restarting one mid-flight is the
 // hitch springs exist to avoid.
-enum MotionEasing {
+public enum MotionEasing {
     Linear
     // Slow to start, so an element entering looks like it is accelerating in.
     EaseIn
@@ -160,7 +167,7 @@ enum MotionEasing {
 // at the midpoint — rather than a bezier solve, because these three are the
 // bezier the named curves resolve to and a solver would spend Newton
 // iterations arriving at the same numbers.
-function motionEase(easing: borrow MotionEasing, t: Float) -> Float {
+public function motionEase(easing: borrow MotionEasing, t: Float) -> Float {
     let p = clamp(t, 0.0, 1.0)
     return match easing {
         Linear -> p
@@ -180,7 +187,7 @@ function motionEase(easing: borrow MotionEasing, t: Float) -> Float {
 }
 
 // A value eased between two ends.
-function motionEaseBetween(easing: borrow MotionEasing, from: Float, to: Float, t: Float) -> Float {
+public function motionEaseBetween(easing: borrow MotionEasing, from: Float, to: Float, t: Float) -> Float {
     return lerp(from, to, motionEase(easing, t))
 }
 
@@ -190,7 +197,7 @@ function motionEaseBetween(easing: borrow MotionEasing, from: Float, to: Float, 
 // pointer-down draws, and it is short for a reason: past about that, the
 // acknowledgment stops reading as a response to the press and starts reading
 // as an animation that happens to follow it.
-function motionPressFeedbackDuration() -> Float {
+public function motionPressFeedbackDuration() -> Float {
     return 0.1
 }
 
@@ -199,6 +206,6 @@ function motionPressFeedbackDuration() -> Float {
 // Below this the finger is still pressing — hands are not steady, and a
 // control that started dragging at the first pixel of jitter would be
 // impossible to tap.
-function motionDragSlop() -> Float {
+public function motionDragSlop() -> Float {
     return 10.0
 }

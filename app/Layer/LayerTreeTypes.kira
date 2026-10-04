@@ -1,11 +1,11 @@
 import Foundation
 
-enum CALevel {
+public enum CALevel {
     Inline
     Overlay(Int)
 }
 
-struct CALayerNode {
+public struct CALayerNode {
     var id: LayerId = LayerId(0)
     var parentId: LayerId = LayerId(0)
     var key: Int = 0
@@ -30,6 +30,13 @@ struct CALayerNode {
     var restingFill: CAColor = CAColor { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }
     var hoverColor: CAColor = CAColor { a: 0.0 }
     var pressColor: CAColor = CAColor { a: 0.0 }
+    // Where the fill is drawn off the layer's own box, as an offset of its
+    // origin and its size: a press that slid here from another layer brings
+    // its platter with it, and these spring back to zero as it lands.
+    var platterX: CAChannel = CAChannel {}
+    var platterY: CAChannel = CAChannel {}
+    var platterW: CAChannel = CAChannel {}
+    var platterH: CAChannel = CAChannel {}
     var borderColor: CAColorChannel = CAColorChannel {}
     var cornerRadius: CAChannel = CAChannel {}
     var borderWidth: CAChannel = CAChannel {}
@@ -59,7 +66,9 @@ struct CALayerNode {
     var level: CALevel = .Inline
     var hit: Bool = false
     var interactive: Bool = false
+    var slidesPress: Bool = false
     var hitKey: Int = 0
+    var scrolls: Bool = false
     // Lifted onto the overlay list: skipped by the in-place walk and drawn from
     // the canvas root instead, so it escapes its parent's clip and order.
     var hoisted: Bool = false

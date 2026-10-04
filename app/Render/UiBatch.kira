@@ -6,7 +6,7 @@ import KiraLayout
 // draw per frame. `storage` is the native state every method recovers its
 // working set from; the methods themselves are spread across the UiBatch* files
 // through `extend`, grouped by what they draw.
-class UiBatch {
+public class UiBatch {
     // Typed affine owner of the retained compositor state. There is no raw
     // lifetime token: replacing or dropping a batch recursively releases its
     // state and every typed graphics owner it contains.
@@ -68,10 +68,10 @@ class UiBatch {
 // the vertex stage picks per corner. Eighteen shared floats used to be written
 // once per vertex, so a quad cost 192 floats where it now costs 54 — 30 for
 // everything but liquid glass, which is every glyph on screen.
-function quadFloatCount() -> Int { return 70 }
+public function quadFloatCount() -> Int { return 70 }
 // Where the material block starts inside a record.
-function quadMaterialOffset() -> Int { return 30 }
-function quadVertexCount() -> Int { return 4 }
+public function quadMaterialOffset() -> Int { return 30 }
+public function quadVertexCount() -> Int { return 4 }
 // One stream in the realistic Liquid Glass app peaks at 264 quads. Keep nearly
 // 4x that measured load for editor/text-heavy screens without making every
 // stream reserve a 48 MiB four-frame Metal ring. At 1,024 quads the ring is
@@ -79,7 +79,7 @@ function quadVertexCount() -> Int { return 4 }
 // Sized for a full screen of glyph quads plus glass surfaces at up to nine
 // region patches each (see pushGlass); 1024 overflowed — and quads past
 // the cap drop silently — once surfaces split.
-function maxQuadsPerBatch() -> Int { return 4096 }
+public function maxQuadsPerBatch() -> Int { return 4096 }
 // The scale a frame is rendered at: the display's own, or `KIRA_UI_SCALE`.
 //
 // A UI is judged at the density it will be used at, and a low-density panel
@@ -92,7 +92,7 @@ function maxQuadsPerBatch() -> Int { return 4096 }
 // Stated as a PERCENTAGE — `KIRA_UI_SCALE=200` is 2x — because the environment
 // hands back text and the only number Foundation reads out of it is an integer.
 // A percentage is what a display scale is written as everywhere else anyway.
-function foundationRenderScale(displayScale: Float) -> Float {
+public function foundationRenderScale(displayScale: Float) -> Float {
     let percent = environmentInt("KIRA_UI_SCALE", 0)
     if percent > 0 {
         return intAsFloat(value: percent) / 100.0
@@ -108,7 +108,7 @@ function foundationRenderScale(displayScale: Float) -> Float {
 // large title twice that: a window's worth of text in its sizes, weights and four
 // phases wants most of this. When it does fill, the next frame starts it over
 // (see `resetGlyphAtlas`).
-function glyphAtlasSize() -> Int { return 2048 }
+public function glyphAtlasSize() -> Int { return 2048 }
 
 // Transparent texels left between packed entries.
 //
@@ -118,8 +118,8 @@ function glyphAtlasSize() -> Int { return 2048 }
 // entry was packed next, which shows up as a faint ghost of a neighboring glyph
 // beside an icon or a letter. Two texels is the reach of the widest tap this
 // compositor takes, so the gutter is always what gets sampled.
-function atlasGutter() -> Int { return 2 }
-function glyphCacheCapacity() -> Int { return 8192 }
+public function atlasGutter() -> Int { return 2 }
+public function glyphCacheCapacity() -> Int { return 8192 }
 
 // Stacked liquid glass. A frame is cut into emission STREAMS: stream 0 is
 // everything under the first glass surface, and each further stream is one glass
@@ -131,7 +131,7 @@ function glyphCacheCapacity() -> Int { return 8192 }
 // a center card and a bottom dock that never touch each other share one layer, and
 // the frame costs exactly one capture + one blur chain, as before. Overlapping
 // glass pays one extra capture + blur chain per layer of overlap.
-function maxDrawStreams() -> Int { return 4 }
+public function maxDrawStreams() -> Int { return 4 }
 
 // The HUD's own stream, reserved one past the last glass layer. Graphics telemetry
 // refreshes on a cadence of its own (a few times a second) while the application's
@@ -140,24 +140,24 @@ function maxDrawStreams() -> Int { return 4 }
 // count and ring slot exactly as the last full frame left them. It is drawn last,
 // which is where the composed overlay drew before it had a stream, and it is never
 // part of a glass capture — captures hold streams 0..layer only.
-function hudStreamIndex() -> DrawStreamId { return DrawStreamId(maxDrawStreams()) }
+public function hudStreamIndex() -> DrawStreamId { return DrawStreamId(maxDrawStreams()) }
 
 // Every stream slot a batch can ever hold: the glass layers plus the HUD. Slots are
 // allocated on first use, so a placeholder costs an entry and no GPU memory.
-function streamSlotCount() -> Int { return hudStreamIndex().raw + 1 }
+public function streamSlotCount() -> Int { return hudStreamIndex().raw + 1 }
 
 // Cells the overlap grid cuts the viewport into. A cell is ~33x33pt at 1600x900 —
 // fine enough that neighboring chrome does not falsely read as overlapping, coarse
 // enough that marking a quad touches a handful of cells.
-function glassGridCols() -> Int { return 48 }
-function glassGridRows() -> Int { return 27 }
-function glassGridCells() -> Int { return glassGridCols() * glassGridRows() }
+public function glassGridCols() -> Int { return 48 }
+public function glassGridRows() -> Int { return 27 }
+public function glassGridCells() -> Int { return glassGridCols() * glassGridRows() }
 
 // The blur pyramid's divisor: every blurred level is this fraction of the
 // capture per axis, and one of its texels is therefore this many capture
 // texels. Both the compute pair and the drawn ladder step by one texel of the
 // level they are writing, so this is also the scale their taps are measured in.
-function glassBlurDivisor() -> Int { return 4 }
+public function glassBlurDivisor() -> Int { return 4 }
 
 // How far the blur reaches past the pixel it is sampled at, in logical points.
 //
@@ -166,16 +166,16 @@ function glassBlurDivisor() -> Int { return 4 }
 // coordinate, so it reads up to one texel past it; a level texel is at most `glassBlurDivisor()` points, because the capture is
 // never smaller than the viewport it holds. H and V each contribute this along
 // their own axis, so it is the reach per axis and not their sum.
-function glassBlurFarOuterTap() -> Float { return 9.355774893514 }
-function glassBlurReach() -> Float {
+public function glassBlurFarOuterTap() -> Float { return 9.355774893514 }
+public function glassBlurReach() -> Float {
     return (glassBlurFarOuterTap() + 1.0) * Float(glassBlurDivisor())
 }
 
 // How far each blurred level blurs, as a gaussian's sigma in points: the
 // kernel's own sigma in level texels (`Shaders/UiGlassBlurCommon.ksl`), at
 // the pyramid's divisor.
-function glassBlurNearRadius() -> Float { return 1.615855311186 * Float(glassBlurDivisor()) }
-function glassBlurFarRadius() -> Float { return 3.835586901974 * Float(glassBlurDivisor()) }
+public function glassBlurNearRadius() -> Float { return 1.615855311186 * Float(glassBlurDivisor()) }
+public function glassBlurFarRadius() -> Float { return 3.835586901974 * Float(glassBlurDivisor()) }
 
 // A hairline length authored in DEVICE PIXELS, in the quad's own (point) units.
 //
@@ -188,7 +188,7 @@ function glassBlurFarRadius() -> Float { return 3.835586901974 * Float(glassBlur
 // Never below one device pixel: a hairline thinner than a pixel is a fainter
 // hairline, not a thinner one, and fading it out is not what any of these
 // numbers mean.
-function glassHairline(devicePixels: Float, scale: Float) -> Float {
+public function glassHairline(devicePixels: Float, scale: Float) -> Float {
     var onePixel = 1.0
     if scale > 0.0 {
         onePixel = 1.0 / scale
@@ -223,18 +223,18 @@ function glassHairline(devicePixels: Float, scale: Float) -> Float {
 // viewport, which is what the vertex stage's point-to-clip mapping works out to
 // and is not the backing scale on a drawable that is not a whole number of
 // points.
-function glassSnapToDevicePixel(value: Float, scale: Float) -> Float {
+public function glassSnapToDevicePixel(value: Float, scale: Float) -> Float {
     if scale <= 0.0 {
         return value
     }
     return floor(value * scale + 0.5) / scale
 }
 
-function streamFloatCapacity() -> Int {
+public function streamFloatCapacity() -> Int {
     return maxQuadsPerBatch() * quadFloatCount()
 }
 
-function zeroedInts(n: Int) -> [Int] {
+public function zeroedInts(n: Int) -> [Int] {
     var a: [Int] = []
     var i = 0
     while i < n {
@@ -244,7 +244,7 @@ function zeroedInts(n: Int) -> [Int] {
     return a
 }
 
-function zeroedBools(n: Int) -> [Bool] {
+public function zeroedBools(n: Int) -> [Bool] {
     var a: [Bool] = []
     var i = 0
     while i < n {
@@ -254,7 +254,7 @@ function zeroedBools(n: Int) -> [Bool] {
     return a
 }
 
-function zeroedTextureHandles(n: Int) -> [TextureHandle] {
+public function zeroedTextureHandles(n: Int) -> [TextureHandle] {
     var a: [TextureHandle] = []
     var i = 0
     while i < n {
@@ -265,7 +265,7 @@ function zeroedTextureHandles(n: Int) -> [TextureHandle] {
 }
 
 
-function quadIndices(quadCount: Int) -> [U32] {
+public function quadIndices(quadCount: Int) -> [U32] {
     var indices: [U32] = []
     var q = 0
     while q < quadCount {
@@ -297,7 +297,7 @@ function quadIndices(quadCount: Int) -> [U32] {
 // compiled into libkiratext, which exists wherever the library is linked. That
 // is what makes the retained path unconditional — a browser has no filesystem
 // to name a face in, and it does not need one.
-function fontCandidates() -> [String] {
+public function fontCandidates() -> [String] {
     match hostPlatform() {
         MacOS -> return appleFontCandidates()
         IOS -> return appleFontCandidates()
@@ -310,7 +310,7 @@ function fontCandidates() -> [String] {
     }
 }
 
-function everyFontCandidate() -> [String] {
+public function everyFontCandidate() -> [String] {
     var all: [String] = []
     for path in appleFontCandidates() { all.append(path) }
     for path in windowsFontCandidates() { all.append(path) }
@@ -318,7 +318,7 @@ function everyFontCandidate() -> [String] {
     return all
 }
 
-function appleFontCandidates() -> [String] {
+public function appleFontCandidates() -> [String] {
     return [
         "/System/Library/Fonts/SFNS.ttf",
         "/System/Library/Fonts/Helvetica.ttc",
@@ -338,11 +338,11 @@ function appleFontCandidates() -> [String] {
 // window is judged against — and the bundled face is a better one at every size
 // a UI is set in. So Windows takes the bundled face on purpose, and the empty
 // list is how `loadBatchFont` is told so.
-function windowsFontCandidates() -> [String] {
+public function windowsFontCandidates() -> [String] {
     return []
 }
 
-function linuxFontCandidates() -> [String] {
+public function linuxFontCandidates() -> [String] {
     return [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
@@ -360,7 +360,7 @@ function linuxFontCandidates() -> [String] {
 // browser, a container image with no fonts installed, an embedded target. The
 // retained path is therefore not conditional on the platform: text is always
 // possible, and only WHICH face draws it varies.
-@Native
+public @Native
 function loadBatchFont(state: borrow mut UiBatchState) {
     let engine = kira_text_engine_create()
     state.engine = engine

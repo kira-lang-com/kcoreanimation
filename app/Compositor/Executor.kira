@@ -2,11 +2,11 @@ import Foundation
 import KiraGraphics
 import KiraLayout
 
-function caPassTextureHandle(texture: borrow GraphicsTexture) -> TextureHandle {
+public function caPassTextureHandle(texture: borrow GraphicsTexture) -> TextureHandle {
     return TextureHandle(Int(texture.viewId))
 }
 
-function caPassDeviceExtent(logical: Float, scale: Float) -> Int {
+public function caPassDeviceExtent(logical: Float, scale: Float) -> Int {
     var extent = Int(ceil(max(logical, 1.0) * max(scale, 1.0)))
     if extent < 1 {
         extent = 1
@@ -14,7 +14,7 @@ function caPassDeviceExtent(logical: Float, scale: Float) -> Int {
     return extent
 }
 
-function caPassTargetScale(pass: borrow CAPass, texture: borrow GraphicsTexture) -> Float {
+public function caPassTargetScale(pass: borrow CAPass, texture: borrow GraphicsTexture) -> Float {
     let width = max(pass.bounds.width, 1.0)
     let height = max(pass.bounds.height, 1.0)
     var textureWidth = texture.width
@@ -30,7 +30,7 @@ function caPassTargetScale(pass: borrow CAPass, texture: borrow GraphicsTexture)
     return max(min(sx, sy), 1.0)
 }
 
-function caPlanContainsOwner(plan: borrow CARenderPlan, owner: LayerId) -> Bool {
+public function caPlanContainsOwner(plan: borrow CARenderPlan, owner: LayerId) -> Bool {
     for passIndex in 1..plan.passes.count {
         if plan.passes[passIndex].owner == owner {
             return true
@@ -40,6 +40,20 @@ function caPlanContainsOwner(plan: borrow CARenderPlan, owner: LayerId) -> Bool 
 }
 
 extend Compositor {
+    // A pass target is destroyed, and every batch that may have bound it
+    // forgets it: the pass batches now, since a parent pass is encoded after
+    // its children are re-made, and the root batch before it next draws.
+    function retireTexture(graphics: borrow Graphics, texture: borrow GraphicsTexture) {
+        let handle = caPassTextureHandle(texture)
+        graphics.destroyTexture(texture)
+        for index in 0..self.passBatches.count {
+            let passBatch = UiBatch { storage: nativeUserData(self.passBatches[index].batch.storage) }
+            passBatch.forgetTexture(graphics, handle)
+        }
+        self.retiredTextures.append(handle)
+        return
+    }
+
     function ensurePassBatch(passId: RenderPassId, graphics: borrow Graphics) -> Int {
         let slot = passId.raw - 1
         if slot < 0 {
@@ -65,7 +79,7 @@ extend Compositor {
             match self.renderTarget(pass.targetId) {
                 None -> {
                     if cached.texture.id != 0 && !cached.external {
-                        graphics.destroyTexture(cached.texture)
+                        self.retireTexture(graphics, cached.texture)
                     }
                     self.cachedTargets[index] = CACachedPassTarget {
                         owner: pass.owner,
@@ -78,7 +92,7 @@ extend Compositor {
                 Some(target) -> {
                     if target.viewId == 0 || target.colorViewId == 0 || target.width <= 0 || target.height <= 0 {
                         if cached.texture.id != 0 && !cached.external {
-                            graphics.destroyTexture(cached.texture)
+                            self.retireTexture(graphics, cached.texture)
                         }
                         self.cachedTargets[index] = CACachedPassTarget {
                             owner: pass.owner,
@@ -94,7 +108,7 @@ extend Compositor {
                         || cached.texture.viewId != target.viewId
                         || cached.texture.colorViewId != target.colorViewId
                     if changed && cached.texture.id != 0 && !cached.external {
-                        graphics.destroyTexture(cached.texture)
+                        self.retireTexture(graphics, cached.texture)
                     }
                     cached.targetId = pass.targetId
                     cached.texture = target
@@ -118,7 +132,7 @@ extend Compositor {
             || cached.deviceHeight != height
         if mustAllocate {
             if cached.texture.id != 0 && !cached.external {
-                graphics.destroyTexture(cached.texture)
+                self.retireTexture(graphics, cached.texture)
             }
             let target = textureOrReport(graphics.createTexture(TextureDescriptor {
                 label: "kcoreanimation-pass-target",
@@ -146,7 +160,7 @@ extend Compositor {
             if caPlanContainsOwner(plan, cached.owner) {
                 kept.append(cached)
             } else if cached.texture.id != 0 && !cached.external {
-                graphics.destroyTexture(cached.texture)
+                self.retireTexture(graphics, cached.texture)
             }
         }
         self.cachedTargets = move kept
@@ -237,7 +251,7 @@ extend Compositor {
 // are refreshed first so every composite command samples this frame's texture.
 // Presentation is deliberately separate: the window may append its HUD stream
 // after this call without rebuilding the application draw streams.
-function caCompositorEncode(
+public function caCompositorEncode(
     compositor: borrow mut Compositor,
     frame: borrow mut RenderFrame,
     graphics: borrow Graphics,
@@ -249,6 +263,10 @@ function caCompositorEncode(
 ) -> Int {
     let plan = caPlan(compositor.tree)
     let passTextures = compositor.renderIsolatedPasses(plan, frame, graphics, renderScale)
+    for retired in compositor.retiredTextures {
+        batch.forgetTexture(graphics, retired)
+    }
+    compositor.retiredTextures = []
     let rootBatch = UiBatch { storage: nativeUserData(batch.storage) }
     var backend = KiraGraphicsFoundationBackend {
         graphics: graphics,
