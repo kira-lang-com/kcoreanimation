@@ -315,6 +315,14 @@ public struct UiBatchState {
     var fontWeightSet: Int = 0
     var ascender: Float = 0.0
     var descender: Float = 0.0
+    // The face's vertical metrics at every size and weight a run has asked
+    // for, keyed `sizeKey * 1000 + weightKey`. Setting the face's size and
+    // weight axes is the dear part of switching between them, and a run whose
+    // glyphs are all in the atlas needs only these two numbers -- so the face
+    // is set only when a glyph has to be rasterized.
+    var metricKeys: [Int] = []
+    var metricAscenders: [Float] = []
+    var metricDescenders: [Float] = []
 
     // Vertices are written straight into the dynamic vertex buffer's shared contents
     // (GPU-visible memory) as they are emitted — no per-frame Kira array. Keeping a

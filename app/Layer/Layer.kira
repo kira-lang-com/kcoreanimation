@@ -117,6 +117,18 @@ public struct CARemoval {
     var duration: Float = 0.0
 }
 
+// How a layer arrives the first time a description has it, as SwiftUI's
+// insertion transition: put down displaced by `offset` at `opacity`, then
+// taken to where the description says in the transaction it is described in.
+// A motion that brings a layer in states its end once, rather than a build
+// describing where it starts and a second build where it goes. A layer
+// already on screen ignores it and moves from where it stands.
+public struct CAEntrance {
+    var active: Bool = false
+    var offset: Point = Point {}
+    var opacity: Float = 1.0
+}
+
 // Declarative layer value consumed by the retained tree reconciler. Identity is
 // the sibling key; the CALayerTree owns the stable LayerId assigned to it.
 public class CALayerDescription {
@@ -189,6 +201,8 @@ public class CALayerDescription {
     var animation: CALayerAnimation = .Inherit
     // How the layer leaves when it is no longer described. See `CARemoval`.
     var removal: CARemoval = CARemoval {}
+    // How the layer arrives when a description first has it. See `CAEntrance`.
+    var entrance: CAEntrance = CAEntrance {}
     // How this layer wants to be sized and how it arranges its sublayers; a
     // toolkit's layout pass reads this and writes `position`/`size`.
     var layout: CALayoutIntent = CALayoutIntent {}

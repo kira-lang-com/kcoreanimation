@@ -113,6 +113,11 @@ int kira_text_utf8_next(const char* s, int len, int32_t* index, uint32_t* codepo
  * (written to `out`); returns the number decoded. */
 int kira_text_decode_codepoints(const char* s, int32_t* out, int max);
 
+/* Write a rasterized glyph's 8-bit coverage into an RGBA atlas image
+ * `atlas_width` pixels wide, every channel set to the coverage, with the glyph's
+ * top-left at (x, y). `pitch` is the coverage's row stride in bytes. */
+void kira_text_blit_coverage_rgba(void* atlas, int32_t atlas_width, void* coverage, int32_t pitch, int32_t x, int32_t y, int32_t width, int32_t height);
+
 /* Diagnostic: run the full FreeType pipeline (face load -> sizing -> glyph index
  * -> rasterization -> measurement) against a real on-disk font and return a
  * human-readable one-line report of the actual measured values. `font_path` may

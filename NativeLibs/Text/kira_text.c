@@ -1188,11 +1188,10 @@ static int kira_text_run_ink_bounds(
     for (unsigned int i = 0; i < count; i += 1) {
         float glyph_x = pen_x + kira_text_f26dot6(positions[i].x_offset);
         pen_x += kira_text_f26dot6(positions[i].x_advance);
+        /* Loading an outline presets the bitmap box rendering it would fill,
+         * which is all this reads: rendering it as well rasterized every glyph
+         * of the run at four times its size to report the same numbers. */
         if (FT_Load_Glyph(face->face, infos[i].codepoint, FT_LOAD_NO_HINTING) != 0) {
-            continue;
-        }
-        if (face->face->glyph->format == FT_GLYPH_FORMAT_OUTLINE &&
-            FT_Render_Glyph(face->face->glyph, FT_RENDER_MODE_NORMAL) != 0) {
             continue;
         }
         FT_GlyphSlot slot = face->face->glyph;
@@ -1275,8 +1274,13 @@ static int kira_text_cached_ink_bounds(
     /* Ink bounds are a property of the WEIGHT as much as the size: a semibold
      * run is wider and its stems reach further than the regular cut of the same
      * string. Leaving weight out of the key is how a bold label gets laid out to
-     * the regular run's ink and then painted past it. */
-    int weight_q = (int)(weight + 0.5);
+     * the regular run's ink and then painted past it.
+     *
+     * It is measured at the nearest tenth of the axis, the step the glyph atlas
+     * rasterizes at: a weight animating between two cuts would otherwise ask
+     * for, and rasterize, a new run on every frame it passes through. */
+    int weight_q = (int)(weight / 10.0 + 0.5) * 10;
+    weight = (double)weight_q;
 
     uint64_t hash = kira_text_run_hash(font_path, utf8, (double)pixel_size_q, (double)weight_q);
     size_t home = (size_t)(hash % KIRA_TEXT_INK_CACHE_SLOTS);
@@ -1451,4 +1455,19 @@ int kira_text_decode_codepoints(const char* s, int32_t* out, int max) {
         n += 1;
     }
     return n;
+}
+
+void kira_text_blit_coverage_rgba(void* atlas, int32_t atlas_width, void* coverage, int32_t pitch, int32_t x, int32_t y, int32_t width, int32_t height) {
+    if (atlas == NULL || coverage == NULL) {
+        return;
+    }
+    uint8_t* dst = (uint8_t*)atlas;
+    const uint8_t* src = (const uint8_t*)coverage;
+    for (int32_t row = 0; row < height; row++) {
+        const uint8_t* in = src + (size_t)row * (size_t)pitch;
+        uint32_t* out = (uint32_t*)(dst + ((size_t)(y + row) * (size_t)atlas_width + (size_t)x) * 4u);
+        for (int32_t col = 0; col < width; col++) {
+            out[col] = (uint32_t)in[col] * 0x01010101u;
+        }
+    }
 }

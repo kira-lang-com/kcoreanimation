@@ -174,10 +174,15 @@ public function caFlattenInto(tree: borrow CALayerTree, frame: borrow CAWalkFram
         None -> { return }
         Some(slot) -> { idx = slot }
     }
-    let node = tree.nodes[idx.raw]
-    if !node.mounted {
+    if !tree.nodes[idx.raw].mounted {
         return
     }
+    caFlattenLayer(tree, tree.nodes[idx.raw], frame, out)
+    return
+}
+
+// One mounted layer and what it holds, the node borrowed where it stands.
+public function caFlattenLayer(tree: borrow CALayerTree, node: borrow CALayerNode, frame: borrow CAWalkFrame, out: borrow mut [CADrawItem]) {
     let world = caConcat(frame.world, caConcat(caLocalTransform(node), caDeformTransform(node)))
     let opacity = frame.opacity * node.opacity.presentation
     out.append(caDrawItemFor(node, frame, world, opacity))

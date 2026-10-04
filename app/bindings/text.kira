@@ -52,6 +52,9 @@ function kira_text_ascent(font_path: CString, pixel_size: Float, weight: Float) 
 @FFI.Extern { library: kiratext, symbol: kira_text_backend_version, abi: c }
 function kira_text_backend_version() -> CString
 
+@FFI.Extern { library: kiratext, symbol: kira_text_blit_coverage_rgba, abi: c }
+function kira_text_blit_coverage_rgba(atlas: RawPtr, atlas_width: I32, coverage: RawPtr, pitch: I32, x: I32, y: I32, width: I32, height: I32) -> Void
+
 @FFI.Extern { library: kiratext, symbol: kira_text_decode_codepoints, abi: c }
 function kira_text_decode_codepoints(s: CString, out: int32_t_ptr, max: I32) -> I32
 

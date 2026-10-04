@@ -189,10 +189,17 @@ public function caPlanNode(tree: borrow CALayerTree, frame: borrow CAPlanFrame, 
         None -> { return }
         Some(slot) -> { idx = slot }
     }
-    let node = tree.nodes[idx.raw]
-    if !node.mounted {
+    if !tree.nodes[idx.raw].mounted {
         return
     }
+    caPlanLayer(tree, tree.nodes[idx.raw], frame, plan)
+    return
+}
+
+// Plans one mounted layer and what it holds. The node is borrowed where it
+// stands in the tree: a node is a large value, and a copy of each one per
+// frame was a good part of planning it.
+public function caPlanLayer(tree: borrow CALayerTree, node: borrow CALayerNode, frame: borrow CAPlanFrame, plan: borrow mut CARenderPlan) {
     let rest = caConcat(frame.world, caLocalTransform(node))
     let world = caConcat(rest, caDeformTransform(node))
     let eff = frame.opacity * node.opacity.presentation
@@ -260,32 +267,27 @@ public function caPlanNode(tree: borrow CALayerTree, frame: borrow CAPlanFrame, 
         }
         // A blurred tree spreads past what it painted, so its texture is
         // held open by the blur's reach on every side.
-        if isBlurred && plan.passes[newPass.raw].hasBounds {
-            var padded = plan.passes[newPass.raw]
+        let p = newPass.raw
+        if isBlurred && plan.passes[p].hasBounds {
             let reach = node.blur * caLengthScale(world)
-            padded.bounds = Rect {
-                x: padded.bounds.x - reach,
-                y: padded.bounds.y - reach,
-                width: padded.bounds.width + reach * 2.0,
-                height: padded.bounds.height + reach * 2.0
+            let held = plan.passes[p].bounds
+            plan.passes[p].bounds = Rect {
+                x: held.x - reach,
+                y: held.y - reach,
+                width: held.width + reach * 2.0,
+                height: held.height + reach * 2.0
             }
-            plan.passes[newPass.raw] = padded
         }
-        let isolated = plan.passes[newPass.raw]
-        if isolated.hasBounds {
-            let shown = isDeformed ? caApplyRect(caDeformAcross(rest, node), isolated.bounds) : isolated.bounds
+        if plan.passes[p].hasBounds {
+            let isolatedBounds = plan.passes[p].bounds
+            let shown = isDeformed ? caApplyRect(caDeformAcross(rest, node), isolatedBounds) : isolatedBounds
             var composite = caCompositeCmd(node.id, shown, eff, frame, newPass)
             composite.blur = isBlurred ? node.blur * caLengthScale(world) : 0.0
-            caPlanEmit(
-                plan,
-                frame.pass,
-                move composite,
-                isolated.dirty || node.damaged
-            )
-            if isolated.requiresRefresh {
-                var parentPass = plan.passes[frame.pass.raw]
-                parentPass.requiresRefresh = true
-                plan.passes[frame.pass.raw] = parentPass
+            let dirty = plan.passes[p].dirty || node.damaged
+            let refresh = plan.passes[p].requiresRefresh
+            caPlanEmit(plan, frame.pass, move composite, dirty)
+            if refresh {
+                plan.passes[frame.pass.raw].requiresRefresh = true
             }
         }
         return
@@ -332,8 +334,7 @@ public function caPlanInksIntoBackdrop(tree: borrow CALayerTree, node: borrow CA
         match tree.nodeSlot(childId) {
             None -> { continue }
             Some(slot) -> {
-                let child = tree.nodes[slot.raw]
-                match child.content {
+                match tree.nodes[slot.raw].content {
                     Icon(icon) -> {
                         if icon.blend != .Normal {
                             return true
@@ -346,7 +347,7 @@ public function caPlanInksIntoBackdrop(tree: borrow CALayerTree, node: borrow CA
                     Glass(g) -> {}
                     Gradient(g) -> {}
                 }
-                if caPlanInksIntoBackdrop(tree, child) {
+                if caPlanInksIntoBackdrop(tree, tree.nodes[slot.raw]) {
                     return true
                 }
             }

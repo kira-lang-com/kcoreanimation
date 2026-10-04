@@ -313,22 +313,26 @@ extend UiBatch {
         let bottomInk = inkBottom / shown
         let sizeKey = glyphSizeKey(sizePx / shown * rasterScale)
         let weightKey = glyphWeightKey(weightAxis)
-        // Inline of setGlyphSize: switch the face's working size + cache vertical metrics.
-        if state.fontSizeSet != sizeKey || state.fontWeightSet != weightKey {
-            let applied = kira_text_face_set_pixel_size(state.face, Float(sizeKey), glyphWeightAxis(weightKey))
-            if applied == 0 {
+        let metricKey = sizeKey * 1000 + weightKey
+        var metric = -1
+        let metricKeys = state.metricKeys
+        for m in 0..metricKeys.count {
+            if metricKeys[m] == metricKey {
+                metric = m
+                break
+            }
+        }
+        if metric < 0 {
+            if !uiBatchSetFace(state, sizeKey, weightKey) {
                 return
             }
-            let mv: kira_text_vmetrics_ptr = allocateBytes(verticalMetricsSize())
-            kira_text_face_vmetrics(state.face, mv)
-            state.ascender = Float(mv.ascender)
-            state.descender = Float(mv.descender)
-            freeBytes(mv)
-            state.fontSizeSet = sizeKey
-            state.fontWeightSet = weightKey
+            metric = state.metricKeys.count
+            state.metricKeys.append(metricKey)
+            state.metricAscenders.append(state.ascender)
+            state.metricDescenders.append(state.descender)
         }
-        let ascender = state.ascender / rasterScale
-        let descender = state.descender / rasterScale
+        let ascender = state.metricAscenders[metric] / rasterScale
+        let descender = state.metricDescenders[metric] / rasterScale
         // Where the BASELINE goes.
         //
         // A run given room for the font's line box sits on the baseline that box
@@ -398,6 +402,16 @@ extend UiBatch {
         var glyphSlots = state.glyphs
         let cap = hashKeys.count
         let stride = quadFloatCount()
+        // What every glyph of the run writes the same, read off the state once.
+        let overs = textOversampleAt(scale)
+        let contents = state.contentsPtr
+        let contentsReady = !pointerIsNull(contents)
+        let frameBase = state.frameBase
+        let viewW = state.viewportW
+        let viewH = state.viewportH
+        let stream = state.streamIndex.raw
+        let glyphModeCode = Int(glyphMode * 10.0)
+        let requiresGeneric = rotSin != 0.0 || rotCos != 1.0
         var penX = runX
         if hasInk {
             // The layout frame starts at visible ink, while glyph bearings are
@@ -406,219 +420,248 @@ extend UiBatch {
             penX = runX - leftInk
         }
 
-        let indexSlot: int32_t_ptr = allocateBytes(8)
-        let cpSlot: uint32_t_ptr = allocateBytes(8)
-        writeWord(indexSlot, 0, 0)
-        writeWord(cpSlot, 0, 0)
+        // The run decoded once. Asking for one scalar at a time handed the
+        // whole string across to C again for every character in it.
+        var capacity = content.count * 4 + 4
+        if capacity > 4096 {
+            capacity = 4096
+        }
+        let decoded: int32_t_ptr = allocateBytes(U64(capacity * 4))
+        let decodedCount = Int(kira_text_decode_codepoints(content, decoded, I32(capacity)))
         var guard = 0
         var more = true
-        while more && guard < 4096 {
-            let produced = kira_text_utf8_next(content, I32(1000000), indexSlot, cpSlot)
-            if produced == 0 {
+        while more && guard < decodedCount {
+            let codepoint = Int(wordAt(decoded, U64(guard * 4)))
+            if codepoint == 0 {
                 more = false
             } else {
-                let codepoint = Int(wordAt(cpSlot, 0))
-                if codepoint == 0 {
-                    more = false
-                } else {
-                    // --- inline glyph lookup (open-addressing hash) ---
-                    // The pen in DEVICE pixels decides the subpixel phase: the glyph is
-                    // rasterized for the fraction it actually sits at, then placed on a
-                    // whole pixel. Rasterizing once and drawing at a fractional offset
-                    // instead leaves the sampler to resample coverage, which is both
-                    // softer and unevenly spaced — the thing this is here to avoid.
-                    let devicePen = penX * scale
-                    let phase = glyphPhaseOf(devicePen)
-                    let key = glyphCacheKey(codepoint, sizeKey, weightKey, phase)
-                    var slotIdx = -1
-                    var homeSlot = -1
-                    var probing = cap > 0
-                    var hh = 0
-                    if cap > 0 {
-                        hh = (key % cap + cap) % cap
+                // --- inline glyph lookup (open-addressing hash) ---
+                // The pen in DEVICE pixels decides the subpixel phase: the glyph is
+                // rasterized for the fraction it actually sits at, then placed on a
+                // whole pixel. Rasterizing once and drawing at a fractional offset
+                // instead leaves the sampler to resample coverage, which is both
+                // softer and unevenly spaced — the thing this is here to avoid.
+                let devicePen = penX * scale
+                let phase = glyphPhaseOf(devicePen)
+                let key = glyphCacheKey(codepoint, sizeKey, weightKey, phase)
+                var slotIdx = -1
+                var homeSlot = -1
+                var probing = cap > 0
+                var hh = 0
+                if cap > 0 {
+                    hh = (key % cap + cap) % cap
+                    // Most lookups end at the home slot; only a collision walks.
+                    let homeKey = hashKeys[hh]
+                    if homeKey == key {
+                        slotIdx = hashVals[hh]
+                        probing = false
+                    } else if homeKey == 0 {
+                        homeSlot = hh
+                        probing = false
                     }
-                    var probes = 0
-                    while probing && probes < cap {
-                        let slotKey = hashKeys[hh]
-                        if slotKey == key {
-                            slotIdx = hashVals[hh]
+                }
+                var probes = 0
+                while probing && probes < cap {
+                    let slotKey = hashKeys[hh]
+                    if slotKey == key {
+                        slotIdx = hashVals[hh]
+                        probing = false
+                    } else {
+                        if slotKey == 0 {
+                            homeSlot = hh
                             probing = false
                         } else {
-                            if slotKey == 0 {
-                                homeSlot = hh
-                                probing = false
+                            hh = (hh + 1) % cap
+                            probes += 1
+                        }
+                    }
+                }
+                // --- inline rasterization on miss ---
+                if slotIdx < 0 && !uiBatchSetFace(state, sizeKey, weightKey) {
+                    more = false
+                    continue
+                }
+                if slotIdx < 0 {
+                    let glyphIndex = kira_text_face_glyph_index(state.face, U32(codepoint))
+                    let bm: kira_text_glyph_bitmap_ptr = allocateBytes(glyphBitmapSize())
+                    let rendered = kira_text_face_render_glyph_offset(state.face, glyphIndex, I32(glyphPhaseOffset(phase, textOversampleAt(scale))), bm)
+                    if rendered != 0 {
+                        let gwp = Int(bm.width)
+                        let ghp = Int(bm.rows)
+                        var newSlot = UiGlyphSlot {
+                            key: key,
+                            advance: Float(bm.advance),
+                            bearingX: Int(bm.bearing_x),
+                            bearingY: Int(bm.bearing_y),
+                            w: gwp,
+                            h: ghp,
+                            valid: true
+                        }
+                        let pitch = Int(bm.pitch)
+                        let buffer = bm.buffer
+                        if gwp > 0 && ghp > 0 && buffer != RawPtr.null {
+                            if state.cursorX + gwp + atlasGutter() > state.atlasW {
+                                state.cursorX = atlasGutter()
+                                state.cursorY += state.rowHeight + atlasGutter()
+                                state.rowHeight = 0
+                            }
+                            if state.cursorY + ghp + atlasGutter() <= state.atlasH {
+                                newSlot.atlasX = state.cursorX
+                                newSlot.atlasY = state.cursorY
+                                atlasBlitCoverage(state, buffer, pitch, newSlot.atlasX, newSlot.atlasY, gwp, ghp)
+                                state.cursorX += gwp + atlasGutter()
+                                if ghp > state.rowHeight {
+                                    state.rowHeight = ghp
+                                }
                             } else {
-                                hh = (hh + 1) % cap
-                                probes += 1
+                                newSlot.valid = false
+                                state.atlasExhausted = true
                             }
                         }
-                    }
-                    // --- inline rasterization on miss ---
-                    if slotIdx < 0 {
-                        let glyphIndex = kira_text_face_glyph_index(state.face, U32(codepoint))
-                        let bm: kira_text_glyph_bitmap_ptr = allocateBytes(glyphBitmapSize())
-                        let rendered = kira_text_face_render_glyph_offset(state.face, glyphIndex, I32(glyphPhaseOffset(phase, textOversampleAt(scale))), bm)
-                        if rendered != 0 {
-                            let gwp = Int(bm.width)
-                            let ghp = Int(bm.rows)
-                            var newSlot = UiGlyphSlot {
-                                key: key,
-                                advance: Float(bm.advance),
-                                bearingX: Int(bm.bearing_x),
-                                bearingY: Int(bm.bearing_y),
-                                w: gwp,
-                                h: ghp,
-                                valid: true
-                            }
-                            let pitch = Int(bm.pitch)
-                            let buffer = bm.buffer
-                            if gwp > 0 && ghp > 0 && buffer != RawPtr.null {
-                                if state.cursorX + gwp + atlasGutter() > state.atlasW {
-                                    state.cursorX = atlasGutter()
-                                    state.cursorY += state.rowHeight + atlasGutter()
-                                    state.rowHeight = 0
-                                }
-                                if state.cursorY + ghp + atlasGutter() <= state.atlasH {
-                                    newSlot.atlasX = state.cursorX
-                                    newSlot.atlasY = state.cursorY
-                                    atlasBlitCoverage(state, buffer, pitch, newSlot.atlasX, newSlot.atlasY, gwp, ghp)
-                                    state.cursorX += gwp + atlasGutter()
-                                    if ghp > state.rowHeight {
-                                        state.rowHeight = ghp
-                                    }
-                                } else {
-                                    newSlot.valid = false
-                                    state.atlasExhausted = true
-                                }
-                            }
-                            // A glyph that found no room is still appended, for its
-                            // advance, but left out of the hash so the started-over
-                            // atlas rasterizes it again.
-                            let cached = newSlot.valid && glyphCacheHasRoom(state, homeSlot)
-                            state.glyphs.append(move newSlot)
-                            slotIdx = state.glyphs.count - 1
-                            glyphSlots = state.glyphs
-                            if cached {
-                                state.glyphHashKeys[homeSlot] = key
-                                state.glyphHashVals[homeSlot] = slotIdx
-                                // The write above gave the state's hash a block of its
-                                // own; take the new one, or later probes read an entry
-                                // this one is missing.
-                                hashKeys = state.glyphHashKeys
-                                hashVals = state.glyphHashVals
-                            }
+                        // A glyph that found no room is still appended, for its
+                        // advance, but left out of the hash so the started-over
+                        // atlas rasterizes it again.
+                        let cached = newSlot.valid && glyphCacheHasRoom(state, homeSlot)
+                        state.glyphs.append(move newSlot)
+                        slotIdx = state.glyphs.count - 1
+                        glyphSlots = state.glyphs
+                        if cached {
+                            state.glyphHashKeys[homeSlot] = key
+                            state.glyphHashVals[homeSlot] = slotIdx
+                            // The write above gave the state's hash a block of its
+                            // own; take the new one, or later probes read an entry
+                            // this one is missing.
+                            hashKeys = state.glyphHashKeys
+                            hashVals = state.glyphHashVals
                         }
-                        freeBytes(bm)
                     }
-                    // --- inline slot read + emit ---
-                    if slotIdx >= 0 {
-                        // The whole slot at once. It is nine scalars and owns nothing,
-                        // so copying it is a handful of loads — where reading eight of
-                        // its fields one at a time was eight element reads through the
-                        // recovered state, each re-deriving the payload address and
-                        // walking into an array of structs.
-                        let slot = glyphSlots[slotIdx]
-                        let valid = slot.valid
-                        let gwpx = slot.w
-                        let ghpx = slot.h
-                        if valid && gwpx > 0 && ghpx > 0 {
-                            let bearingX = slot.bearingX
-                            let bearingY = slot.bearingY
-                            let atlasX = slot.atlasX
-                            let atlasY = slot.atlasY
-                            // The glyph's true rectangle in DEVICE pixels. Bearings and
-                            // extents come back from the rasterizer in raster pixels, so
-                            // at 2x oversampling an odd one lands the edge on a half
-                            // pixel — which is where this went wrong.
-                            let overs = textOversampleAt(scale)
-                            let leftDev = Float(Int(devicePen)) + Float(bearingX) / overs
-                            let topDev = baselineDevice - Float(bearingY) / overs
-                            let rightDev = leftDev + Float(gwpx) / overs
-                            let bottomDev = topDev + Float(ghpx) / overs
-                            // Grown to whole device pixels.
-                            //
-                            // A quad edge sitting exactly on a pixel CENTER is decided by
-                            // the rasterizer's fill rule, and the two sides of a glyph do
-                            // not fall the same way: one edge keeps its pixel and the
-                            // other loses it. The coverage in that column is not spread,
-                            // it is gone — an M whose stems are the same width in the
-                            // outline comes out with one bar visibly lighter than the
-                            // other, and every letter in the run has some version of it.
-                            //
-                            // So the quad is grown outward to whole pixels and the extra
-                            // is taken from the atlas's own one-texel gutter, which is
-                            // transparent. Every pixel the glyph touches is rasterized,
-                            // and the sampling stays exactly two texels to a pixel.
-                            let x0 = Float(Int(leftDev))
-                            let y0 = Float(Int(topDev))
-                            let x1 = Float(Int(rightDev) + 1)
-                            let y1 = Float(Int(bottomDev) + 1)
-                            var gx = x0 / scale
-                            var gy = y0 / scale
-                            let gw = (x1 - x0) / scale
-                            let gh = (y1 - y0) / scale
-                            if rotSin != 0.0 || rotCos != 1.0 {
-                                let runCenterX = runX + runW * 0.5
-                                let runCenterY = runY + runH * 0.5
-                                let glyphCenterX = gx + gw * 0.5
-                                let glyphCenterY = gy + gh * 0.5
-                                let dx = glyphCenterX - runCenterX
-                                let dy = glyphCenterY - runCenterY
-                                let rotatedCenterX = runCenterX + dx * rotCos - dy * rotSin
-                                let rotatedCenterY = runCenterY + dx * rotSin + dy * rotCos
-                                gx = rotatedCenterX - gw * 0.5
-                                gy = rotatedCenterY - gh * 0.5
-                            }
-                            let u0 = (Float(atlasX) - (leftDev - x0) * overs) / atlasW
-                            let v0 = (Float(atlasY) - (topDev - y0) * overs) / atlasW
-                            let u1 = (Float(atlasX + gwpx) + (x1 - rightDev) * overs) / atlasW
-                            let v1 = (Float(atlasY + ghpx) + (y1 - bottomDev) * overs) / atlasW
-                            if state.quadCount < maxQuadsPerBatch() && !pointerIsNull(state.contentsPtr) {
-                                let base = state.frameBase + state.quadCount * stride
-                                // The mode this quad is, recorded where the draw path
-                                // looks it up. writeQuad does this for every quad that
-                                // goes through it; the glyph path writes the record
-                                // itself and has to do the same, or the slot keeps
-                                // whatever the last frame to use this index put there —
-                                // and a glyph inheriting a glass region code is drawn
-                                // through a glass pipeline, which is where the black
-                                // boxes and vanished letters came from.
-                                let glyphModeCode = Int(glyphMode * 10.0)
-                                let requiresGeneric = rotSin != 0.0 || rotCos != 1.0
-                                if state.quadCount < state.streams[state.streamIndex.raw].quadModes.count {
-                                    state.streams[state.streamIndex.raw].quadModes[state.quadCount] = glyphModeCode
-                                    state.streams[state.streamIndex.raw].quadRequiresGeneric[state.quadCount] = requiresGeneric
-                                } else {
-                                    state.streams[state.streamIndex.raw].quadModes.append(glyphModeCode)
-                                    state.streams[state.streamIndex.raw].quadRequiresGeneric.append(requiresGeneric)
-                                }
-                                // Mode 4 reuses the fields it has no other use for:
-                                // borderWidth is the wash strength, edgeRefraction its
-                                // color's luminance, border.rg the run's sample point
-                                // in capture uv.
-                                writeQuadRecord(
-                                    state.contentsPtr, base,
-                                    originX + gx * shown, originY + gy * shown,
-                                    originX + (gx + gw) * shown, originY + (gy + gh) * shown,
-                                    u0, v0, u1, v1,
-                                    state.viewportW, state.viewportH,
-                                    0.0, 0.0, 0.0, glyphWash, glyphMode, glyphWashLuma,
-                                    color.r, color.g, color.b, color.a,
-                                    runCenterU, runCenterV, 0.0, 0.0,
-                                    clipMinX, clipMinY, clipMaxX, clipMaxY,
-                                    rotCos, rotSin
-                                )
-                                state.quadCount += 1
-                            }
+                    freeBytes(bm)
+                }
+                // --- inline slot read + emit ---
+                if slotIdx >= 0 {
+                    // The whole slot at once. It is nine scalars and owns nothing,
+                    // so copying it is a handful of loads — where reading eight of
+                    // its fields one at a time was eight element reads through the
+                    // recovered state, each re-deriving the payload address and
+                    // walking into an array of structs.
+                    let slot = glyphSlots[slotIdx]
+                    let valid = slot.valid
+                    let gwpx = slot.w
+                    let ghpx = slot.h
+                    if valid && gwpx > 0 && ghpx > 0 {
+                        let bearingX = slot.bearingX
+                        let bearingY = slot.bearingY
+                        let atlasX = slot.atlasX
+                        let atlasY = slot.atlasY
+                        // The glyph's true rectangle in DEVICE pixels. Bearings and
+                        // extents come back from the rasterizer in raster pixels, so
+                        // at 2x oversampling an odd one lands the edge on a half
+                        // pixel — which is where this went wrong.
+                        let leftDev = Float(Int(devicePen)) + Float(bearingX) / overs
+                        let topDev = baselineDevice - Float(bearingY) / overs
+                        let rightDev = leftDev + Float(gwpx) / overs
+                        let bottomDev = topDev + Float(ghpx) / overs
+                        // Grown to whole device pixels.
+                        //
+                        // A quad edge sitting exactly on a pixel CENTER is decided by
+                        // the rasterizer's fill rule, and the two sides of a glyph do
+                        // not fall the same way: one edge keeps its pixel and the
+                        // other loses it. The coverage in that column is not spread,
+                        // it is gone — an M whose stems are the same width in the
+                        // outline comes out with one bar visibly lighter than the
+                        // other, and every letter in the run has some version of it.
+                        //
+                        // So the quad is grown outward to whole pixels and the extra
+                        // is taken from the atlas's own one-texel gutter, which is
+                        // transparent. Every pixel the glyph touches is rasterized,
+                        // and the sampling stays exactly two texels to a pixel.
+                        let x0 = Float(Int(leftDev))
+                        let y0 = Float(Int(topDev))
+                        let x1 = Float(Int(rightDev) + 1)
+                        let y1 = Float(Int(bottomDev) + 1)
+                        var gx = x0 / scale
+                        var gy = y0 / scale
+                        let gw = (x1 - x0) / scale
+                        let gh = (y1 - y0) / scale
+                        if rotSin != 0.0 || rotCos != 1.0 {
+                            let runCenterX = runX + runW * 0.5
+                            let runCenterY = runY + runH * 0.5
+                            let glyphCenterX = gx + gw * 0.5
+                            let glyphCenterY = gy + gh * 0.5
+                            let dx = glyphCenterX - runCenterX
+                            let dy = glyphCenterY - runCenterY
+                            let rotatedCenterX = runCenterX + dx * rotCos - dy * rotSin
+                            let rotatedCenterY = runCenterY + dx * rotSin + dy * rotCos
+                            gx = rotatedCenterX - gw * 0.5
+                            gy = rotatedCenterY - gh * 0.5
                         }
-                            penX += slot.advance / rasterScale
+                        let u0 = (Float(atlasX) - (leftDev - x0) * overs) / atlasW
+                        let v0 = (Float(atlasY) - (topDev - y0) * overs) / atlasW
+                        let u1 = (Float(atlasX + gwpx) + (x1 - rightDev) * overs) / atlasW
+                        let v1 = (Float(atlasY + ghpx) + (y1 - bottomDev) * overs) / atlasW
+                        let quad = state.quadCount
+                        if quad < maxQuadsPerBatch() && contentsReady {
+                            let base = frameBase + quad * stride
+                            // The mode this quad is, recorded where the draw path
+                            // looks it up. writeQuad does this for every quad that
+                            // goes through it; the glyph path writes the record
+                            // itself and has to do the same, or the slot keeps
+                            // whatever the last frame to use this index put there —
+                            // and a glyph inheriting a glass region code is drawn
+                            // through a glass pipeline, which is where the black
+                            // boxes and vanished letters came from.
+                            if quad < state.streams[stream].quadModes.count {
+                                state.streams[stream].quadModes[quad] = glyphModeCode
+                                state.streams[stream].quadRequiresGeneric[quad] = requiresGeneric
+                            } else {
+                                state.streams[stream].quadModes.append(glyphModeCode)
+                                state.streams[stream].quadRequiresGeneric.append(requiresGeneric)
+                            }
+                            // Mode 4 reuses the fields it has no other use for:
+                            // borderWidth is the wash strength, edgeRefraction its
+                            // color's luminance, border.rg the run's sample point
+                            // in capture uv.
+                            writeQuadRecord(
+                                contents, base,
+                                originX + gx * shown, originY + gy * shown,
+                                originX + (gx + gw) * shown, originY + (gy + gh) * shown,
+                                u0, v0, u1, v1,
+                                viewW, viewH,
+                                0.0, 0.0, 0.0, glyphWash, glyphMode, glyphWashLuma,
+                                color.r, color.g, color.b, color.a,
+                                runCenterU, runCenterV, 0.0, 0.0,
+                                clipMinX, clipMinY, clipMaxX, clipMaxY,
+                                rotCos, rotSin
+                            )
+                            state.quadCount = quad + 1
+                        }
                     }
+                        penX += slot.advance / rasterScale
                 }
             }
             guard += 1
         }
-        freeBytes(indexSlot)
-        freeBytes(cpSlot)
+        freeBytes(decoded)
         return
     }
+}
+
+// Sets the face to a run's size and weight, reading its vertical metrics into
+// the state, unless it already stands there. False when the face refuses.
+public function uiBatchSetFace(state: borrow mut UiBatchState, sizeKey: Int, weightKey: Int) -> Bool {
+    if state.fontSizeSet == sizeKey && state.fontWeightSet == weightKey {
+        return true
+    }
+    let applied = kira_text_face_set_pixel_size(state.face, Float(sizeKey), glyphWeightAxis(weightKey))
+    if applied == 0 {
+        return false
+    }
+    let mv: kira_text_vmetrics_ptr = allocateBytes(verticalMetricsSize())
+    kira_text_face_vmetrics(state.face, mv)
+    state.ascender = Float(mv.ascender)
+    state.descender = Float(mv.descender)
+    freeBytes(mv)
+    state.fontSizeSet = sizeKey
+    state.fontWeightSet = weightKey
+    return true
 }

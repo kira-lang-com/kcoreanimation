@@ -84,17 +84,13 @@ public struct CALayerTree {
             self.indexOfId.append(.None)
         }
         self.indexOfId[newId.raw] = .Some(LayerSlot(index))
-        var created = self.nodes[index]
-        caInitAppearanceFromContent(created)
-        self.nodes[index] = created
+        caInitAppearanceFromContent(self.nodes[index])
         if parent == LayerId(0) {
             self.rootId = newId
         } else {
             match self.nodeSlot(parent) {
                 Some(pidx) -> {
-                    var p = self.nodes[pidx.raw]
-                    p.childIds.append(newId)
-                    self.nodes[pidx.raw] = p
+                    self.nodes[pidx.raw].childIds.append(newId)
                 }
                 None -> {}
             }

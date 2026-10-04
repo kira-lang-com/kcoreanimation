@@ -1,6 +1,7 @@
 import Foundation
 
-// The color a described layer's fill channel animates to.
+// What a described layer's content says about how it looks, read in one
+// match: the fill, outline and weight its channels animate to.
 //
 // One channel carries every color a node draws in: a solid's fill, a run's ink,
 // a glyph's tint, glass's tint, a gradient's first stop. A content that states
@@ -8,105 +9,137 @@ import Foundation
 // content states none. Applying the background over the content's own color
 // is what painted every label, glyph and transparent row in the description's
 // default.
-public function caDescribedFill(layer: borrow CALayerDescription) -> CAColor {
-    match layer.content {
-        Solid(s) -> return s.fill
-        Text(t) -> return t.color
-        Icon(i) -> return i.tint
-        Glass(g) -> return g.tint
-        Gradient(r) -> return r.start
-        Texture(x) -> return layer.backgroundColor
-        Empty -> return layer.backgroundColor
-    }
-}
-
+//
 // A solid states its own outline: its corner, its border and that border's
-// width. Every other content takes the layer's.
-public function caDescribedCornerRadius(layer: borrow CALayerDescription) -> Float {
-    match layer.content {
-        Solid(s) -> return s.cornerRadius
-        Text(t) -> return layer.cornerRadius
-        Icon(i) -> return layer.cornerRadius
-        Glass(g) -> return layer.cornerRadius
-        Gradient(r) -> return layer.cornerRadius
-        Texture(x) -> return layer.cornerRadius
-        Empty -> return layer.cornerRadius
-    }
+// width; every other content takes the layer's. A run states its weight on
+// the font's axis; every other content draws no text and takes the regular
+// weight a layer starts at.
+public struct CADescribedLook {
+    var fill: CAColor = CAColor {}
+    var cornerRadius: Float = 0.0
+    var borderWidth: Float = 0.0
+    var borderColor: CAColor = CAColor {}
+    var textWeight: Float = 400.0
 }
 
-public function caDescribedBorderWidth(layer: borrow CALayerDescription) -> Float {
-    match layer.content {
-        Solid(s) -> return s.borderWidth
-        Text(t) -> return layer.borderWidth
-        Icon(i) -> return layer.borderWidth
-        Glass(g) -> return layer.borderWidth
-        Gradient(r) -> return layer.borderWidth
-        Texture(x) -> return layer.borderWidth
-        Empty -> return layer.borderWidth
+public function caDescribedLook(layer: borrow CALayerDescription) -> CADescribedLook {
+    var look = CADescribedLook {
+        fill: layer.backgroundColor,
+        cornerRadius: layer.cornerRadius,
+        borderWidth: layer.borderWidth,
+        borderColor: layer.borderColor
     }
-}
-
-// A run states its weight on the font's axis. Every other content draws no
-// text and takes the regular weight a layer starts at.
-public function caDescribedTextWeight(layer: borrow CALayerDescription) -> Float {
     match layer.content {
-        Text(t) -> return t.weight
-        Solid(s) -> return 400.0
-        Icon(i) -> return 400.0
-        Glass(g) -> return 400.0
-        Gradient(r) -> return 400.0
-        Texture(x) -> return 400.0
-        Empty -> return 400.0
+        Solid(s) -> {
+            look.fill = s.fill
+            look.cornerRadius = s.cornerRadius
+            look.borderWidth = s.borderWidth
+            look.borderColor = s.border
+        }
+        Text(t) -> {
+            look.fill = t.color
+            look.textWeight = t.weight
+        }
+        Icon(i) -> look.fill = i.tint
+        Glass(g) -> look.fill = g.tint
+        Gradient(r) -> look.fill = r.start
+        Texture(x) -> {}
+        Empty -> {}
     }
-}
-
-public function caDescribedBorderColor(layer: borrow CALayerDescription) -> CAColor {
-    match layer.content {
-        Solid(s) -> return s.border
-        Text(t) -> return layer.borderColor
-        Icon(i) -> return layer.borderColor
-        Glass(g) -> return layer.borderColor
-        Gradient(r) -> return layer.borderColor
-        Texture(x) -> return layer.borderColor
-        Empty -> return layer.borderColor
-    }
+    return look
 }
 
 // `geometryImmediate` puts the layer where the layout says at once while every
 // other property animates as it would: what a live resize asks for.
+//
+// The node is found once and the transaction read once, and every value is
+// set where it stands: going through the tree's setters looked the node up
+// and copied the timing again for each of them.
 public function caApplyLayerDescription(tree: borrow mut CALayerTree, id: LayerId, layer: borrow CALayerDescription, geometryImmediate: Bool = false) {
     tree.setContent(id, layer.content)
-    if geometryImmediate {
-        tree.beginTransaction(caImmediateTiming())
+    var i = 0
+    match tree.nodeSlot(id) {
+        None -> { return }
+        Some(slot) -> { i = slot.raw }
     }
-    tree.setPosition(id, layer.position.x, layer.position.y)
-    tree.setBounds(id, layer.size.width, layer.size.height)
+    let look = caDescribedLook(layer)
+    let timing = tree.currentTiming()
+    let clock = tree.clock
+    var damaged = false
     if geometryImmediate {
-        tree.commitTransaction()
+        let placed = caImmediateTiming()
+        if caApplyTiming(tree.nodes[i].posX, placed, layer.position.x, clock) { damaged = true }
+        if caApplyTiming(tree.nodes[i].posY, placed, layer.position.y, clock) { damaged = true }
+        if caApplyTiming(tree.nodes[i].boundsW, placed, layer.size.width, clock) { damaged = true }
+        if caApplyTiming(tree.nodes[i].boundsH, placed, layer.size.height, clock) { damaged = true }
+    } else {
+        if caApplyTiming(tree.nodes[i].posX, timing, layer.position.x, clock) { damaged = true }
+        if caApplyTiming(tree.nodes[i].posY, timing, layer.position.y, clock) { damaged = true }
+        if caApplyTiming(tree.nodes[i].boundsW, timing, layer.size.width, clock) { damaged = true }
+        if caApplyTiming(tree.nodes[i].boundsH, timing, layer.size.height, clock) { damaged = true }
     }
-    tree.setOpacity(id, layer.opacity)
-    tree.setGroupOpacity(id, layer.allowsGroupOpacity)
-    tree.setScale(id, layer.scaleX, layer.scaleY)
-    tree.setRotation(id, layer.rotation)
-    tree.setDeformation(id, layer.deformation)
-    tree.setAnchor(id, layer.anchorPoint.x, layer.anchorPoint.y)
-    tree.setCornerRadius(id, caDescribedCornerRadius(layer))
-    tree.setBorderWidth(id, caDescribedBorderWidth(layer))
-    tree.setTextWeight(id, caDescribedTextWeight(layer))
-    tree.setHoverColor(id, layer.hoverColor)
-    tree.setPressColor(id, layer.pressColor)
-    tree.setFillColor(id, caDescribedFill(layer))
-    tree.setBorderColor(id, caDescribedBorderColor(layer))
-    tree.setShadow(id, layer.shadow.radius, layer.shadow.color.a > 0.0 ? 1.0 : 0.0, layer.shadow.offset.x, layer.shadow.offset.y)
-    tree.setShadowColor(id, layer.shadow.color)
-    tree.setClip(id, layer.clipsChildren)
-    tree.setRenderTarget(id, layer.renderTarget, RenderTargetId(0))
-    tree.setBlur(id, layer.blur)
-    tree.setCapturesBackdrop(id, layer.capturesBackdrop)
-    tree.setHit(id, layer.hittable, layer.interactive, layer.slidesPress, layer.hitKey)
-    tree.setScrolls(id, layer.scrollAxis != .None)
+    if caApplyTiming(tree.nodes[i].opacity, timing, layer.opacity, clock) { damaged = true }
+    if tree.nodes[i].groupOpacity != layer.allowsGroupOpacity {
+        tree.nodes[i].groupOpacity = layer.allowsGroupOpacity
+        damaged = true
+    }
+    if caApplyTiming(tree.nodes[i].scaleX, timing, layer.scaleX, clock) { damaged = true }
+    if caApplyTiming(tree.nodes[i].scaleY, timing, layer.scaleY, clock) { damaged = true }
+    if caApplyTiming(tree.nodes[i].rotation, timing, layer.rotation, clock) { damaged = true }
+    let was = tree.nodes[i].deformation
+    if was.x != layer.deformation.x || was.y != layer.deformation.y || was.scaleX != layer.deformation.scaleX || was.scaleY != layer.deformation.scaleY {
+        tree.nodes[i].deformation = copy layer.deformation
+        damaged = true
+    }
+    if tree.nodes[i].anchorX != layer.anchorPoint.x || tree.nodes[i].anchorY != layer.anchorPoint.y {
+        tree.nodes[i].anchorX = layer.anchorPoint.x
+        tree.nodes[i].anchorY = layer.anchorPoint.y
+        damaged = true
+    }
+    if caApplyTiming(tree.nodes[i].cornerRadius, timing, look.cornerRadius, clock) { damaged = true }
+    if caApplyTiming(tree.nodes[i].borderWidth, timing, look.borderWidth, clock) { damaged = true }
+    if caApplyTiming(tree.nodes[i].textWeight, timing, look.textWeight, clock) { damaged = true }
+    // The wash a hover or a press lays over the fill, and the fill under it,
+    // land as one color.
+    tree.nodes[i].hoverColor = layer.hoverColor
+    tree.nodes[i].pressColor = layer.pressColor
+    tree.nodes[i].restingFill = look.fill
+    let shown = caShownFill(tree.nodes[i], id == tree.hoveredId, id == tree.pressedId)
+    if caColorApplyTiming(tree.nodes[i].fillColor, timing, shown, clock) { damaged = true }
+    if caColorApplyTiming(tree.nodes[i].borderColor, timing, look.borderColor, clock) { damaged = true }
+    let shadowOpacity = layer.shadow.color.a > 0.0 ? 1.0 : 0.0
+    if caApplyTiming(tree.nodes[i].shadowRadius, timing, layer.shadow.radius, clock) { damaged = true }
+    if caApplyTiming(tree.nodes[i].shadowOpacity, timing, shadowOpacity, clock) { damaged = true }
+    if caApplyTiming(tree.nodes[i].shadowX, timing, layer.shadow.offset.x, clock) { damaged = true }
+    if caApplyTiming(tree.nodes[i].shadowY, timing, layer.shadow.offset.y, clock) { damaged = true }
+    if caColorApplyTiming(tree.nodes[i].shadowColor, timing, layer.shadow.color, clock) { damaged = true }
+    if tree.nodes[i].clip != layer.clipsChildren {
+        tree.nodes[i].clip = layer.clipsChildren
+        damaged = true
+    }
+    if tree.nodes[i].renderTarget != layer.renderTarget || tree.nodes[i].renderTargetId != RenderTargetId(0) {
+        tree.nodes[i].renderTarget = layer.renderTarget
+        tree.nodes[i].renderTargetId = RenderTargetId(0)
+        damaged = true
+    }
+    if tree.nodes[i].blur != layer.blur {
+        tree.nodes[i].blur = layer.blur
+        damaged = true
+    }
+    if tree.nodes[i].capturesBackdrop != layer.capturesBackdrop {
+        tree.nodes[i].capturesBackdrop = layer.capturesBackdrop
+        damaged = true
+    }
+    tree.nodes[i].hit = layer.hittable
+    tree.nodes[i].interactive = layer.interactive
+    tree.nodes[i].slidesPress = layer.slidesPress
+    tree.nodes[i].hitKey = layer.hitKey
+    tree.nodes[i].scrolls = layer.scrollAxis != .None
+    tree.nodes[i].removal = layer.removal
+    if damaged {
+        tree.nodes[i].damaged = true
+    }
     tree.setLevel(id, layer.level)
-    tree.setRemoval(id, layer.removal)
     return
 }
 
@@ -114,6 +147,7 @@ public function caApplyLayerDescription(tree: borrow mut CALayerTree, id: LayerI
 // Animation's does: there is nothing on screen for it to move from. Animating
 // them would grow every view that appears out of the top-leading corner, from
 // the zero size and position a fresh layer starts at.
+// An entrance moves it in from where that names instead.
 public function caReconcileLayer(tree: borrow mut CALayerTree, parent: LayerId, layer: borrow CALayerDescription, geometryImmediate: Bool = false) -> LayerId {
     var id = tree.matchChild(parent, layer.key)
     let appearing = id == caNoLayer()
@@ -130,9 +164,18 @@ public function caReconcileLayer(tree: borrow mut CALayerTree, parent: LayerId, 
         }
     }
     if appearing || layer.disablesActions {
+        let enters = appearing && layer.entrance.active && !layer.disablesActions
         tree.beginTransaction(caImmediateTiming())
         caApplyLayerDescription(tree, id, layer)
+        if enters {
+            tree.setPosition(id, layer.position.x + layer.entrance.offset.x, layer.position.y + layer.entrance.offset.y)
+            tree.setOpacity(id, layer.entrance.opacity)
+        }
         tree.commitTransaction()
+        if enters {
+            tree.setPosition(id, layer.position.x, layer.position.y)
+            tree.setOpacity(id, layer.opacity)
+        }
     } else {
         caApplyLayerDescription(tree, id, layer, geometryImmediate)
     }

@@ -166,22 +166,7 @@ function atlasBlitCoverage(state: borrow mut UiBatchState, coverage: RawPtr, pit
     if pointerIsNull(state.atlasPixels) {
         return
     }
-    var row = 0
-    while row < height {
-        let sourceRow = row * pitch
-        let destRow = ((atlasY + row) * state.atlasW + atlasX) * 4
-        var col = 0
-        while col < width {
-            let value = rawByteAt(coverage, U64(sourceRow + col))
-            let at = U64(destRow + col * 4)
-            writeByte(state.atlasPixels, at, value)
-            writeByte(state.atlasPixels, at + U64(1), value)
-            writeByte(state.atlasPixels, at + U64(2), value)
-            writeByte(state.atlasPixels, at + U64(3), value)
-            col += 1
-        }
-        row += 1
-    }
+    kira_text_blit_coverage_rgba(state.atlasPixels, I32(state.atlasW), coverage, I32(pitch), I32(atlasX), I32(atlasY), I32(width), I32(height))
     if !state.atlasDirty {
         state.atlasDirtyTop = atlasY
         state.atlasDirtyBottom = atlasY + height
