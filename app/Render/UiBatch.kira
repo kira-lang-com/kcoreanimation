@@ -281,41 +281,23 @@ public function quadIndices(quadCount: Int) -> [U32] {
     return indices
 }
 
-// A candidate SYSTEM font path list for the host this program was built for; the
-// first that loads wins. Where a system face lives is a per-platform fact, and
-// the font engine has no auto-discovery for face_load, so the paths are named.
-//
-// Chosen by the BUILD's platform rather than by probing every path in turn: a
-// list that walks another operating system's directories asks the filesystem
-// questions whose answer is already known.
-//
-// Each list runs the platform's own UI face first and its most widely installed
-// fallback last, so a machine missing the modern face still gets the host's own
-// text rather than the bundled face.
-//
-// An EMPTY list is not "no text": `loadBatchFont` falls through to the face
-// compiled into libkiratext, which exists wherever the library is linked. That
-// is what makes the retained path unconditional — a browser has no filesystem
-// to name a face in, and it does not need one.
+// The system font paths to try, first that loads wins, for the host this
+// program was built for. Only Apple hosts name any: SF Pro is what every other
+// window there is drawn in, and it carries optical sizing that a display face
+// scaled down cannot match. Every other host's own faces read worse at every
+// size a UI is set in than the Inter compiled into libkiratext, so they name
+// none, and an empty list is how `loadBatchFont` is told to load that face.
+// The text library's own probe makes the same choice, so measurement and
+// drawing read one face. A browser has no filesystem to name a face in either.
 public function fontCandidates() -> [String] {
     match hostPlatform() {
         MacOS -> return appleFontCandidates()
         IOS -> return appleFontCandidates()
-        Windows -> return windowsFontCandidates()
-        Linux -> return linuxFontCandidates()
+        Windows -> return []
+        Linux -> return []
         Web -> return []
-        // A host the build does not recognize gets every list, because a wrong
-        // guess here costs a failed open and the bundled face is behind it.
-        Unknown -> return everyFontCandidate()
+        Unknown -> return []
     }
-}
-
-public function everyFontCandidate() -> [String] {
-    var all: [String] = []
-    for path in appleFontCandidates() { all.append(path) }
-    for path in windowsFontCandidates() { all.append(path) }
-    for path in linuxFontCandidates() { all.append(path) }
-    return all
 }
 
 public function appleFontCandidates() -> [String] {
@@ -324,30 +306,6 @@ public function appleFontCandidates() -> [String] {
         "/System/Library/Fonts/Helvetica.ttc",
         "/System/Library/Fonts/Supplemental/Arial.ttf",
         "/Library/Fonts/Arial.ttf"
-    ]
-}
-
-// Windows names NO candidate, so the batch loads the Figtree face compiled into
-// libkiratext.
-//
-// The argument for a system face is that an application should look like the
-// platform it runs on, and on Apple platforms that argument holds: SF Pro is
-// what every other window on the screen is drawn in, and it carries optical
-// sizing that a display face scaled down cannot match. Windows offers Segoe UI,
-// which is none of those things — it is what a window falls back to, not what a
-// window is judged against — and the bundled face is a better one at every size
-// a UI is set in. So Windows takes the bundled face on purpose, and the empty
-// list is how `loadBatchFont` is told so.
-public function windowsFontCandidates() -> [String] {
-    return []
-}
-
-public function linuxFontCandidates() -> [String] {
-    return [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-        "/usr/share/fonts/TTF/DejaVuSans.ttf",
-        "/usr/share/fonts/dejavu/DejaVuSans.ttf"
     ]
 }
 

@@ -585,72 +585,18 @@ static const char* kira_text_probe_font(void) {
     }
 #endif
 
-    /* Prefer the bundled Inter file shipped alongside the library. */
-    static const char* const bundled_candidates[] = {
-        "fonts/InterVariable.ttf",
-        "../fonts/InterVariable.ttf",
-    };
-    for (size_t i = 0; i < sizeof(bundled_candidates) / sizeof(bundled_candidates[0]); i += 1) {
-        FILE* probe = fopen(bundled_candidates[i], "rb");
-        if (probe != NULL) {
-            fclose(probe);
-            return bundled_candidates[i];
-        }
-    }
-
-    /* Inter may be installed as a system font. */
-    static const char* const inter_candidates[] = {
-        "C:/Windows/Fonts/InterVariable.ttf",
-        "/System/Library/Fonts/InterVariable.ttf",
-        "/usr/share/fonts/truetype/inter/InterVariable.ttf",
-        "/usr/share/fonts/opentype/inter/InterVariable.ttf",
-        "~/.fonts/InterVariable.ttf",
-    };
-    for (size_t i = 0; i < sizeof(inter_candidates) / sizeof(inter_candidates[0]); i += 1) {
-        FILE* probe = fopen(inter_candidates[i], "rb");
-        if (probe != NULL) {
-            fclose(probe);
-            return inter_candidates[i];
-        }
-    }
-
-#if defined(_WIN32)
-    /* Windows stops here, at the embedded Inter, rather than falling through
-     * to Segoe UI.
-     *
-     * This has to agree with `windowsFontCandidates()` on the Kira side, which
-     * names no system face for the same reason: measurement and rasterization
-     * read the face through two different entry points, and a build where one
-     * of them resolves Segoe while the other resolves Inter lays text out to
-     * one font's advances and then draws it in another's. */
-    return "<builtin>";
-#else
-    /* Common system fonts across the host platforms this engine targets. */
-    static const char* const sys_candidates[] = {
-        "/System/Library/Fonts/SFNS.ttf",
-        "/System/Library/Fonts/Helvetica.ttc",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/TTF/DejaVuSans.ttf",
-    };
-    for (size_t i = 0; i < sizeof(sys_candidates) / sizeof(sys_candidates[0]); i += 1) {
-        FILE* probe = fopen(sys_candidates[i], "rb");
-        if (probe != NULL) {
-            fclose(probe);
-            return sys_candidates[i];
-        }
-    }
-#endif
-
-    /* No system font is available — use the embedded Inter variable font.
-     * The sentinel value "<builtin>" is handled by kira_text_cached_face(). */
+    /* Everywhere else the embedded Inter, and never the host's own face: the
+     * faces Windows and Linux offer read worse at every UI size than the one
+     * this library carries. The Kira side names no candidate on those hosts
+     * for the same reason, so measurement and drawing read one face. The
+     * sentinel is handled by kira_text_cached_face(). */
     return "<builtin>";
 }
 
 /* The default face path, probed once.
  *
- * Which fonts are installed does not change while a process runs, but the probe
- * that answers it opens files: up to thirteen of them, and the first hit is
- * usually the last candidate on the list. Every measured run without an
+ * Which fonts are installed does not change while a process runs, but on Apple
+ * hosts the probe that answers it opens files. Every measured run without an
  * explicit font path asks this question, so a UI frame asked it hundreds of
  * times and spent more of itself in open(2) than in anything else — the largest
  * single cost in a Project Matter frame once the compiler stopped copying
