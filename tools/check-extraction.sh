@@ -2,8 +2,11 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-foundation="$root/../ui-foundation"
-motion="$root/../ui-motion"
+# The extracted-from source trees now live in the kira-projects-deprecated
+# sibling checkout, not next to this repo.
+legacy="$(cd "$root/../.." && pwd)/kira-projects-deprecated"
+foundation="$legacy/ui-foundation"
+motion="$legacy/ui-motion"
 
 fail() {
     printf 'extraction check: %s\n' "$1" >&2
