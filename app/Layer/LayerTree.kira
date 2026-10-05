@@ -22,7 +22,7 @@ public function caNoLayer() -> LayerId {
 // the canvas root, ordered by level (lower first), after all inline content —
 // the semantic hoist a menu, popover or dialog needs.
 public function caDuplicateLayerKeyTrap(key: Int) {
-    printLine("KCoreAnimation: duplicate sibling layer key " + String(key) + " is ambiguous and is not allowed")
+    print("KCoreAnimation: duplicate sibling layer key " + String(key) + " is ambiguous and is not allowed")
     let ignored = "duplicate-layer-key".charAt("duplicate-layer-key".count)
     return
 }

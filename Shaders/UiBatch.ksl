@@ -189,16 +189,20 @@ type FragmentOut {
     let color: Float4
 }
 
-// The touch highlight's falloff: one smooth bell, (1 - r²)³, flat at the
-// center and meeting nothing at the rim on a curve -- `motionGlowFalloff` on
-// the Kira side; the two must move together.
+// The touch highlight's falloff -- `motionGlowFalloff` on the Kira side; the
+// two must move together.
+const glowPointShare: Float = 0.65
+const glowPointWidth: Float = 0.025
+
 function glowFalloff(distance: Float, radius: Float) -> Float {
     let r = distance / max(radius, 0.0001)
     if r >= 1.0 {
         return 0.0
     }
-    let inside = 1.0 - r * r
-    return inside * inside * inside
+    let taper = 1.0 - r * r
+    let q = r / glowPointWidth
+    let point = taper / (1.0 + q * q)
+    return glowPointShare * point + (1.0 - glowPointShare) * taper * taper * taper
 }
 
 // The highlight's contribution at this fragment, masked by the surface's own

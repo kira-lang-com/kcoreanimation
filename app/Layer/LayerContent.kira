@@ -115,6 +115,9 @@ public struct CAText {
     // Whether a run wider than its bounds breaks onto further lines at word
     // boundaries, as a wrapped text layer does, rather than running past them.
     var wraps: Bool = false
+    // Where each wrapped line sits across the layer's width: 0 at its leading
+    // edge, 0.5 centered, 1 at its trailing edge.
+    var alignment: Float = 0.0
     var adaptiveInk: Bool = false
     var inkLeft: Float = 0.0
     var inkRight: Float = 0.0

@@ -61,6 +61,11 @@ public struct MotionScrollState {
     var sample: Float = 0.0
     var samples: Int = 0
     var sinceMove: Float = 0.0
+    // Where the offset stood when the last sample was taken, and when the
+    // finger was there by the input's own clock -- negative where the input
+    // does not say, and the frames' time stands in.
+    var sampleRaw: Float = 0.0
+    var moveTime: Float = -1.0
 
     var spring: MotionSpringState = MotionSpringState {}
 
@@ -133,7 +138,7 @@ public function motionScrollRaw(shown: Float, bounds: borrow MotionScrollBounds,
 // Any animation in flight is CUT rather than allowed to finish: catching a
 // moving list stops it under your finger, which is the behavior that makes a
 // long list feel like an object rather than a playback.
-public function motionScrollDragBegin(state: borrow mut MotionScrollState, pointer: Float, bounds: borrow MotionScrollBounds, constant: Float) {
+public function motionScrollDragBegin(state: borrow mut MotionScrollState, pointer: Float, bounds: borrow MotionScrollBounds, constant: Float, time: Float = -1.0) {
     state.phase = .Dragging
     state.resistance = constant
     state.dragPointer = pointer
@@ -143,12 +148,13 @@ public function motionScrollDragBegin(state: borrow mut MotionScrollState, point
     state.sample = 0.0
     state.samples = 0
     state.sinceMove = 0.0
+    state.sampleRaw = state.rawOffset
+    state.moveTime = time
     return
 }
 
-// The finger moves.
-public function motionScrollDragMove(state: borrow mut MotionScrollState, pointer: Float, bounds: borrow MotionScrollBounds) {
-    let previous = state.rawOffset
+// The finger moves, at `time` on the input's clock where it says.
+public function motionScrollDragMove(state: borrow mut MotionScrollState, pointer: Float, bounds: borrow MotionScrollBounds, time: Float = -1.0) {
     // Moving the pointer toward the top of the screen scrolls the content up,
     // so the offset moves opposite the pointer.
     let raw = state.dragOrigin + (state.dragPointer - pointer)
@@ -158,8 +164,28 @@ public function motionScrollDragMove(state: borrow mut MotionScrollState, pointe
     } else {
         state.offset = motionScrollClamp(raw, bounds)
     }
-    motionScrollSample(state, (raw - previous) / max(state.sinceMove, 0.001))
+    motionScrollMoved(state, raw, time)
+    return
+}
+
+// The surface was carried to `raw`: a sample of how fast, over the time since
+// the last one -- the input's own when it gives one, else the frames'. Reports
+// that land at one instant are one movement, measured once time has passed:
+// a distance over no time is no speed at all.
+public function motionScrollMoved(state: borrow mut MotionScrollState, raw: Float, time: Float) {
+    var elapsed = state.sinceMove
+    if time >= 0.0 && state.moveTime >= 0.0 {
+        elapsed = time - state.moveTime
+    }
+    if elapsed <= 0.0 {
+        return
+    }
+    motionScrollSample(state, (raw - state.sampleRaw) / elapsed)
+    state.sampleRaw = raw
     state.sinceMove = 0.0
+    if time >= 0.0 {
+        state.moveTime = time
+    }
     return
 }
 
@@ -266,6 +292,8 @@ public function motionScrollScrubBegin(state: borrow mut MotionScrollState) {
     state.sample = 0.0
     state.samples = 0
     state.sinceMove = 0.0
+    state.sampleRaw = state.offset
+    state.moveTime = -1.0
     return
 }
 
@@ -276,10 +304,9 @@ public function motionScrollScrub(state: borrow mut MotionScrollState, offset: F
     if next == state.offset {
         return
     }
-    motionScrollSample(state, (next - state.offset) / max(state.sinceMove, 0.001))
-    state.sinceMove = 0.0
     state.offset = next
     state.rawOffset = next
+    motionScrollMoved(state, next, -1.0)
     return
 }
 

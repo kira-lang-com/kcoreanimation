@@ -110,19 +110,21 @@ function mgNear() -> Float {
     return motionGlowDiameter() * 0.5
 }
 
-// Flat at the center: a bell, not a cone, so the light has no hot core.
-construct MgTheCenterIsFlat() extends Test {
+// Bright at the touch: full under the finger, and the point half gone its
+// width out, so the light is where the finger is.
+construct MgTheTouchPointIsBright() extends Test {
     test {
         let center = motionGlowFalloff(0.0, mgNear())
-        let close = motionGlowFalloff(mgNear() * 0.05, mgNear())
-        return mtScaled(center - close, 2)
+        let edge = motionGlowFalloff(mgNear() * motionGlowPointWidth(), mgNear())
+        return mtScaled(center, 2) * 1000 + mtScaled(edge, 2)
     }
-    expect { return .Ok(1) }
+    expect { return .Ok(100067) }
 }
 
+// Halfway out the point is spent and the bell is what is left.
 construct MgTheFalloffIsTheBellHalfway() extends Test {
     test { return mtScaled(motionGlowFalloff(mgNear() * 0.5, mgNear()), 3) }
-    expect { return .Ok(422) }
+    expect { return .Ok(149) }
 }
 
 construct MgTheFalloffReachesNothingAtTheRim() extends Test {
@@ -169,6 +171,37 @@ construct MgAStillPressStaysOnTheFinger() extends Test {
         return 0 - 1
     }
     expect { return .Ok(120) }
+}
+
+// Given a reach, the light under a still finger is that wide, and spreading
+// over an element smaller than it never draws it in: a window-wide light on a
+// small control falls off across the window, leaving the control a trace.
+construct MgAReachSetsHowFarTheLightGoes() extends Test {
+    test {
+        var still = MotionGlowState {}
+        motionGlowFit(still, 120.0, 40.0, 3000.0)
+        motionGlowPress(still, 20.0, 20.0)
+        let ignored = mgRun(still, 0.5)
+        var dragged = MotionGlowState {}
+        motionGlowFit(dragged, 120.0, 40.0, 3000.0)
+        motionGlowPress(dragged, 20.0, 20.0)
+        motionGlowMove(dragged, 110.0, 20.0)
+        let alsoIgnored = mgRun(dragged, 1.0)
+        var out = 0
+        if motionGlowLight(still).radius == 1500.0 {
+            out = out + 1
+        }
+        if motionGlowLight(dragged).radius == 1500.0 {
+            out = out + 10
+        }
+        // Across the window from the touch, a trace and no more.
+        let far = motionGlowFalloff(1300.0, 1500.0)
+        if far > 0.0 && far < 0.05 {
+            out = out + 100
+        }
+        return out
+    }
+    expect { return .Ok(111) }
 }
 
 // Dragged well away, it lets go of the finger: wide enough to reach every

@@ -127,10 +127,12 @@ public function caDrawText(
         let pitch = foundationTextLineBox(t.size, t.weight) * textScale
         var index = 0
         for line in lines {
-            // The line box's center, down the layer's axis from its top edge.
+            // The line box's center, down the layer's axis from its top edge and
+            // across it by what the line leaves of the layer's width.
             let along = pitch * (Float(index) + 0.5) - frame.height / 2.0
-            let centerX = quad.centerX - quad.rotSin * along
-            let centerY = quad.centerY + quad.rotCos * along
+            let across = (frame.width - foundationTextRunWidth(content: line, size: t.size, weight: t.weight) * textScale) * t.alignment
+            let centerX = quad.centerX + quad.rotCos * across - quad.rotSin * along
+            let centerY = quad.centerY + quad.rotSin * across + quad.rotCos * along
             backend.batch.pushText(
                 backend.graphics,
                 line,

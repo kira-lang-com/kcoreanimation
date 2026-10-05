@@ -388,3 +388,38 @@ construct MtAMovedElementLandsOnItsDestination() extends Test {
     }
     expect { return .Ok(250080000) }
 }
+
+// --- speed -----------------------------------------------------------------
+
+// The speed a release carries is distance over the input's own time: a
+// finger that moves 20 points in 10 milliseconds is going 2000 points a
+// second, however the reports were grouped into frames.
+construct MtSpeedIsMeasuredOnTheInputClock() extends Test {
+    test {
+        var state = MotionScrollState {}
+        let bounds = mtBounds()
+        motionScrollDragBegin(state, 0.0, bounds, motionRubberBandConstant(), 10.0)
+        motionScrollDragMove(state, 0.0 - 20.0, bounds, 10.01)
+        motionScrollDragMove(state, 0.0 - 40.0, bounds, 10.02)
+        return Int(round(state.velocity))
+    }
+    expect { return .Ok(2000) }
+}
+
+// Reports that land at one instant are one movement: they cannot make a
+// speed out of no time, and the next report measures the whole of it.
+construct MtReportsAtOneInstantThrowNothingExtra() extends Test {
+    test {
+        var state = MotionScrollState {}
+        let bounds = mtBounds()
+        motionScrollDragBegin(state, 0.0, bounds, motionRubberBandConstant())
+        // Two reports in one build: no frame time has passed between them.
+        motionScrollDragMove(state, 0.0 - 5.0, bounds)
+        motionScrollDragMove(state, 0.0 - 10.0, bounds)
+        let unmeasured = state.samples
+        motionScrollAdvance(state, 0.01, bounds)
+        motionScrollDragMove(state, 0.0 - 20.0, bounds)
+        return unmeasured * 10000 + Int(round(state.velocity))
+    }
+    expect { return .Ok(2000) }
+}
