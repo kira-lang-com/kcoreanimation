@@ -1,4 +1,4 @@
-import KiraGraphics
+import Ember
 import KiraLayout
 import Foundation
 
@@ -21,7 +21,7 @@ public function foundationPageColor() -> Color {
 
 // The page a TRANSPARENT window is cleared to: the desktop's key color, so
 // every pixel the interface does not paint is a hole rather than paper. See
-// KiraGraphics' Public/WindowComposition.kira.
+// Ember' Public/WindowComposition.kira.
 public function foundationTransparentPage() -> Color {
     return graphicsTransparentKey()
 }
@@ -114,10 +114,10 @@ public function foundationLayerGradientAxis(gradient: borrow FoundationGradient)
     }
 }
 
-// Build a Graphics handle from the active frame so the backend can create
+// Build an EMGraphics handle from the active frame so the backend can create
 // resources and submit batched draws on whichever backend the runtime selected.
-public function foundationFrameGraphics(frame: borrow RenderFrame) -> Graphics {
-    return Graphics {
+public function foundationFrameGraphics(frame: borrow RenderFrame) -> EMGraphics {
+    return EMGraphics {
         userData: frame.userData,
         backend: frame.backend,
         backendContext: frame.backendContext

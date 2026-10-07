@@ -1,5 +1,5 @@
 import Foundation
-import KiraGraphics
+import Ember
 import KiraLayout
 
 // The retained UI batch: one CPU vertex stream, submitted as a single indexed
@@ -16,10 +16,10 @@ public class UiBatch {
 // the UI Foundation renders (rounded-rect / squircle surfaces with borders, and text)
 // is accumulated
 // into one CPU vertex stream and submitted as a SINGLE indexed draw per frame through
-// the Kira Graphics public abstraction — so it runs on any backend that implements
+// the Ember public abstraction — so it runs on any backend that implements
 // that abstraction (today the from-scratch, no-shim Metal path). Rounded shapes are
 // signed-distance-field rasterized in the fragment shader; glyphs are rasterized by
-// the real font engine into a Kira Graphics atlas texture and drawn as textured quads.
+// the real font engine into a Ember atlas texture and drawn as textured quads.
 // Nothing here is a host shim: resource creation, uploads and draws all go through
 // Kira + FFI.
 //
@@ -133,7 +133,7 @@ public function glyphCacheCapacity() -> Int { return 8192 }
 // glass pays one extra capture + blur chain per layer of overlap.
 public function maxDrawStreams() -> Int { return 4 }
 
-// The HUD's own stream, reserved one past the last glass layer. Graphics telemetry
+// The HUD's own stream, reserved one past the last glass layer. EMGraphics telemetry
 // refreshes on a cadence of its own (a few times a second) while the application's
 // pixels are unchanged, so it is emitted into a stream nothing else writes: a HUD
 // refresh rewrites this buffer's slot and leaves every UI stream's vertices, quad

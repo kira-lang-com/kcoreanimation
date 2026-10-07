@@ -1,8 +1,8 @@
 import Foundation
-import KiraGraphics
+import Ember
 import KiraLayout
 
-public function caPassTextureHandle(texture: borrow GraphicsTexture) -> TextureHandle {
+public function caPassTextureHandle(texture: borrow EMGraphicsTexture) -> TextureHandle {
     return TextureHandle(Int(texture.viewId))
 }
 
@@ -14,7 +14,7 @@ public function caPassDeviceExtent(logical: Float, scale: Float) -> Int {
     return extent
 }
 
-public function caPassTargetScale(pass: borrow CAPass, texture: borrow GraphicsTexture) -> Float {
+public function caPassTargetScale(pass: borrow CAPass, texture: borrow EMGraphicsTexture) -> Float {
     let width = max(pass.bounds.width, 1.0)
     let height = max(pass.bounds.height, 1.0)
     var textureWidth = texture.width
@@ -43,7 +43,7 @@ extend Compositor {
     // A pass target is destroyed, and every batch that may have bound it
     // forgets it: the pass batches now, since a parent pass is encoded after
     // its children are re-made, and the root batch before it next draws.
-    function retireTexture(graphics: borrow Graphics, texture: borrow GraphicsTexture) {
+    function retireTexture(graphics: borrow EMGraphics, texture: borrow EMGraphicsTexture) {
         let handle = caPassTextureHandle(texture)
         graphics.destroyTexture(texture)
         for index in 0..self.passBatches.count {
@@ -54,7 +54,7 @@ extend Compositor {
         return
     }
 
-    function ensurePassBatch(passId: RenderPassId, graphics: borrow Graphics) -> Int {
+    function ensurePassBatch(passId: RenderPassId, graphics: borrow EMGraphics) -> Int {
         let slot = passId.raw - 1
         if slot < 0 {
             return -1
@@ -67,7 +67,7 @@ extend Compositor {
         return slot
     }
 
-    function ensurePassTarget(pass: borrow CAPass, graphics: borrow Graphics, renderScale: Float) -> Int {
+    function ensurePassTarget(pass: borrow CAPass, graphics: borrow EMGraphics, renderScale: Float) -> Int {
         var index = self.cachedTargetIndex(pass.owner)
         if index < 0 {
             self.cachedTargets.append(CACachedPassTarget { owner: pass.owner })
@@ -154,7 +154,7 @@ extend Compositor {
         return index
     }
 
-    function prunePassTargets(plan: borrow CARenderPlan, graphics: borrow Graphics) {
+    function prunePassTargets(plan: borrow CARenderPlan, graphics: borrow EMGraphics) {
         var kept: [CACachedPassTarget] = []
         for cached in self.cachedTargets {
             if caPlanContainsOwner(plan, cached.owner) {
@@ -174,7 +174,7 @@ extend Compositor {
     function renderIsolatedPasses(
         plan: borrow CARenderPlan,
         frame: borrow mut RenderFrame,
-        graphics: borrow Graphics,
+        graphics: borrow EMGraphics,
         renderScale: Float,
     ) -> [TextureHandle] {
         var textures: [TextureHandle] = []
@@ -202,7 +202,7 @@ extend Compositor {
                             let passBatch = UiBatch {
                                 storage: nativeUserData(self.passBatches[batchSlot].batch.storage)
                             }
-                            var backend = KiraGraphicsFoundationBackend {
+                            var backend = EmberFoundationBackend {
                                 graphics: graphics,
                                 batch: move passBatch
                             }
@@ -254,7 +254,7 @@ extend Compositor {
 public function caCompositorEncode(
     compositor: borrow mut Compositor,
     frame: borrow mut RenderFrame,
-    graphics: borrow Graphics,
+    graphics: borrow EMGraphics,
     batch: borrow UiBatch,
     viewportWidth: Float,
     viewportHeight: Float,
@@ -268,7 +268,7 @@ public function caCompositorEncode(
     }
     compositor.retiredTextures = []
     let rootBatch = UiBatch { storage: nativeUserData(batch.storage) }
-    var backend = KiraGraphicsFoundationBackend {
+    var backend = EmberFoundationBackend {
         graphics: graphics,
         batch: move rootBatch,
         windowTransparent: windowTransparent

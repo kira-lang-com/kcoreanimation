@@ -7,7 +7,7 @@ Package KCoreAnimation {
     let allowThinFfiShim = true
     let dependencies = [
         Dependency { name: "KiraLayout", path: "../kira-layout" },
-        Dependency { name: "KiraGraphics", path: "../kira-graphics" }
+        Dependency { name: "Ember", path: "../ember" }
     ]
     let nativeLibraries = [
         NativeLibrary {

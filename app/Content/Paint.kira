@@ -1,4 +1,4 @@
-import KiraGraphics
+import Ember
 import Foundation
 
 // A collision-free spelling for hosts that also expose their own design-token
@@ -32,7 +32,7 @@ public enum FoundationMaterial {
     // REAL liquid glass (Metal path): the content rendered behind the surface is
     // captured into an offscreen texture, gaussian-blurred at half resolution, and
     // composited back through the surface's rounded shape with an edge-refraction
-    // curve and a rim glow — the same pass structure as the Kira Graphics
+    // curve and a rim glow — the same pass structure as the Ember
     // liquid_glass example, driven by the batched UI compositor. On the legacy
     // Sokol path it falls back to a translucent tint like the other materials.
     LiquidGlass
@@ -46,7 +46,7 @@ public enum FoundationMaterial {
     // application cannot see the desktop. So the surface is cleared to the
     // window's key color and the compositor fills it, which is also why it
     // only means anything in a transparent window (see
-    // KiraGraphics' Public/WindowComposition.kira) — anywhere else it is a
+    // Ember' Public/WindowComposition.kira) — anywhere else it is a
     // hole in a window that has none, and draws as an ordinary flat surface.
     WindowBackdrop
 }

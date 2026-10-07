@@ -1,5 +1,5 @@
 import Foundation
-import KiraGraphics
+import Ember
 // The compositor's persistent state: the emission streams it writes quads into,
 // the per-layer liquid-glass targets, the glyph slot record, and the one
 // `UiBatchState` that holds every GPU resource, cache and dial the batch keeps
@@ -15,12 +15,12 @@ import KiraGraphics
 // UiBatchState's contentsPtr/frameBase/quadCount so every emit path
 // stays stream-agnostic; switching streams writes the live count back here.
 public struct UiStream {
-    var buffer: GraphicsBuffer = emptyGraphicsBuffer()
+    var buffer: EMGraphicsBuffer = emptyGraphicsBuffer()
     var contentsPtr: RawPtr
     var frameBase: Int = 0
     var quadCount: Int = 0
     // The group the stream's vertices bind through. Built with the buffer, since
-    // drawing has no Graphics to build one with — and a group per stream rather
+    // drawing has no EMGraphics to build one with — and a group per stream rather
     // than one rebound per draw, because the buffer is what differs.
     var vertsGroup: BindGroup = emptyBindGroup()
     // Liquid Glass surfaces emitted into this stream. The preceding scene capture
@@ -51,7 +51,7 @@ public function placeholderStream() -> UiStream {
 // Give an unallocated slot its own vertex buffer, bind group and mode table. Called
 // the first time a frame reaches the slot — the first frame that stacks glass that
 // deep, or the first HUD refresh — so an app that never uses one pays nothing.
-public function createDrawStream(state: borrow mut UiBatchState, graphics: borrow Graphics, index: DrawStreamId) {
+public function createDrawStream(state: borrow mut UiBatchState, graphics: borrow EMGraphics, index: DrawStreamId) {
     if state.streams[index.raw].buffer.id != 0 {
         return
     }
@@ -81,7 +81,7 @@ public function createDrawStream(state: borrow mut UiBatchState, graphics: borro
 public struct UiGlassLayer {
     // Capture of everything under layer k+1. `sceneSharpGroup` is how mode 3
     // reads it (the sharp tap); the blur dispatch binds the texture directly.
-    var sceneTexture: GraphicsTexture = emptyGraphicsTexture()
+    var sceneTexture: EMGraphicsTexture = emptyGraphicsTexture()
     var sceneSharpGroup: BindGroup = emptyBindGroup()
     // The blurred capture at TWO radii, so a blur step grows the radius instead of
     // cross-fading sharp against fully-soft — that mix double-images rather than
@@ -89,8 +89,8 @@ public struct UiGlassLayer {
     // else. `near` is the narrower of the two filters in
     // `Shaders/UiGlassBlurCommon.ksl` and `blur` the wider; mode 3 walks
     // sharp -> near -> far across the dial.
-    var nearTexture: GraphicsTexture = emptyGraphicsTexture()
-    var blurTexture: GraphicsTexture = emptyGraphicsTexture()
+    var nearTexture: EMGraphicsTexture = emptyGraphicsTexture()
+    var blurTexture: EMGraphicsTexture = emptyGraphicsTexture()
     // Both blurred levels ride ONE bind group: the compositor has four group slots
     // and five things to bind, and these two always change together.
     var softNearGroup: BindGroup = emptyBindGroup()
@@ -140,9 +140,9 @@ public struct UiBatchState {
     // provably static this frame, copy quads route to the band pipeline and
     // render live — the fallback is exact, never stale.
     var glassCopyPipeline: RenderPipeline = emptyRenderPipeline()
-    var glassCacheTexture: GraphicsTexture = emptyGraphicsTexture()
+    var glassCacheTexture: EMGraphicsTexture = emptyGraphicsTexture()
     var glassCacheGroup: BindGroup = emptyBindGroup()
-    var glassCacheSampler: GraphicsSampler = emptyGraphicsSampler()
+    var glassCacheSampler: EMGraphicsSampler = emptyGraphicsSampler()
     var glassCacheW: Int = 0
     var glassCacheH: Int = 0
     var glassCacheCleared: Bool = false
@@ -223,7 +223,7 @@ public struct UiBatchState {
     // cached apart because they are bound apart.
     var secondaryCacheIds: [TextureHandle] = []
     var secondaryCacheGroups: [BindGroup] = []
-    var backgroundParams: Uniform = emptyUniform()
+    var backgroundParams: EMUniform = emptyUniform()
     var backgroundParamsGroup: BindGroup = emptyBindGroup()
     var backgroundActive: Bool = false
     // Whether a full-bleed opaque quad may be PROMOTED out of the stream and
@@ -239,9 +239,9 @@ public struct UiBatchState {
     // background is taken out of the batch and then not drawn at all.
     var backgroundPromotable: Bool = true
     var backgroundTransition: Float = 0.0
-    var indexBuffer: GraphicsBuffer = emptyGraphicsBuffer()
-    var atlasTexture: GraphicsTexture = emptyGraphicsTexture()
-    var sampler: GraphicsSampler = emptyGraphicsSampler()
+    var indexBuffer: EMGraphicsBuffer = emptyGraphicsBuffer()
+    var atlasTexture: EMGraphicsTexture = emptyGraphicsTexture()
+    var sampler: EMGraphicsSampler = emptyGraphicsSampler()
     var atlasGroup: BindGroup = emptyBindGroup()
     // External-texture slot (TextureView, mode 2). The fallback group binds the atlas at
     // slot 1 so the shader's texture(1)/sampler(1) arguments are always satisfied; a real
@@ -261,7 +261,7 @@ public struct UiBatchState {
     var backdropSharpGroup: BindGroup = emptyBindGroup()
     // That weight. One number for the whole screen, rewritten once a frame, and
     // read by every glass pipeline's sharp tap and by nothing else.
-    var backdropBlend: Uniform = emptyUniform()
+    var backdropBlend: EMUniform = emptyUniform()
     // Per-present direct-source specialization for layer 0. Set only when the
     // captured stream contains no quads over an opaque photo; every other frame
     // uses the normal capture.
@@ -390,8 +390,8 @@ public struct UiBatchState {
     // the near level into A and the far level into B, and the vertical one reads
     // each back into the layer's own output. Shared by every layer, because a
     // layer's chain runs to completion before the next one starts.
-    var blurTextureA: GraphicsTexture = emptyGraphicsTexture()
-    var blurTextureB: GraphicsTexture = emptyGraphicsTexture()
+    var blurTextureA: EMGraphicsTexture = emptyGraphicsTexture()
+    var blurTextureB: EMGraphicsTexture = emptyGraphicsTexture()
     var blurComputeHPipelineId: ComputePipelineId = ComputePipelineId(0)
     var blurComputeVPipelineId: ComputePipelineId = ComputePipelineId(0)
     // Capture + blurred backdrop per glass layer (see UiGlassLayer).

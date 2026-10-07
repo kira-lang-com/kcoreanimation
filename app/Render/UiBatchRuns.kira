@@ -1,5 +1,5 @@
 import Foundation
-import KiraGraphics
+import Ember
 // Emitting runs: one icon, and one line of text.
 //
 // Both walk a source, take a cached glyph per item from `UiBatchGlyphs.kira`, and
@@ -14,7 +14,7 @@ import KiraGraphics
 // positive), so icons and glyphs share the atlas and the lookup table.
 extend UiBatch {
     function pushIcon(
-        graphics: borrow Graphics,
+        graphics: borrow EMGraphics,
         svg: borrow String,
         x: Float, y: Float, w: Float, h: Float,
         color: borrow Color,
@@ -250,7 +250,7 @@ extend UiBatch {
 // heavy frost reads as dark and the text picks white on a near-white surface.
 extend UiBatch {
     function pushText(
-        graphics: borrow Graphics,
+        graphics: borrow EMGraphics,
         content: borrow String,
         x: Float, y: Float, w: Float, h: Float,
         color: borrow Color, sizePx: Float, weightAxis: Float,

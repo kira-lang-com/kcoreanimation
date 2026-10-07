@@ -1,4 +1,4 @@
-import KiraGraphics
+import Ember
 
 // Advance presentation state from the graphics frame's absolute monotonic
 // clock. Animation progress depends on this timestamp, never on how many

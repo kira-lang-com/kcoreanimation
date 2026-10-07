@@ -1,5 +1,5 @@
 import Foundation
-import KiraGraphics
+import Ember
 extend UiBatch {
     // Present everything drawn this frame into a TEXTURE rather than into the
     // window.
@@ -14,8 +14,8 @@ extend UiBatch {
     // the final color attachment differs.
     function presentBatchIntoTexture(
         frame: borrow mut RenderFrame,
-        graphics: borrow Graphics,
-        target: borrow GraphicsTexture,
+        graphics: borrow EMGraphics,
+        target: borrow EMGraphicsTexture,
         bgR: Float,
         bgG: Float,
         bgB: Float,
@@ -25,7 +25,7 @@ extend UiBatch {
         return
     }
 
-    function presentBatch(frame: borrow mut RenderFrame, graphics: borrow Graphics, bgR: Float, bgG: Float, bgB: Float, bgA: Float) {
+    function presentBatch(frame: borrow mut RenderFrame, graphics: borrow EMGraphics, bgR: Float, bgG: Float, bgB: Float, bgA: Float) {
         let noTarget = emptyGraphicsTexture()
         self.presentBatchTarget(frame, graphics, noTarget, false, bgR, bgG, bgB, bgA)
         return
@@ -33,8 +33,8 @@ extend UiBatch {
 
     function presentBatchTarget(
         frame: borrow mut RenderFrame,
-        graphics: borrow Graphics,
-        target: borrow GraphicsTexture,
+        graphics: borrow EMGraphics,
+        target: borrow EMGraphicsTexture,
         intoTexture: Bool,
         bgR: Float,
         bgG: Float,
@@ -368,7 +368,7 @@ public function announceVisibleContent(state: borrow mut UiBatchState) {
     for stream in 0..state.streams.count {
         if state.streams[stream].quadCount > 0 {
             state.announcedVisibleContent = true
-            kiraGraphicsLiveVisibleContentSubmitted()
+            emberLiveVisibleContentSubmitted()
             return
         }
     }

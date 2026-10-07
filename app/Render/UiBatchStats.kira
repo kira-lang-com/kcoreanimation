@@ -1,5 +1,5 @@
 import Foundation
-import KiraGraphics
+import Ember
 // What one frame of Liquid Glass cost the compositor, counted rather than
 // inferred.
 //
@@ -59,7 +59,7 @@ public function uiGlassStatsResetEmission(state: borrow mut UiBatchState) {
 // `presentBatch` and leaving it falls in exactly one of them, so a reader who
 // sums them gets the phase back and never has to wonder what the remainder was.
 public struct UiBatchPhaseTimes {
-    // Uniform, atlas and vertex-stream uploads: what the GPU must have before
+    // EMUniform, atlas and vertex-stream uploads: what the GPU must have before
     // the first pass reads it.
     var uploadNs: Int = 0
     // The per-layer scene passes that draw what sits beneath the glass into

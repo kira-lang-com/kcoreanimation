@@ -1,5 +1,5 @@
 import Foundation
-import KiraGraphics
+import Ember
 
 // The compositor's one new batch primitive: an EXACT oriented quad. The batch
 // vertex stream already carries a per-quad rotation (cos/sin about the quad's

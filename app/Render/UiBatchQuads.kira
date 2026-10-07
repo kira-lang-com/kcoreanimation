@@ -1,5 +1,5 @@
 import Foundation
-import KiraGraphics
+import Ember
 // Appending a quad to the current stream.
 //
 // One record per quad rather than per vertex: the twelve corner-varying values are
@@ -260,7 +260,7 @@ extend UiBatch {
 // Kept rather than rebuilt because an id here names a shared surface, which
 // outlives the frame -- so a window holding three components pays three
 // creations for the run of the process, not three per frame.
-public function externalCacheEnsure(state: borrow mut UiBatchState, graphics: borrow Graphics, textureId: TextureHandle) {
+public function externalCacheEnsure(state: borrow mut UiBatchState, graphics: borrow EMGraphics, textureId: TextureHandle) {
     if textureId.raw <= 0 {
         return
     }
@@ -294,7 +294,7 @@ public function externalCacheGroup(state: borrow UiBatchState, textureId: Textur
 // the texture in a slot mode 2 never reads, and the tap fell back to the group
 // underneath it -- which is the glyph atlas, so a sidebar mid-swipe crossfaded
 // into a page of packed glyphs.
-public function secondaryCacheEnsure(state: borrow mut UiBatchState, graphics: borrow Graphics, textureId: TextureHandle) {
+public function secondaryCacheEnsure(state: borrow mut UiBatchState, graphics: borrow EMGraphics, textureId: TextureHandle) {
     if textureId.raw <= 0 {
         return
     }
@@ -345,7 +345,7 @@ public function quadExternalAt(state: borrow UiBatchState, modeStream: DrawStrea
 // occupant -- or the freed slot itself, whose word is by then the link to the
 // next free id. So every group made for it goes with it.
 extend UiBatch {
-    function forgetTexture(graphics: borrow Graphics, textureId: TextureHandle) {
+    function forgetTexture(graphics: borrow EMGraphics, textureId: TextureHandle) {
         var state = nativeRecover<UiBatchState>(self.storage)
         var externalIds: [TextureHandle] = []
         var externalGroups: [BindGroup] = []
@@ -394,7 +394,7 @@ extend UiBatch {
 // bind group is cached per texture id, so a stable render-target id costs one
 // creation total.
 extend UiBatch {
-    function setExternalTextures(graphics: borrow Graphics, textureId: U32, secondaryTextureId: U32) {
+    function setExternalTextures(graphics: borrow EMGraphics, textureId: U32, secondaryTextureId: U32) {
         var state = nativeRecover<UiBatchState>(self.storage)
         // Settled before the early-out below: the quads that follow sample THIS
         // texture whether or not the backdrop slot already held it.
@@ -464,7 +464,7 @@ extend UiBatch {
 
 
 extend UiBatch {
-    function setExternalTexture(graphics: borrow Graphics, textureId: U32) {
+    function setExternalTexture(graphics: borrow EMGraphics, textureId: U32) {
         self.setExternalTextures(graphics, textureId, U32(0))
         return
     }

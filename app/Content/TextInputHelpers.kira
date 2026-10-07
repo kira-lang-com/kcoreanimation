@@ -1,4 +1,4 @@
-import KiraGraphics
+import Ember
 public function foundationAppendCodepoint(base: borrow String, codepoint: Int) -> String {
     return graphicsAppendCodepoint(base, codepoint)
 }

@@ -1,5 +1,5 @@
 import Foundation
-import KiraGraphics
+import Ember
 // Liquid glass, the resources side: the occupancy grid that decides whether a
 // surface has anything under it worth capturing, and the per-layer render targets
 // the capture and its blur pyramid live in.
@@ -61,7 +61,7 @@ public function glassLayerOccupied(state: borrow mut UiBatchState, x0: Float, y0
 }
 
 // A render pass targeting one of the glass offscreen textures.
-public function glassTexturePass(label: String, texture: borrow GraphicsTexture, r: Float, g: Float, b: Float, a: Float) -> RenderPassDescriptor {
+public function glassTexturePass(label: String, texture: borrow EMGraphicsTexture, r: Float, g: Float, b: Float, a: Float) -> RenderPassDescriptor {
     let target = RenderTarget {
         kind: .Texture,
         texture: texture,
@@ -93,7 +93,7 @@ public function glassTexturePass(label: String, texture: borrow GraphicsTexture,
     }
 }
 
-public function glassDestroyTexture(graphics: borrow Graphics, texture: borrow GraphicsTexture) {
+public function glassDestroyTexture(graphics: borrow EMGraphics, texture: borrow EMGraphicsTexture) {
     if texture.id == 0 {
         return
     }
@@ -101,7 +101,7 @@ public function glassDestroyTexture(graphics: borrow Graphics, texture: borrow G
     return
 }
 
-public function glassDestroyBindGroup(graphics: borrow Graphics, group: borrow BindGroup) {
+public function glassDestroyBindGroup(graphics: borrow EMGraphics, group: borrow BindGroup) {
     if group.id == 0 {
         return
     }
@@ -113,7 +113,7 @@ public function glassDestroyBindGroup(graphics: borrow Graphics, group: borrow B
 // Metal command buffers retain every resource they encode until completion, so
 // prior in-flight frames remain valid while the registry can stop retaining the
 // old resize bucket immediately.
-public function glassDestroyTargets(state: borrow mut UiBatchState, graphics: borrow Graphics) {
+public function glassDestroyTargets(state: borrow mut UiBatchState, graphics: borrow EMGraphics) {
     glassDestroyTexture(graphics, state.blurTextureA)
     glassDestroyTexture(graphics, state.blurTextureB)
     for layer in 0..state.glassLayers.count {
@@ -143,7 +143,7 @@ public function glassDestroyTargets(state: borrow mut UiBatchState, graphics: bo
 // Attach all targets used by glass layer `layer`. Layer 0 is built with the first
 // glass frame; deeper layers are built only when a frame actually stacks that far,
 // so an ordinary one- or two-layer UI does not reserve the maximum chain.
-public function glassEnsureLayerScene(state: borrow mut UiBatchState, graphics: borrow Graphics, layer: GlassLayerId) {
+public function glassEnsureLayerScene(state: borrow mut UiBatchState, graphics: borrow EMGraphics, layer: GlassLayerId) {
     if layer.raw < 0 || layer.raw >= state.glassLayers.count {
         return
     }
@@ -235,7 +235,7 @@ public function glassEnsureLayerScene(state: borrow mut UiBatchState, graphics: 
 // shrinking does not churn resources, and a superseded growth bucket is retired
 // before its replacement is installed.
 extend UiBatch {
-    function ensureGlassResources(graphics: borrow Graphics) {
+    function ensureGlassResources(graphics: borrow EMGraphics) {
         var state = nativeRecover<UiBatchState>(self.storage)
         if state.blurComputeHPipelineId.raw == 0 {
             // One `.ksl` holds one compute stage, so the two halves are two files
@@ -264,7 +264,7 @@ extend UiBatch {
             }
         }
 
-        // Targets sized in LOGICAL points, exactly like the Kira Graphics example
+        // Targets sized in LOGICAL points, exactly like the Ember example
         // (its scene target is the 1600x900 window size regardless of backing scale,
         // its blur chain half that). On Retina the capture is therefore half the
         // drawable and the blurred backdrop a quarter — that resolution pyramid,

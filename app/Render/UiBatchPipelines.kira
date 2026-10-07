@@ -1,5 +1,5 @@
 import Foundation
-import KiraGraphics
+import Ember
 // Building the compositor: every pipeline the batch can draw with, created once.
 //
 // The generic pipeline compiled from `Shaders/UiBatch.ksl` is the one that can
@@ -15,47 +15,47 @@ import KiraGraphics
 // `createBatch` made one 26 MiB LLVM function and sent register allocation into
 // pathological live-range work during Apple export. These helpers preserve the
 // exact pipeline state while giving LLVM normal-sized machine functions.
-function createBatchMainPipeline(graphics: borrow Graphics) -> RenderPipeline {
+function createBatchMainPipeline(graphics: borrow EMGraphics) -> RenderPipeline {
     let artifact = ksl!("Shaders/UiBatch.ksl")
     return createArtifactPipeline(graphics, "kira-ui-batch", "kira-ui-batch-pipeline", artifact)
 }
 
-function createGlassFullPipeline(graphics: borrow Graphics) -> RenderPipeline {
+function createGlassFullPipeline(graphics: borrow EMGraphics) -> RenderPipeline {
     let artifact = ksl!("Shaders/UiGlassFull.ksl")
     return createArtifactPipeline(graphics, "kira-ui-glass-full", "kira-ui-glass-full-pipeline", artifact)
 }
 
-function createGlassBandPipeline(graphics: borrow Graphics) -> RenderPipeline {
+function createGlassBandPipeline(graphics: borrow EMGraphics) -> RenderPipeline {
     let artifact = ksl!("Shaders/UiGlassBand.ksl")
     return createArtifactPipeline(graphics, "kira-ui-glass-band", "kira-ui-glass-band-pipeline", artifact, false, .Replace)
 }
 
-function createGlassCorePipeline(graphics: borrow Graphics) -> RenderPipeline {
+function createGlassCorePipeline(graphics: borrow EMGraphics) -> RenderPipeline {
     let artifact = ksl!("Shaders/UiGlassCore.ksl")
     return createArtifactPipeline(graphics, "kira-ui-glass-core", "kira-ui-glass-core-pipeline", artifact, false, .Replace)
 }
 
-function createGlassLensPipeline(graphics: borrow Graphics) -> RenderPipeline {
+function createGlassLensPipeline(graphics: borrow EMGraphics) -> RenderPipeline {
     let artifact = ksl!("Shaders/UiGlassLens.ksl")
     return createArtifactPipeline(graphics, "kira-ui-glass-lens", "kira-ui-glass-lens-pipeline", artifact, false, .Replace)
 }
 
-function createGlassCopyPipeline(graphics: borrow Graphics) -> RenderPipeline {
+function createGlassCopyPipeline(graphics: borrow EMGraphics) -> RenderPipeline {
     let artifact = ksl!("Shaders/UiGlassCopy.ksl")
     return createArtifactPipeline(graphics, "kira-ui-glass-copy", "kira-ui-glass-copy-pipeline", artifact, false, .Replace)
 }
 
-function createGlyphVariantPipeline(graphics: borrow Graphics, label: borrow String, preset: BlendPreset = .PremultipliedAlpha) -> RenderPipeline {
+function createGlyphVariantPipeline(graphics: borrow EMGraphics, label: borrow String, preset: BlendPreset = .PremultipliedAlpha) -> RenderPipeline {
     let artifact = ksl!("Shaders/UiGlyph.ksl")
     return createSpecializedPipeline(graphics, label, artifact, move preset)
 }
 
-function createRectFastPipeline(graphics: borrow Graphics) -> RenderPipeline {
+function createRectFastPipeline(graphics: borrow EMGraphics) -> RenderPipeline {
     let artifact = ksl!("Shaders/UiRect.ksl")
     return createSpecializedPipeline(graphics, "kira-ui-rect-fast", artifact)
 }
 
-function createBackgroundPipeline(graphics: borrow Graphics) -> RenderPipeline {
+function createBackgroundPipeline(graphics: borrow EMGraphics) -> RenderPipeline {
     let artifact = ksl!("Shaders/UiBackground.ksl")
     return createArtifactPipeline(graphics, "kira-ui-opaque-background", "kira-ui-opaque-background-pipeline", artifact, false, .Replace)
 }
@@ -63,7 +63,7 @@ function createBackgroundPipeline(graphics: borrow Graphics) -> RenderPipeline {
 // Create the compositor's persistent GPU resources and font, store the state behind a
 // nativeState handle, and return that handle.
 public @Native
-function createBatch(graphics: borrow Graphics) -> NativeState<UiBatchState> {
+function createBatch(graphics: borrow EMGraphics) -> NativeState<UiBatchState> {
     var state = UiBatchState {
         engine: nullPointer(),
         face: nullPointer(),

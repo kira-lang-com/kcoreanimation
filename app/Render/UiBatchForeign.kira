@@ -1,8 +1,8 @@
 import Foundation
-import KiraGraphics
+import Ember
 // Foreign surface for the batched UI compositor.
 //
-// Rendering stays on KiraGraphics. Raw staging memory uses KiraGraphics' shared
+// Rendering stays on Ember. Raw staging memory uses Ember' shared
 // runtime-memory helpers, while the text engine uses the package's generated typed
 // bindings so C-layout glyph and metric fields are read through their declared types.
 // Write one quad's record: the thirty floats the KSL `UiQuad` struct reads for
@@ -179,7 +179,7 @@ function allocateCPath(path: borrow String) -> RawPtr {
 //
 // `path` names `width * height * 4` bytes, row-major, no header. The file is
 // read through Foundation, which routes to `kira_rt_fs_*` on every backend, and
-// uploaded through the Kira Graphics texture API — so this works wherever a
+// uploaded through the Ember texture API — so this works wherever a
 // Kira program runs rather than only where Metal did. Reaching into the Metal
 // backend's Objective-C surface directly is what made every non-Apple host
 // report the backdrop as missing whatever path it was handed.
@@ -188,7 +188,7 @@ function allocateCPath(path: borrow String) -> RawPtr {
 // that refused the upload are different problems with different fixes, and
 // answering both with a zero is what hid the first one behind a message about
 // the second.
-public function loadRgbaTexture(graphics: borrow Graphics, path: borrow String, width: Int, height: Int) -> Result<Int, ResourceFailure> {
+public function loadRgbaTexture(graphics: borrow EMGraphics, path: borrow String, width: Int, height: Int) -> Result<Int, EMResourceFailure> {
     let total = width * height * 4
     let pixels = readFileRange(path, 0, total)
     if pixels.count != total {
@@ -222,7 +222,7 @@ public function environmentValueIsEmpty(name: borrow String) -> Bool {
 
 // As above, but the path is the VALUE of environment variable `envName` (the
 // image-dump-style hookup for scripted runs).
-public function loadRgbaTextureFromEnvironment(graphics: borrow Graphics, envName: borrow String, width: Int, height: Int) -> Result<Int, ResourceFailure> {
+public function loadRgbaTextureFromEnvironment(graphics: borrow EMGraphics, envName: borrow String, width: Int, height: Int) -> Result<Int, EMResourceFailure> {
     if !environmentIsSet(envName) {
         return .Error(.AssetUnreadable)
     }

@@ -16,7 +16,7 @@ public enum CAContent {
     // A run of text. Maps to the glyph path (mode 1); the runs are resolved to
     // the atlas at submit, never here.
     Text(CAText)
-    // An external KiraGraphics texture (an engine viewport, a shared surface).
+    // An external Ember texture (an engine viewport, a shared surface).
     // Maps to the external-texture quad (mode 2).
     Texture(CATexture)
     // A vector icon rasterized into the glyph atlas and tinted (mode 1).
@@ -29,7 +29,7 @@ public enum CAContent {
     Gradient(CAGradient)
 }
 
-// Color as four unit channels. Its own type rather than KiraGraphics' `Color`
+// Color as four unit channels. Its own type rather than Ember' `Color`
 // so the model tree, the animation maths and the tests do not pull the graphics
 // package in; the compositor converts to the backend color at the submit seam.
 public @Derive(Copy)

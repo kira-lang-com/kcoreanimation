@@ -1,5 +1,5 @@
 import Foundation
-import KiraGraphics
+import Ember
 import KiraLayout
 
 // The submit adapter: a render plan (or the flat presentation list) turned into
@@ -55,7 +55,7 @@ public function caGradientAxis(content: borrow CAContent) -> Float {
 }
 
 // Draw a fill/gradient/glass surface as an oriented quad through the batch.
-public function caDrawSurfaceQuad(quad: borrow CAOrientedQuad, radius: Float, borderWidth: Float, fill: borrow Color, border: borrow Color, clipMinX: Float, clipMinY: Float, clipMaxX: Float, clipMaxY: Float, clipRadius: Float, clipShapeKind: Int, shapeKind: Int, gradient: borrow Color, gradientAxis: Float, backend: borrow mut KiraGraphicsFoundationBackend) {
+public function caDrawSurfaceQuad(quad: borrow CAOrientedQuad, radius: Float, borderWidth: Float, fill: borrow Color, border: borrow Color, clipMinX: Float, clipMinY: Float, clipMaxX: Float, clipMaxY: Float, clipRadius: Float, clipShapeKind: Int, shapeKind: Int, gradient: borrow Color, gradientAxis: Float, backend: borrow mut EmberFoundationBackend) {
     backend.batch.pushLayerQuad(
         quad.centerX, quad.centerY, quad.halfW, quad.halfH,
         quad.rotCos, quad.rotSin,
@@ -119,7 +119,7 @@ public function caDrawText(
     wash: Float,
     washLuma: Float,
     opacity: Float,
-    backend: borrow mut KiraGraphicsFoundationBackend,
+    backend: borrow mut EmberFoundationBackend,
 ) {
     let frame = caQuadFrame(quad)
     backend.drewVisibleUi = true
@@ -200,7 +200,7 @@ public function caSubmitCmdAt(
     passTextures: borrow [TextureHandle],
     originX: Float,
     originY: Float,
-    backend: borrow mut KiraGraphicsFoundationBackend,
+    backend: borrow mut EmberFoundationBackend,
 ) -> Int {
     if cmd.opacity <= 0.0 {
         return 0
@@ -314,7 +314,7 @@ public function caSubmitCmdAt(
     return drawn
 }
 
-public function caSubmitCmd(cmd: borrow CADrawCmd, passTextures: borrow [TextureHandle], backend: borrow mut KiraGraphicsFoundationBackend) -> Int {
+public function caSubmitCmd(cmd: borrow CADrawCmd, passTextures: borrow [TextureHandle], backend: borrow mut EmberFoundationBackend) -> Int {
     return caSubmitCmdAt(cmd, passTextures, 0.0, 0.0, backend)
 }
 
@@ -326,7 +326,7 @@ public function caSubmitPassAt(
     passTextures: borrow [TextureHandle],
     originX: Float,
     originY: Float,
-    backend: borrow mut KiraGraphicsFoundationBackend,
+    backend: borrow mut EmberFoundationBackend,
 ) -> Int {
     if passIndex.raw < 0 || passIndex.raw >= plan.passes.count {
         return 0
@@ -338,12 +338,12 @@ public function caSubmitPassAt(
     return drawn
 }
 
-public function caSubmitPass(plan: borrow CARenderPlan, passIndex: RenderPassId, passTextures: borrow [TextureHandle], backend: borrow mut KiraGraphicsFoundationBackend) -> Int {
+public function caSubmitPass(plan: borrow CARenderPlan, passIndex: RenderPassId, passTextures: borrow [TextureHandle], backend: borrow mut EmberFoundationBackend) -> Int {
     return caSubmitPassAt(plan, passIndex, passTextures, 0.0, 0.0, backend)
 }
 
 // Draw one flat presentation item (the compat single-pass path).
-public function caSubmitDrawItem(item: borrow CADrawItem, backend: borrow mut KiraGraphicsFoundationBackend) -> Int {
+public function caSubmitDrawItem(item: borrow CADrawItem, backend: borrow mut EmberFoundationBackend) -> Int {
     if item.opacity <= 0.0 {
         return 0
     }
@@ -414,7 +414,7 @@ public function caSubmitDrawItem(item: borrow CADrawItem, backend: borrow mut Ki
     return drawn
 }
 
-public function caSubmit(items: borrow [CADrawItem], backend: borrow mut KiraGraphicsFoundationBackend) -> Int {
+public function caSubmit(items: borrow [CADrawItem], backend: borrow mut EmberFoundationBackend) -> Int {
     var drawn = 0
     for item in items {
         drawn += caSubmitDrawItem(item, backend)
@@ -425,6 +425,6 @@ public function caSubmit(items: borrow [CADrawItem], backend: borrow mut KiraGra
 // The compat single-pass path: flatten and submit in place. Group opacity here
 // is inherited, not isolated — the isolated result is `caPlan` + per-pass submit,
 // which the runner drives with real render targets.
-public function caComposite(tree: borrow CALayerTree, backend: borrow mut KiraGraphicsFoundationBackend) -> Int {
+public function caComposite(tree: borrow CALayerTree, backend: borrow mut EmberFoundationBackend) -> Int {
     return caSubmit(caFlatten(tree), backend)
 }

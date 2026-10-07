@@ -1,5 +1,5 @@
 import Foundation
-import KiraGraphics
+import Ember
 // Submitting the frame: one indexed draw per stream, the fullscreen background
 // under them, the HUD stream over them, and the pass structure that orders the
 // whole thing.
@@ -238,7 +238,7 @@ extend UiBatch {
     // somebody else's window has not got one -- so a tree that split its quads
     // across streams had every stream but the last silently dropped, and the
     // surface carried its clear color and nothing else.
-    function flushStreams(graphics: borrow Graphics, encoder: borrow mut RenderEncoder) {
+    function flushStreams(graphics: borrow EMGraphics, encoder: borrow mut RenderEncoder) {
         var state = nativeRecover<UiBatchState>(self.storage)
         var target = encoder
         let none = shareBindGroup(state.emptyGroup)
@@ -250,7 +250,7 @@ extend UiBatch {
         return
     }
 
-    function flushBatch(graphics: borrow Graphics, encoder: borrow mut RenderEncoder) {
+    function flushBatch(graphics: borrow EMGraphics, encoder: borrow mut RenderEncoder) {
         var state = nativeRecover<UiBatchState>(self.storage)
         let quadCount = state.quadCount
         var target = encoder
@@ -261,7 +261,7 @@ extend UiBatch {
 }
 
 
-public function prepareBackground(state: borrow mut UiBatchState, graphics: borrow Graphics) {
+public function prepareBackground(state: borrow mut UiBatchState, graphics: borrow EMGraphics) {
     if !state.backgroundActive || state.backgroundParams.id == 0 {
         return
     }

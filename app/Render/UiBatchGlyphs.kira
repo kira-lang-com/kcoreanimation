@@ -1,5 +1,5 @@
 import Foundation
-import KiraGraphics
+import Ember
 // Glyph and icon rasterization for the batched UI compositor: atlas caching,
 // subpixel phase selection, and coverage uploads. Glyph metrics themselves come
 // through the generated typed text bindings.

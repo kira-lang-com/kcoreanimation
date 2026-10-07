@@ -1,5 +1,5 @@
 import Foundation
-import KiraGraphics
+import Ember
 // Pipeline construction for the batched UI compositor's lightweight variants.
 //
 // Each variant is the generic pipeline (`Shaders/UiBatch.ksl`) with every branch
@@ -18,7 +18,7 @@ import KiraGraphics
 // a name written here that does not match leaves the descriptor with a nil
 // vertex function, which Metal rejects at validation.
 public function createArtifactPipeline(
-    graphics: borrow Graphics,
+    graphics: borrow EMGraphics,
     shaderLabel: borrow String,
     pipelineLabel: borrow String,
     artifact: borrow KslArtifact,
@@ -39,6 +39,6 @@ public function createArtifactPipeline(
     }), "create render pipeline")
 }
 
-public function createSpecializedPipeline(graphics: borrow Graphics, label: borrow String, artifact: borrow KslArtifact, preset: BlendPreset = .PremultipliedAlpha) -> RenderPipeline {
+public function createSpecializedPipeline(graphics: borrow EMGraphics, label: borrow String, artifact: borrow KslArtifact, preset: BlendPreset = .PremultipliedAlpha) -> RenderPipeline {
     return createArtifactPipeline(graphics, label, label, artifact, true, move preset)
 }

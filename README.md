@@ -6,7 +6,7 @@ material data used by that compositor, the shader sources and generated shader
 artifacts, and the numeric motion implementation formerly published by
 `KiraUIMotion`.
 
-The package depends only on `KiraGraphics` and `KiraLayout`. It deliberately has
+The package depends only on `Ember` and `KiraLayout`. It deliberately has
 no dependency on `KiraUIFoundation` or `KiraUIMotion`: motion declarations are
 copied into `app/Timing/Motion` without renaming their existing symbols.
 

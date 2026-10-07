@@ -1,5 +1,5 @@
 import Foundation
-import KiraGraphics
+import Ember
 import KiraLayout
 extend UiBatch {
     // Whether this batch may promote a full-bleed quad into the background pass.
@@ -13,7 +13,7 @@ extend UiBatch {
         return
     }
 
-    function beginFrameSlots(graphics: borrow Graphics) {
+    function beginFrameSlots(graphics: borrow EMGraphics) {
         var state = nativeRecover<UiBatchState>(self.storage)
         for i in 0..state.streams.count {
             // A slot with no buffer yet claims nothing, and the HUD claims its own in
@@ -101,7 +101,7 @@ extend UiBatch {
 // why every stream is committed together, once, before the frame's first pass
 // rather than at each draw that reads one.
 extend UiBatch {
-    function commitStream(graphics: borrow Graphics, index: DrawStreamId) {
+    function commitStream(graphics: borrow EMGraphics, index: DrawStreamId) {
         var state = nativeRecover<UiBatchState>(self.storage)
         if index.raw < 0 || index.raw >= state.streams.count {
             return
@@ -134,7 +134,7 @@ extend UiBatch {
 // is the only shape sokol has, and sokol refuses a second one in the same frame.
 // A steady screen packs no new glyphs and pays nothing.
 extend UiBatch {
-    function commitAtlas(graphics: borrow Graphics) {
+    function commitAtlas(graphics: borrow EMGraphics) {
         var state = nativeRecover<UiBatchState>(self.storage)
         if !state.atlasDirty || state.atlasTexture.id == 0 || pointerIsNull(state.atlasPixels) {
             return
@@ -174,7 +174,7 @@ extend UiBatch {
 
 // ---------------------------------------------------------------------------
 // Liquid glass (mode 3): capture-the-backdrop → separable blur → refracted
-// composite, the batched-compositor port of the Kira Graphics liquid_glass
+// composite, the batched-compositor port of the Ember liquid_glass
 // example. See UiBatchState's stream fields for the split mechanics.
 // ---------------------------------------------------------------------------
 
@@ -190,7 +190,7 @@ extend UiBatch {
 // visible content stays crisp on Retina while the glass refracts the
 // example-matching blur pyramid. Streams past the two allocated up front are created
 // here, on the first frame that actually stacks glass.
-public function openStream(state: borrow mut UiBatchState, graphics: borrow Graphics) {
+public function openStream(state: borrow mut UiBatchState, graphics: borrow EMGraphics) {
     state.streams[state.streamIndex.raw].quadCount = state.quadCount
     let nextStream = DrawStreamId(state.streamIndex.raw + 1)
     createDrawStream(state, graphics, nextStream)
@@ -214,7 +214,7 @@ public function openStream(state: borrow mut UiBatchState, graphics: borrow Grap
 // (a full frame writing its HUD after the application tree) and on a frame that does
 // nothing else at all — nothing here reads or resets the UI's per-frame state.
 extend UiBatch {
-    function beginHud(graphics: borrow Graphics) {
+    function beginHud(graphics: borrow EMGraphics) {
         var state = nativeRecover<UiBatchState>(self.storage)
         let hud = hudStreamIndex()
         createDrawStream(state, graphics, hud)

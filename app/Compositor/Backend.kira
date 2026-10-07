@@ -1,10 +1,10 @@
 import Foundation
-import KiraGraphics
+import Ember
 import KiraLayout
 
 // The compositor's draw backend: the thin translation layer between the render
 // plan the executor walks and the batched-UI primitives that actually put
-// vertices on the GPU. It owns nothing but the frame's Graphics handle and the
+// vertices on the GPU. It owns nothing but the frame's EMGraphics handle and the
 // UiBatch it emits into; every surface, glyph, texture and glass quad is one
 // call through to `batch`, which holds the geometry, the atlas and the liquid-
 // glass pipeline.
@@ -15,8 +15,8 @@ import KiraLayout
 // `drawRetainedGlass`, `drawTextureFields` and the free `caDrawSurfaceQuad`.
 // `drewVisibleUi` records whether the pass emitted anything the swapchain must
 // present.
-public class KiraGraphicsFoundationBackend {
-    let graphics: Graphics
+public class EmberFoundationBackend {
+    let graphics: EMGraphics
     let batch: UiBatch
     // Whether the host window is composited with holes in it. Carried for the
     // surface-fill path; the page itself is cleared by the runner.

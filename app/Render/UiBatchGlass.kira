@@ -1,5 +1,5 @@
 import Foundation
-import KiraGraphics
+import Ember
 // Liquid glass, the emission side: opening a capture, appending a glass surface,
 // and the patch cache that lets an unchanged interior be presented from last
 // frame's pixels instead of shaded again.
@@ -60,7 +60,7 @@ public function glassEdgeLightReach(material: borrow CAGlassMaterial) -> Float {
 }
 
 extend UiBatch {
-    function beginGlassCapture(graphics: borrow Graphics, x: Float, y: Float, w: Float, h: Float) {
+    function beginGlassCapture(graphics: borrow EMGraphics, x: Float, y: Float, w: Float, h: Float) {
         self.ensureGlassResources(graphics)
         var state = nativeRecover<UiBatchState>(self.storage)
         if !state.glassReady {

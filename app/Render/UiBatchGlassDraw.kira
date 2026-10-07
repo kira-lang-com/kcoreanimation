@@ -1,5 +1,5 @@
 import Foundation
-import KiraGraphics
+import Ember
 // Liquid glass, the drawing side: the stream bind groups the composite reads its
 // backdrop through, the capture replay, and presenting a cached interior.
 //
@@ -97,7 +97,7 @@ public function glassMergeCaptureBound(state: borrow mut UiBatchState, x0: Float
 // Create (or re-create after a resize) the interior-cache texture, its
 // nearest-texel sampler and the bind group that rides the atlas slot around
 // copy runs. A fresh texture invalidates every key: nothing cached yet.
-public function glassEnsureInteriorCache(state: borrow mut UiBatchState, graphics: borrow Graphics) {
+public function glassEnsureInteriorCache(state: borrow mut UiBatchState, graphics: borrow EMGraphics) {
     // Exactly the drawable, from the backend. The cache pass rasterizes the same
     // quads as the composite and the copy quads read the result back at their own
     // device position, so one texel per swapchain pixel is not an optimization —
