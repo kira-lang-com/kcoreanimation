@@ -118,19 +118,20 @@ public function caDrawText(
     clipMaxY: Float,
     wash: Float,
     washLuma: Float,
+    opacity: Float,
     backend: borrow mut KiraGraphicsFoundationBackend,
 ) {
     let frame = caQuadFrame(quad)
     backend.drewVisibleUi = true
-    if t.wraps && foundationTextRunWidth(content: t.content, size: t.size, weight: t.weight) > localWidth + 0.5 {
-        let lines = foundationTextLines(t.content, t.size, t.weight, localWidth)
-        let pitch = foundationTextLineBox(t.size, t.weight) * textScale
+    if t.wraps && foundationTextRunWidth(content: t.content, size: t.size, weight: t.weight, design: t.design) > localWidth + 0.5 {
+        let lines = foundationTextLines(t.content, t.size, t.weight, localWidth, t.design)
+        let pitch = foundationTextLineBox(t.size, t.weight, t.design) * textScale
         var index = 0
         for line in lines {
             // The line box's center, down the layer's axis from its top edge and
             // across it by what the line leaves of the layer's width.
             let along = pitch * (Float(index) + 0.5) - frame.height / 2.0
-            let across = (frame.width - foundationTextRunWidth(content: line, size: t.size, weight: t.weight) * textScale) * t.alignment
+            let across = (frame.width - foundationTextRunWidth(content: line, size: t.size, weight: t.weight, design: t.design) * textScale) * t.alignment
             let centerX = quad.centerX + quad.rotCos * across - quad.rotSin * along
             let centerY = quad.centerY + quad.rotSin * across + quad.rotCos * along
             backend.batch.pushText(
@@ -148,7 +149,8 @@ public function caDrawText(
                 0.0,
                 quad.rotCos,
                 quad.rotSin,
-                textScale
+                textScale,
+                t.design
             )
             index += 1
         }
@@ -163,10 +165,10 @@ public function caDrawText(
     var inkTop = t.inkTop
     var inkBottom = t.inkBottom
     if abs(weight - t.weight) > 0.5 {
-        inkLeft = foundationTextRunInkLeft(content: t.content, size: t.size, weight: weight)
-        inkRight = foundationTextRunInkRight(content: t.content, size: t.size, weight: weight)
-        inkTop = foundationTextRunInkTop(content: t.content, size: t.size, weight: weight)
-        inkBottom = foundationTextRunInkBottom(content: t.content, size: t.size, weight: weight)
+        inkLeft = foundationTextRunInkLeft(content: t.content, size: t.size, weight: weight, design: t.design)
+        inkRight = foundationTextRunInkRight(content: t.content, size: t.size, weight: weight, design: t.design)
+        inkTop = foundationTextRunInkTop(content: t.content, size: t.size, weight: weight, design: t.design)
+        inkBottom = foundationTextRunInkBottom(content: t.content, size: t.size, weight: weight, design: t.design)
     }
     backend.batch.pushText(
         backend.graphics,
@@ -183,7 +185,10 @@ public function caDrawText(
         inkBottom * textScale,
         quad.rotCos,
         quad.rotSin,
-        textScale
+        textScale,
+        t.design,
+        t.spans,
+        opacity
     )
     return
 }
@@ -269,7 +274,7 @@ public function caSubmitCmdAt(
             drawn = 1
         }
         Text(t) -> {
-            caDrawText(t, quad, cmd.localWidth, cmd.textScale, cmd.textWeight, fill, clipMinX, clipMinY, clipMaxX, clipMaxY, cmd.glassWash, cmd.glassWashLuma, backend)
+            caDrawText(t, quad, cmd.localWidth, cmd.textScale, cmd.textWeight, fill, clipMinX, clipMinY, clipMaxX, clipMaxY, cmd.glassWash, cmd.glassWashLuma, cmd.opacity, backend)
             drawn = 1
         }
         Texture(x) -> {
@@ -369,7 +374,7 @@ public function caSubmitDrawItem(item: borrow CADrawItem, backend: borrow mut Ki
             drawn = 1
         }
         Text(t) -> {
-            caDrawText(t, item.quad, item.localWidth, item.textScale, item.textWeight, fill, item.clipMinX, item.clipMinY, item.clipMaxX, item.clipMaxY, item.glassWash, item.glassWashLuma, backend)
+            caDrawText(t, item.quad, item.localWidth, item.textScale, item.textWeight, fill, item.clipMinX, item.clipMinY, item.clipMaxX, item.clipMaxY, item.glassWash, item.glassWashLuma, item.opacity, backend)
             drawn = 1
         }
         Texture(x) -> {

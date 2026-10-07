@@ -79,6 +79,9 @@ function kira_text_face_load(engine: kira_text_engine_ptr, path: CString, face_i
 @FFI.Extern { library: kiratext, symbol: kira_text_face_load_bundled, abi: c }
 function kira_text_face_load_bundled(engine: kira_text_engine_ptr) -> kira_text_face_ptr
 
+@FFI.Extern { library: kiratext, symbol: kira_text_face_load_monospaced, abi: c }
+function kira_text_face_load_monospaced(engine: kira_text_engine_ptr) -> kira_text_face_ptr
+
 @FFI.Extern { library: kiratext, symbol: kira_text_face_load_memory, abi: c }
 function kira_text_face_load_memory(engine: kira_text_engine_ptr, data: uint8_t_ptr, length: Int, face_index: I32) -> kira_text_face_ptr
 

@@ -273,6 +273,10 @@ extend UiBatch {
     // GPU resources remain typed values and are released by UiBatchState drop glue.
     function releaseOwnedCpuMemory() {
         var state = nativeRecover<UiBatchState>(self.storage)
+        if state.monoFace != RawPtr.null {
+            kira_text_face_destroy(state.monoFace)
+            state.monoFace = nullPointer()
+        }
         if state.face != RawPtr.null {
             kira_text_face_destroy(state.face)
             state.face = nullPointer()

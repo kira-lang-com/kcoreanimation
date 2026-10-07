@@ -307,16 +307,21 @@ public struct UiBatchState {
 
     var engine: kira_text_engine_ptr
     var face: kira_text_face_ptr
+    // The host's monospaced face, null where it has none and monospaced runs
+    // are set in `face`.
+    var monoFace: kira_text_face_ptr
     var fontReady: Bool = false
     var fontSizeSet: Int = 0
     // The weight the face is currently set to. Paired with `fontSizeSet`: a face
     // carries size and weight as one variation state, so a run that changes
     // either must re-set both.
     var fontWeightSet: Int = 0
+    // Which of the two faces was set last, by `uiBatchFaceKey`.
+    var fontFaceSet: Int = 0
     var ascender: Float = 0.0
     var descender: Float = 0.0
     // The face's vertical metrics at every size and weight a run has asked
-    // for, keyed `sizeKey * 1000 + weightKey`. Setting the face's size and
+    // for, keyed `(sizeKey * 1000 + weightKey) * 2 + faceKey`. Setting the face's size and
     // weight axes is the dear part of switching between them, and a run whose
     // glyphs are all in the atlas needs only these two numbers -- so the face
     // is set only when a glyph has to be rasterized.

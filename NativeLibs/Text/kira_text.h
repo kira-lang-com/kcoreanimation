@@ -49,6 +49,12 @@ kira_text_face* kira_text_face_load_memory(kira_text_engine* engine,
  * this, so a face is never simply absent and text is never simply missing. */
 kira_text_face* kira_text_face_load_bundled(kira_text_engine* engine);
 
+/* Load the host's monospaced face: SF Mono on Apple hosts, the fixed-pitch
+ * face each other host ships. NULL where none is installed, and the caller
+ * sets code in its default face. Measurement names the same face by the path
+ * "<monospaced>". */
+kira_text_face* kira_text_face_load_monospaced(kira_text_engine* engine);
+
 void kira_text_face_destroy(kira_text_face* face);
 
 /* Select the working pixel size for metrics and rasterization.

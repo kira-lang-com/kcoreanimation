@@ -75,16 +75,17 @@ public struct FoundationUiContext {
     var modAlt: Bool = false
 }
 
-// Bit for a held key in keysMask — macOS virtual keycodes for the fly keys:
-// A=0, S=1, D=2, F=3, W=13, Q=12, E=14. Zero for keys we do not track.
+// Bit for a held key in keysMask -- the fly keys, by the character on them,
+// which is the code every backend reports a letter key as. Zero for keys we do
+// not track.
 public function foundationKeyBit(keyCode: Int) -> Int {
-    if keyCode == 13 { return 1 }   // W
-    if keyCode == 0 { return 2 }    // A
-    if keyCode == 1 { return 4 }    // S
-    if keyCode == 2 { return 8 }    // D
-    if keyCode == 12 { return 16 }  // Q
-    if keyCode == 14 { return 32 }  // E
-    if keyCode == 3 { return 64 }   // F
+    if keyCode == 87 { return 1 }   // W
+    if keyCode == 65 { return 2 }   // A
+    if keyCode == 83 { return 4 }   // S
+    if keyCode == 68 { return 8 }   // D
+    if keyCode == 81 { return 16 }  // Q
+    if keyCode == 69 { return 32 }  // E
+    if keyCode == 70 { return 64 }  // F
     return 0
 }
 

@@ -27,6 +27,7 @@
 /* Forward declaration: the shared face cache, which also holds the embedded
  * Inter face loaded from the byte array above. Defined further below. */
 static kira_text_face* kira_text_cached_face(const char* path, float pixel_size, float weight);
+static const char* kira_text_discover_monospaced_font(void);
 
 struct kira_text_engine {
     FT_Library library;
@@ -318,6 +319,14 @@ kira_text_face* kira_text_face_load_bundled(kira_text_engine* engine) {
                                       kira_inter_font_data,
                                       (long)KIRA_INTER_FONT_SIZE,
                                       0);
+}
+
+kira_text_face* kira_text_face_load_monospaced(kira_text_engine* engine) {
+    const char* path = kira_text_discover_monospaced_font();
+    if (path == NULL) {
+        return NULL;
+    }
+    return kira_text_face_load(engine, path, 0);
 }
 
 /* Drive a variable font's optical size from the size being rendered.
@@ -683,9 +692,61 @@ static int kira_text_utf8_has_cjk(const char* utf8) {
     return 0;
 }
 
+/* Locate the host's monospaced face: SF Mono where it is the system's, the
+ * fixed-pitch face each other host ships with its UI behind it. Nothing is
+ * bundled for it, so a host with none installed sets code in the default face
+ * rather than in nothing. */
+static const char* kira_text_probe_monospaced_font(void) {
+    static const char* const mono_candidates[] = {
+#if defined(__APPLE__)
+        "/System/Library/Fonts/SFNSMono.ttf",
+        "/System/Library/Fonts/Menlo.ttc",
+#elif defined(_WIN32)
+        "C:/Windows/Fonts/CascadiaMono.ttf",
+        "C:/Windows/Fonts/consola.ttf",
+#else
+        "/usr/share/fonts/google-noto-vf/NotoSansMono[wght].ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+        "/usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono.ttf",
+        "/usr/share/fonts/adwaita-mono-fonts/AdwaitaMono-Regular.ttf",
+        "/usr/share/fonts/liberation-mono-fonts/LiberationMono-Regular.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+#endif
+    };
+    for (size_t i = 0; i < sizeof(mono_candidates) / sizeof(mono_candidates[0]); i += 1) {
+        FILE* probe = fopen(mono_candidates[i], "rb");
+        if (probe != NULL) {
+            fclose(probe);
+            return mono_candidates[i];
+        }
+    }
+    return NULL;
+}
+
+/* The monospaced face path, probed once, on the same terms as the CJK one. */
+static const char* kira_text_discover_monospaced_font(void) {
+    static const char* cached = NULL;
+    static int probed = 0;
+    if (!probed) {
+        cached = kira_text_probe_monospaced_font();
+        probed = 1;
+    }
+    return cached;
+}
+
 /* Choose the face path for a run: when the caller left the path unset, prefer a
- * CJK font for runs that contain CJK scalars, otherwise the default Latin face. */
+ * CJK font for runs that contain CJK scalars, otherwise the default Latin face.
+ * "<monospaced>" names the host's monospaced face, and the default where the
+ * host has none. */
 static const char* kira_text_resolve_font(const char* font_path, const char* utf8) {
+    if (font_path != NULL && strcmp(font_path, "<monospaced>") == 0) {
+        const char* mono = kira_text_discover_monospaced_font();
+        if (mono != NULL) {
+            return mono;
+        }
+        font_path = NULL;
+    }
     if (font_path != NULL && font_path[0] != '\0') {
         return font_path;
     }
@@ -1007,11 +1068,9 @@ double kira_text_line_height(const char* font_path, double pixel_size, double we
     if (pixel_size <= 0.0) {
         return 0.0;
     }
-    if (font_path == NULL || font_path[0] == '\0') {
-        font_path = kira_text_discover_font();
-        if (font_path == NULL) {
-            return 0.0;
-        }
+    font_path = kira_text_resolve_font(font_path, NULL);
+    if (font_path == NULL) {
+        return 0.0;
     }
     kira_text_face* face = kira_text_cached_face(font_path, (float)pixel_size, (float)weight);
     if (face == NULL) {
@@ -1026,11 +1085,9 @@ double kira_text_ascent(const char* font_path, double pixel_size, double weight)
     if (pixel_size <= 0.0) {
         return 0.0;
     }
-    if (font_path == NULL || font_path[0] == '\0') {
-        font_path = kira_text_discover_font();
-        if (font_path == NULL) {
-            return 0.0;
-        }
+    font_path = kira_text_resolve_font(font_path, NULL);
+    if (font_path == NULL) {
+        return 0.0;
     }
     kira_text_face* face = kira_text_cached_face(font_path, (float)pixel_size, (float)weight);
     if (face == NULL) {
@@ -1045,11 +1102,9 @@ double kira_text_descent(const char* font_path, double pixel_size, double weight
     if (pixel_size <= 0.0) {
         return 0.0;
     }
-    if (font_path == NULL || font_path[0] == '\0') {
-        font_path = kira_text_discover_font();
-        if (font_path == NULL) {
-            return 0.0;
-        }
+    font_path = kira_text_resolve_font(font_path, NULL);
+    if (font_path == NULL) {
+        return 0.0;
     }
     kira_text_face* face = kira_text_cached_face(font_path, (float)pixel_size, (float)weight);
     if (face == NULL) {
@@ -1130,6 +1185,11 @@ static int kira_text_run_ink_bounds(
     float right = 0.0f;
     float top = 0.0f;
     float bottom = 0.0f;
+    /* Where the pen stood at the first glyph with ink. Space before it is
+     * part of the run -- an indented line keeps its indent -- so the left edge
+     * reported is the first inked glyph's own bearing, not the distance from
+     * the run's start to its first ink. */
+    float lead = 0.0f;
     int found = 0;
     for (unsigned int i = 0; i < count; i += 1) {
         float glyph_x = pen_x + kira_text_f26dot6(positions[i].x_offset);
@@ -1149,6 +1209,9 @@ static int kira_text_run_ink_bounds(
         float y_offset = kira_text_f26dot6(positions[i].y_offset);
         float glyph_top = y_offset + (float)slot->bitmap_top;
         float glyph_bottom = glyph_top - (float)slot->bitmap.rows;
+        if (!found) {
+            lead = glyph_x;
+        }
         if (!found || glyph_left < left) {
             left = glyph_left;
         }
@@ -1168,7 +1231,7 @@ static int kira_text_run_ink_bounds(
         return 0;
     }
     if (out_left != NULL) {
-        *out_left = left;
+        *out_left = left - lead;
     }
     if (out_right != NULL) {
         *out_right = right;

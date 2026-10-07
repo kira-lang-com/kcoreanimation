@@ -112,9 +112,10 @@ public function glyphWeightAxis(weightKey: Int) -> Float {
 // and so is the weight: a cached glyph is a rasterized OUTLINE, and a semibold
 // 'a' is not the regular one. Keying on character and size alone serves the
 // first weight rasterized at that size to every run after it, so which weight a
-// label lands in depends on the order the panel was built in.
-public function glyphCacheKey(codepoint: Int, sizeKey: Int, weightKey: Int, phase: Int) -> Int {
-    return ((codepoint * 1024 + sizeKey) * 100 + weightKey) * glyphSubpixelPhases() + phase
+// label lands in depends on the order the panel was built in. The face is part
+// of it for the same reason: a monospaced 'a' is another outline again.
+public function glyphCacheKey(codepoint: Int, sizeKey: Int, weightKey: Int, faceKey: Int, phase: Int) -> Int {
+    return (((codepoint * 1024 + sizeKey) * 100 + weightKey) * 2 + faceKey) * glyphSubpixelPhases() + phase
 }
 
 // Whether a new entry may go in the glyph hash: there is a free slot for it, and

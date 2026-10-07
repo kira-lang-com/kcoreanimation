@@ -62,7 +62,7 @@ public class Compositor {
         var kept: [CARegisteredRenderTarget] = []
         for target in self.registeredTargets {
             if target.id != id {
-                kept.append(move target)
+                kept.append(copy target)
             }
         }
         self.registeredTargets = move kept

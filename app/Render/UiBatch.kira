@@ -293,6 +293,7 @@ public function fontCandidates() -> [String] {
     match hostPlatform() {
         MacOS -> return appleFontCandidates()
         IOS -> return appleFontCandidates()
+        Android -> return []
         Windows -> return []
         Linux -> return []
         Web -> return []
@@ -318,6 +319,9 @@ public function appleFontCandidates() -> [String] {
 // browser, a container image with no fonts installed, an embedded target. The
 // retained path is therefore not conditional on the platform: text is always
 // possible, and only WHICH face draws it varies.
+//
+// The host's monospaced face beside it, for runs set in it; where the host has
+// none, they are set in the default face.
 public @Native
 function loadBatchFont(state: borrow mut UiBatchState) {
     let engine = kira_text_engine_create()
@@ -326,6 +330,7 @@ function loadBatchFont(state: borrow mut UiBatchState) {
         state.fontReady = false
         return
     }
+    state.monoFace = kira_text_face_load_monospaced(engine)
     let candidates = fontCandidates()
     for i in 0..candidates.count {
         let face = kira_text_face_load(engine, candidates[i], I32(0))

@@ -67,6 +67,7 @@ function createBatch(graphics: borrow Graphics) -> NativeState<UiBatchState> {
     var state = UiBatchState {
         engine: nullPointer(),
         face: nullPointer(),
+        monoFace: nullPointer(),
         contentsPtr: nullPointer(),
         atlasPixels: nullPointer()
     }

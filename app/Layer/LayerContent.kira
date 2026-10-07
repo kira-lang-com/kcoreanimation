@@ -107,11 +107,19 @@ public struct CASolid {
     var shapeKind: Int = 0
 }
 
+// The face a run is set in, in SwiftUI's spelling: the system's own, or its
+// monospaced cut, where every character takes the same advance.
+public enum CAFontDesign {
+    Default
+    Monospaced
+}
+
 public struct CAText {
     var content: String = ""
     var color: CAColor = CAColor {}
     var size: Float = 15.0
     var weight: Float = 400.0
+    var design: CAFontDesign = .Default
     // Whether a run wider than its bounds breaks onto further lines at word
     // boundaries, as a wrapped text layer does, rather than running past them.
     var wraps: Bool = false
@@ -123,6 +131,21 @@ public struct CAText {
     var inkRight: Float = 0.0
     var inkTop: Float = 0.0
     var inkBottom: Float = 0.0
+    // Spans of the content drawn in a color of their own -- a line of source
+    // in its syntax colors -- in byte order, not overlapping. Bytes no span
+    // covers are drawn in `color`. One run with many inks rather than a run per
+    // ink, so the pen crosses from one span to the next as it crosses any two
+    // letters, and the spans never part at their seams.
+    var spans: [CATextSpan] = []
+}
+
+// Bytes `start` up to, not including, `end` of a text layer's content, and
+// their ink.
+public @Derive(Copy)
+struct CATextSpan {
+    var start: Int = 0
+    var end: Int = 0
+    var color: CAColor = CAColor {}
 }
 
 public struct CATexture {

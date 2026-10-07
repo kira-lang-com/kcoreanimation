@@ -267,6 +267,11 @@ extend UiBatch {
         // The scale the run is shown at, from a transform over it. It is laid
         // out at its own size and its glyphs scaled down onto the screen.
         displayScale: Float = 1.0,
+        design: CAFontDesign = .Default,
+        // Spans of the content in inks of their own, and the opacity their
+        // colors are drawn at; bytes no span covers take `color`.
+        spans: borrow [CATextSpan] = [],
+        spanOpacity: Float = 1.0,
     ) {
         // Recover the compositor state ONCE for the whole string. Every per-glyph step
         // (size, metrics, glyph lookup, atlas rasterization, and quad emission) runs
@@ -313,7 +318,9 @@ extend UiBatch {
         let bottomInk = inkBottom / shown
         let sizeKey = glyphSizeKey(sizePx / shown * rasterScale)
         let weightKey = glyphWeightKey(weightAxis)
-        let metricKey = sizeKey * 1000 + weightKey
+        let faceKey = uiBatchFaceKey(state, design)
+        let face = faceKey == 1 ? state.monoFace : state.face
+        let metricKey = (sizeKey * 1000 + weightKey) * 2 + faceKey
         var metric = -1
         let metricKeys = state.metricKeys
         for m in 0..metricKeys.count {
@@ -323,7 +330,7 @@ extend UiBatch {
             }
         }
         if metric < 0 {
-            if !uiBatchSetFace(state, sizeKey, weightKey) {
+            if !uiBatchSetFace(state, sizeKey, weightKey, faceKey) {
                 return
             }
             metric = state.metricKeys.count
@@ -430,11 +437,28 @@ extend UiBatch {
         let decodedCount = Int(kira_text_decode_codepoints(content, decoded, I32(capacity)))
         var guard = 0
         var more = true
+        // Which byte of the content the pen is at, and the first span that
+        // does not end before it.
+        var byte = 0
+        var span = 0
+        var ink = Color { r: color.r, g: color.g, b: color.b, a: color.a }
         while more && guard < decodedCount {
             let codepoint = Int(wordAt(decoded, U64(guard * 4)))
             if codepoint == 0 {
                 more = false
             } else {
+                if spans.count > 0 {
+                    while span < spans.count && spans[span].end <= byte {
+                        span += 1
+                    }
+                    if span < spans.count && spans[span].start <= byte {
+                        let c = spans[span].color
+                        ink = Color { r: c.r, g: c.g, b: c.b, a: c.a * spanOpacity }
+                    } else {
+                        ink = Color { r: color.r, g: color.g, b: color.b, a: color.a }
+                    }
+                    byte += utf8Length(codepoint)
+                }
                 // --- inline glyph lookup (open-addressing hash) ---
                 // The pen in DEVICE pixels decides the subpixel phase: the glyph is
                 // rasterized for the fraction it actually sits at, then placed on a
@@ -443,7 +467,7 @@ extend UiBatch {
                 // softer and unevenly spaced — the thing this is here to avoid.
                 let devicePen = penX * scale
                 let phase = glyphPhaseOf(devicePen)
-                let key = glyphCacheKey(codepoint, sizeKey, weightKey, phase)
+                let key = glyphCacheKey(codepoint, sizeKey, weightKey, faceKey, phase)
                 var slotIdx = -1
                 var homeSlot = -1
                 var probing = cap > 0
@@ -477,14 +501,14 @@ extend UiBatch {
                     }
                 }
                 // --- inline rasterization on miss ---
-                if slotIdx < 0 && !uiBatchSetFace(state, sizeKey, weightKey) {
+                if slotIdx < 0 && !uiBatchSetFace(state, sizeKey, weightKey, faceKey) {
                     more = false
                     continue
                 }
                 if slotIdx < 0 {
-                    let glyphIndex = kira_text_face_glyph_index(state.face, U32(codepoint))
+                    let glyphIndex = kira_text_face_glyph_index(face, U32(codepoint))
                     let bm: kira_text_glyph_bitmap_ptr = allocateBytes(glyphBitmapSize())
-                    let rendered = kira_text_face_render_glyph_offset(state.face, glyphIndex, I32(glyphPhaseOffset(phase, textOversampleAt(scale))), bm)
+                    let rendered = kira_text_face_render_glyph_offset(face, glyphIndex, I32(glyphPhaseOffset(phase, textOversampleAt(scale))), bm)
                     if rendered != 0 {
                         let gwp = Int(bm.width)
                         let ghp = Int(bm.rows)
@@ -628,7 +652,7 @@ extend UiBatch {
                                 u0, v0, u1, v1,
                                 viewW, viewH,
                                 0.0, 0.0, 0.0, glyphWash, glyphMode, glyphWashLuma,
-                                color.r, color.g, color.b, color.a,
+                                ink.r, ink.g, ink.b, ink.a,
                                 runCenterU, runCenterV, 0.0, 0.0,
                                 clipMinX, clipMinY, clipMaxX, clipMaxY,
                                 rotCos, rotSin
@@ -646,22 +670,47 @@ extend UiBatch {
     }
 }
 
-// Sets the face to a run's size and weight, reading its vertical metrics into
+// How many bytes UTF-8 spells a scalar in.
+function utf8Length(codepoint: Int) -> Int {
+    if codepoint < 128 {
+        return 1
+    }
+    if codepoint < 2048 {
+        return 2
+    }
+    if codepoint < 65536 {
+        return 3
+    }
+    return 4
+}
+
+// Which face a run in `design` is set in: 1 for the monospaced one, 0 for the
+// default, which also sets monospaced runs where the host has no face for them.
+public function uiBatchFaceKey(state: borrow UiBatchState, design: borrow CAFontDesign) -> Int {
+    if design == .Monospaced && state.monoFace != RawPtr.null {
+        return 1
+    }
+    return 0
+}
+
+// Sets a face to a run's size and weight, reading its vertical metrics into
 // the state, unless it already stands there. False when the face refuses.
-public function uiBatchSetFace(state: borrow mut UiBatchState, sizeKey: Int, weightKey: Int) -> Bool {
-    if state.fontSizeSet == sizeKey && state.fontWeightSet == weightKey {
+public function uiBatchSetFace(state: borrow mut UiBatchState, sizeKey: Int, weightKey: Int, faceKey: Int) -> Bool {
+    if state.fontSizeSet == sizeKey && state.fontWeightSet == weightKey && state.fontFaceSet == faceKey {
         return true
     }
-    let applied = kira_text_face_set_pixel_size(state.face, Float(sizeKey), glyphWeightAxis(weightKey))
+    let face = faceKey == 1 ? state.monoFace : state.face
+    let applied = kira_text_face_set_pixel_size(face, Float(sizeKey), glyphWeightAxis(weightKey))
     if applied == 0 {
         return false
     }
     let mv: kira_text_vmetrics_ptr = allocateBytes(verticalMetricsSize())
-    kira_text_face_vmetrics(state.face, mv)
+    kira_text_face_vmetrics(face, mv)
     state.ascender = Float(mv.ascender)
     state.descender = Float(mv.descender)
     freeBytes(mv)
     state.fontSizeSet = sizeKey
     state.fontWeightSet = weightKey
+    state.fontFaceSet = faceKey
     return true
 }
