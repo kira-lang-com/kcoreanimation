@@ -162,8 +162,7 @@ public function resetGlyphAtlas(state: borrow mut UiBatchState) {
 // upload: the coverage becomes RGBA (the shader multiplies the glyph's color by
 // all four channels), the destination is the row-major atlas image, and the one
 // upload the frame does replaces the whole thing.
-public @Native
-function atlasBlitCoverage(state: borrow mut UiBatchState, coverage: RawPtr, pitch: Int, atlasX: Int, atlasY: Int, width: Int, height: Int) {
+public function atlasBlitCoverage(state: borrow mut UiBatchState, coverage: RawPtr, pitch: Int, atlasX: Int, atlasY: Int, width: Int, height: Int) {
     if pointerIsNull(state.atlasPixels) {
         return
     }

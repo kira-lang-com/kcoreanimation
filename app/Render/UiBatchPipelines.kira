@@ -62,8 +62,7 @@ function createBackgroundPipeline(graphics: borrow EMGraphics) -> RenderPipeline
 
 // Create the compositor's persistent GPU resources and font, store the state behind a
 // nativeState handle, and return that handle.
-public @Native
-function createBatch(graphics: borrow EMGraphics) -> NativeState<UiBatchState> {
+public function createBatch(graphics: borrow EMGraphics) -> NativeState<UiBatchState> {
     var state = UiBatchState {
         engine: nullPointer(),
         face: nullPointer(),

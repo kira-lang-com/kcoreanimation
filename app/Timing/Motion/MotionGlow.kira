@@ -172,7 +172,7 @@ public function motionGlowAdvance(state: borrow mut MotionGlowState, delta: Floa
     let step = max(delta, 0.0)
     state.elapsed += step
     var duration = motionGlowFadeOut()
-    var target = 0.0
+    var target: Float = 0.0
     if state.held {
         duration = motionGlowFadeIn()
         target = motionGlowLevel()
@@ -206,7 +206,7 @@ public function motionGlowLight(state: borrow MotionGlowState) -> MotionLight {
     let whole = max(near, hypot(state.width, state.height))
     // Leaving, it widens with the fade, eased out so it is quickest as the
     // finger lifts.
-    var leaving = 1.0
+    var leaving: Float = 1.0
     if !state.held {
         let gone = min(state.elapsed / max(motionGlowFadeOut(), 0.0001), 1.0)
         leaving = 1.0 + motionGlowReleaseBloom() * motionEase(.EaseOut, gone)

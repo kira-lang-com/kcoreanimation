@@ -189,7 +189,7 @@ public function glassBlurFarRadius() -> Float { return 3.835586901974 * Float(gl
 // hairline, not a thinner one, and fading it out is not what any of these
 // numbers mean.
 public function glassHairline(devicePixels: Float, scale: Float) -> Float {
-    var onePixel = 1.0
+    var onePixel: Float = 1.0
     if scale > 0.0 {
         onePixel = 1.0 / scale
     }
@@ -322,8 +322,7 @@ public function appleFontCandidates() -> [String] {
 //
 // The host's monospaced face beside it, for runs set in it; where the host has
 // none, they are set in the default face.
-public @Native
-function loadBatchFont(state: borrow mut UiBatchState) {
+public function loadBatchFont(state: borrow mut UiBatchState) {
     let engine = kira_text_engine_create()
     state.engine = engine
     if engine == RawPtr.null {

@@ -8,27 +8,22 @@ public @FFI.Extern { library: kirastatestore, symbol: kira_state_slot_put, abi: 
 function rawStateSlotPut(key: CString, value: RawPtr): Void
 
 
-public @Native
-function stateScopeCreate() -> U64 { return kira_state_scope_create() }
+public function stateScopeCreate() -> U64 { return kira_state_scope_create() }
 
-public @Native
-function stateScopeCurrent() -> U64 { return kira_state_scope_current() }
+public function stateScopeCurrent() -> U64 { return kira_state_scope_current() }
 
-public @Native
-function stateScopeEnter(scope: U64) {
+public function stateScopeEnter(scope: U64) {
     kira_state_scope_enter(scope)
     return
 }
 
 // True when a value was stored under `key`.
-public @Native
-function stateSlotHas(key: String) -> Bool {
+public function stateSlotHas(key: String) -> Bool {
     return kira_state_slot_has(key) != 0
 }
 
 // The pointer stored under `key` (null when absent — check with stateSlotHas first).
-public @Native
-function stateSlotGet(key: String) -> RawPtr {
+public function stateSlotGet(key: String) -> RawPtr {
     return kira_state_slot_get(key)
 }
 
@@ -36,37 +31,31 @@ function stateSlotGet(key: String) -> RawPtr {
 // entry. `retains: value` is the ownership boundary: the compiler requires the
 // move and does not release that state reference after the successful C call.
 // The C store releases exactly that reference on replacement/reset.
-public @Native
-function stateSlotPut(key: String, value: NativeState<Any>) {
+public function stateSlotPut(key: String, value: NativeState<Any>) {
     rawStateSlotPut(key, move value)
     return
 }
 
 // Drop every slot in the current Foundation scope, releasing the one
 // native-state reference owned by each entry.
-public @Native
-function stateSlotReset() {
+public function stateSlotReset() {
     kira_state_slot_reset()
     return
 }
 
 // Number of live slots.
-public @Native
-function stateSlotCount() -> Int {
+public function stateSlotCount() -> Int {
     let raw = kira_state_slot_count()
     return Int(raw)
 }
 
-public @Native
-function stateSlotRemove(key: String) -> Bool {
+public function stateSlotRemove(key: String) -> Bool {
     return kira_state_slot_remove(key) != 0
 }
 
-public @Native
-function stateSlotResetAll() {
+public function stateSlotResetAll() {
     kira_state_slot_reset_all()
     return
 }
 
-public @Native
-function stateSlotCountAll() -> Int { return Int(kira_state_slot_count_all()) }
+public function stateSlotCountAll() -> Int { return Int(kira_state_slot_count_all()) }

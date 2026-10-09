@@ -33,13 +33,11 @@ public function caFontPath(design: borrow CAFontDesign) -> String {
 // box built from the small answer is narrower than the glyph that lands in it.
 // One face size for measuring and drawing is what makes the box and the ink the
 // same width.
-public @Native
-function foundationTextRunWidth(content: borrow String, size: Float, weight: Float, design: borrow CAFontDesign = .Default) -> Float {
+public function foundationTextRunWidth(content: borrow String, size: Float, weight: Float, design: borrow CAFontDesign = .Default) -> Float {
     return kira_text_measure_run(caFontPath(design), content, size * textOversample(), weight) / textOversample()
 }
 
-public @Native
-function foundationTextRunLineHeight(size: Float, weight: Float, design: borrow CAFontDesign = .Default) -> Float {
+public function foundationTextRunLineHeight(size: Float, weight: Float, design: borrow CAFontDesign = .Default) -> Float {
     return kira_text_line_height(caFontPath(design), size * textOversample(), weight) / textOversample()
 }
 
@@ -47,13 +45,11 @@ function foundationTextRunLineHeight(size: Float, weight: Float, design: borrow 
 // baseline to the bottom of it. The rasterizer places a run by these, so
 // anything that has to line up WITH the run — a glyph beside it, a second run at
 // another size — has to ask the same two questions rather than guess from ink.
-public @Native
-function foundationTextAscent(size: Float, weight: Float, design: borrow CAFontDesign = .Default) -> Float {
+public function foundationTextAscent(size: Float, weight: Float, design: borrow CAFontDesign = .Default) -> Float {
     return kira_text_ascent(caFontPath(design), size * textOversample(), weight) / textOversample()
 }
 
-public @Native
-function foundationTextDescent(size: Float, weight: Float, design: borrow CAFontDesign = .Default) -> Float {
+public function foundationTextDescent(size: Float, weight: Float, design: borrow CAFontDesign = .Default) -> Float {
     return kira_text_descent(caFontPath(design), size * textOversample(), weight) / textOversample()
 }
 
@@ -72,31 +68,26 @@ public function foundationTextBaseline(size: Float, weight: Float, height: Float
 // Visible glyph bounds relative to the baseline. These are deliberately kept
 // separate from line height: layout must not reserve the font's invisible
 // leading when a text leaf is placed inside a padded card or stack.
-public @Native
-function foundationTextRunInkTop(content: borrow String, size: Float, weight: Float, design: borrow CAFontDesign = .Default) -> Float {
+public function foundationTextRunInkTop(content: borrow String, size: Float, weight: Float, design: borrow CAFontDesign = .Default) -> Float {
     return kira_text_run_ink_top(caFontPath(design), content, size * textOversample(), weight) / textOversample()
 }
 
-public @Native
-function foundationTextRunInkBottom(content: borrow String, size: Float, weight: Float, design: borrow CAFontDesign = .Default) -> Float {
+public function foundationTextRunInkBottom(content: borrow String, size: Float, weight: Float, design: borrow CAFontDesign = .Default) -> Float {
     return kira_text_run_ink_bottom(caFontPath(design), content, size * textOversample(), weight) / textOversample()
 }
 
-public @Native
-function foundationTextRunInkLeft(content: borrow String, size: Float, weight: Float, design: borrow CAFontDesign = .Default) -> Float {
+public function foundationTextRunInkLeft(content: borrow String, size: Float, weight: Float, design: borrow CAFontDesign = .Default) -> Float {
     return kira_text_run_ink_left(caFontPath(design), content, size * textOversample(), weight) / textOversample()
 }
 
-public @Native
-function foundationTextRunInkRight(content: borrow String, size: Float, weight: Float, design: borrow CAFontDesign = .Default) -> Float {
+public function foundationTextRunInkRight(content: borrow String, size: Float, weight: Float, design: borrow CAFontDesign = .Default) -> Float {
     return kira_text_run_ink_right(caFontPath(design), content, size * textOversample(), weight) / textOversample()
 }
 
 // Decode an opaque String into its Unicode codepoints (up to 512), so an editable
 // text buffer can be SEEDED from an existing String. String is otherwise opaque
 // (count/+/== only); the native decoder walks the UTF-8 bytes in one call.
-public @Native
-function foundationStringToCodepoints(content: borrow String) -> [Int] {
+public function foundationStringToCodepoints(content: borrow String) -> [Int] {
     var codes: [Int] = []
     if content.count > 0 {
         let max = 512
@@ -209,7 +200,7 @@ public function foundationTextLines(content: borrow String, size: Float, weight:
 // line box for every line down.
 public function foundationTextWrappedSize(content: borrow String, size: Float, weight: Float, width: Float, design: borrow CAFontDesign = .Default) -> Size {
     let lines = foundationTextLines(content, size, weight, width, design)
-    var widest = 0.0
+    var widest: Float = 0.0
     for line in lines {
         widest = max(widest, foundationTextRunWidth(content: line, size: size, weight: weight, design: design))
     }
@@ -242,27 +233,23 @@ public class FoundationTextMeasurer {
 // font per glyph. Asking one constant for the whole set is how one symbol lands
 // on the line and the next one sits below it.
 
-public @Native
-function foundationIconInkTop(svg: borrow String) -> Float {
+public function foundationIconInkTop(svg: borrow String) -> Float {
     return kira_icon_ink_top(svg)
 }
 
-public @Native
-function foundationIconInkBottom(svg: borrow String) -> Float {
+public function foundationIconInkBottom(svg: borrow String) -> Float {
     return kira_icon_ink_bottom(svg)
 }
 
 // The shape of a symbol's ink: its width over its height. A folder is wider
 // than it is tall and a chevron is narrower, so a caller that wants the INK to
 // occupy a box needs the shape of that box rather than a square.
-public @Native
-function foundationIconInkAspect(svg: borrow String) -> Float {
+public function foundationIconInkAspect(svg: borrow String) -> Float {
     return kira_icon_ink_aspect(svg)
 }
 
 // How much of its own box a symbol's drawing covers: low for a stroked symbol,
 // high for a solid one.
-public @Native
-function foundationIconInkDensity(svg: borrow String) -> Float {
+public function foundationIconInkDensity(svg: borrow String) -> Float {
     return kira_icon_ink_density(svg)
 }

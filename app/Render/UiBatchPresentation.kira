@@ -247,7 +247,7 @@ extend UiBatch {
             // crossfade the horizontal half filters through.
             var computeSource = state.glassLayers[layer].sceneTexture
             var computeSecond = computeSource
-            var computeBlend = 0.0
+            var computeBlend: Float = 0.0
             if directSourceId.raw != 0 {
                 computeSource = sampledTextureFromViewId(U32(directSourceId.raw))
                 computeSecond = computeSource

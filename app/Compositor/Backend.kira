@@ -82,8 +82,8 @@ public class EmberFoundationBackend {
         // starts, as the batch takes them.
         let width = quad.halfW * 2.0
         let height = quad.halfH * 2.0
-        var unitX = 1.0
-        var unitY = 1.0
+        var unitX: Float = 1.0
+        var unitY: Float = 1.0
         if localWidth > 0.0 {
             unitX = width / localWidth
         }

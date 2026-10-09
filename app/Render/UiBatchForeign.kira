@@ -20,8 +20,7 @@ import Ember
 // native library to draw a rectangle is not portable. The cost is per-float
 // writes through the runtime's raw-memory helpers, which are on every native
 // link line and need no platform to have anything.
-public @Native
-function writeQuadRecord(
+public function writeQuadRecord(
     ptr: RawPtr, baseFloats: U64,
     px0: Float, py0: Float, px1: Float, py1: Float,
     lx0: Float, ly0: Float, lx1: Float, ly1: Float,
@@ -91,8 +90,7 @@ function writeQuadRecord(
 // The material block that follows a record: what a liquid-glass surface shades
 // itself with. Mode 3 is the only mode whose shader reads any of it, so it is the
 // only mode that writes it.
-public @Native
-function writeQuadMaterial(
+public function writeQuadMaterial(
     ptr: RawPtr, baseFloats: U64,
     m0: Float, m1: Float, m2: Float, m3: Float,
     m4: Float, m5: Float, m6: Float, m7: Float,
@@ -138,8 +136,7 @@ function readFileBytes(ptr: RawPtr, size: U64, count: U64, stream: RawPtr): U64
 // Copy a Kira string's UTF-8 bytes into a NUL-terminated C buffer (caller frees).
 // Needed because fopen's one program-wide binding takes a RawPtr path (the shape
 // the image-dump hook needed for getenv-returned paths).
-public @Native
-function allocateCPath(path: borrow String) -> RawPtr {
+public function allocateCPath(path: borrow String) -> RawPtr {
     let buf = allocateBytes(U64(path.count * 4 + 1))
     let indexSlot: int32_t_ptr = allocateBytes(8)
     let cpSlot: uint32_t_ptr = allocateBytes(8)
@@ -239,8 +236,7 @@ public function verticalMetricsSize() -> U64 { return 12 }
 // record's slot is reused by whatever quad lands in it next, so a block left
 // unwritten carries the last gradient that occupied it — a flat surface would
 // inherit a fade from a quad two frames ago.
-public @Native
-function writeQuadGradient(
+public function writeQuadGradient(
     ptr: RawPtr, baseFloats: U64,
     r: Float, g: Float, b: Float, a: Float, axis: Float,
 ) {

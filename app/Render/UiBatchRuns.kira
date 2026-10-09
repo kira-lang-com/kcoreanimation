@@ -302,7 +302,7 @@ extend UiBatch {
         // through, its glyphs would snap to a different pixel size and its
         // baseline to a different pixel row frame by frame, and it would shake
         // against everything else moving with it.
-        var shown = 1.0
+        var shown: Float = 1.0
         if displayScale > 0.0 && (displayScale > 1.0001 || displayScale < 0.9999) {
             shown = displayScale
         }
@@ -381,10 +381,10 @@ extend UiBatch {
         // string picks ONE ink and reads as one piece of text — sampling per glyph would
         // let a word straddling an edge in the backdrop come out half dark, half light.
         var glyphMode = 1.0
-        var glyphWash = 0.0
-        var glyphWashLuma = 1.0
-        var runCenterU = 0.0
-        var runCenterV = 0.0
+        var glyphWash: Float = 0.0
+        var glyphWashLuma: Float = 1.0
+        var runCenterU: Float = 0.0
+        var runCenterV: Float = 0.0
         if adaptive && state.streamIndex.raw > 0 && state.glassReady {
             glyphMode = 4.0
             glyphWash = wash

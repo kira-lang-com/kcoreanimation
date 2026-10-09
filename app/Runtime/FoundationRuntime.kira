@@ -126,8 +126,7 @@ public function foundationFrameGraphics(frame: borrow RenderFrame) -> EMGraphics
 
 // Per-frame duration (seconds) for the live FPS readout, from whichever clock
 // the backend keeps it on.
-public @Native
-function foundationFrameDuration(frame: borrow RenderFrame) -> Float {
+public function foundationFrameDuration(frame: borrow RenderFrame) -> Float {
     return frame.statistics().frameSeconds
 }
 

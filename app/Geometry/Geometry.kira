@@ -157,8 +157,8 @@ public function caOrientedQuad(world: borrow CAAffineTransform, width: Float, he
     let center = caApplyPoint(world, width / 2.0, height / 2.0)
     let sx = sqrt(world.a * world.a + world.b * world.b)
     let sy = sqrt(world.c * world.c + world.d * world.d)
-    var rotCos = 1.0
-    var rotSin = 0.0
+    var rotCos: Float = 1.0
+    var rotSin: Float = 0.0
     if sx > 0.0 {
         rotCos = world.a / sx
         rotSin = world.b / sx

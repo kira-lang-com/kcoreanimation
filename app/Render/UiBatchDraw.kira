@@ -271,8 +271,7 @@ public function prepareBackground(state: borrow mut UiBatchState, graphics: borr
 
 // Native: it mutates the encoder, and a struct receiver has no seam
 // representation, so a mutating call is always same-engine.
-public @Native
-function drawBackground(state: borrow mut UiBatchState, encoder: borrow mut RenderEncoder) {
+public function drawBackground(state: borrow mut UiBatchState, encoder: borrow mut RenderEncoder) {
     if !state.backgroundActive || state.backgroundPipeline.id == 0 || !state.externalBindReady {
         return
     }
