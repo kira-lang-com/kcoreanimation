@@ -110,7 +110,11 @@ public function foundationStringFromCodepoints(codes: borrow [Int], start: Int, 
     var i = start
     while i < end {
         if i >= 0 && i < codes.count {
-            s += graphicsStringFromCodepoint(codes[i])
+            // A number that names no scalar adds nothing.
+            match scalarText(codes[i]) {
+                Some(text) -> s += text
+                None -> {}
+            }
         }
         i += 1
     }
