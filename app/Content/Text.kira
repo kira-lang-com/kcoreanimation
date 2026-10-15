@@ -1,61 +1,106 @@
 import Ember
 import KiraLayout
 import Foundation
-public function foundationTextIntrinsicWidth(size: Float, characterCount: Int) -> Float {
+public function foundationTextIntrinsicWidth(size: Number, characterCount: Number) -> Number {
     let glyphWidth = size * 0.48
     let gap = size * 0.18
     if characterCount <= 0 {
         return 0.0
     }
-    let measured = intAsFloat(value: characterCount) * glyphWidth + intAsFloat(value: characterCount - 1) * gap
+    let measured = Number(characterCount) * glyphWidth + Number(characterCount - 1) * gap
     return measured + size * 0.02
 }
 
-public function foundationTextIntrinsicHeight(size: Float) -> Float {
+public function foundationTextIntrinsicHeight(size: Number) -> Number {
     return size * 1.20
 }
 
-// The path the text library knows a design's face by: none for the default,
-// which it finds on its own, and a name of its own for the monospaced one.
-public function caFontPath(design: borrow CAFontDesign) -> String {
-    match design {
-        Default -> return ""
-        Monospaced -> return "<monospaced>"
-    }
+// A run's advance, from the same face instance the compositor draws it with,
+// so the box layout builds and the glyphs that land in it are one width.
+// Measured at the oversampled size the rasterizer draws at and divided back
+// into points: one size for measuring and drawing is what keeps them equal.
+public function foundationTextRunWidth(
+    content: borrow String,
+    size: Number,
+    weight: Number,
+    design: borrow CAFontDesign = .Default
+) -> Number {
+    var engine = nativeRecover<TextEngine>(textEngine())
+    let raster = size * GlyphRaster.oversample
+    return engine.runWidth(design, content, raster, weight) / GlyphRaster.oversample
 }
 
-// Real measurement from the FreeType engine, using the same (path,size) face
-// cache as rasterization so measured advances match what gets drawn. Falls back
-// to the proportional estimate if the engine is unavailable (e.g. no font found).
-// Measured at the oversampled face size the rasterizer draws from, and divided
-// back into points. Hinting is nonlinear: a face at 15px reports advances that
-// disagree with the same face at the raster size by whole pixels, and a layout
-// box built from the small answer is narrower than the glyph that lands in it.
-// One face size for measuring and drawing is what makes the box and the ink the
-// same width.
-public function foundationTextRunWidth(content: borrow String, size: Float, weight: Float, design: borrow CAFontDesign = .Default) -> Float {
-    return kira_text_measure_run(caFontPath(design), content, size * textOversample(), weight) / textOversample()
-}
-
-public function foundationTextRunLineHeight(size: Float, weight: Float, design: borrow CAFontDesign = .Default) -> Float {
-    return kira_text_line_height(caFontPath(design), size * textOversample(), weight) / textOversample()
+public function foundationTextRunLineHeight(
+    size: Number,
+    weight: Number,
+    design: borrow CAFontDesign = .Default
+) -> Number {
+    return foundationTextFaceMetric(
+        size,
+        weight,
+        design,
+        { instance in return instance.lineHeight }
+    )
 }
 
 // The face's own ascent and descent: baseline to the top of the line box, and
 // baseline to the bottom of it. The rasterizer places a run by these, so
 // anything that has to line up WITH the run — a glyph beside it, a second run at
 // another size — has to ask the same two questions rather than guess from ink.
-public function foundationTextAscent(size: Float, weight: Float, design: borrow CAFontDesign = .Default) -> Float {
-    return kira_text_ascent(caFontPath(design), size * textOversample(), weight) / textOversample()
+public function foundationTextAscent(
+    size: Number,
+    weight: Number,
+    design: borrow CAFontDesign = .Default
+) -> Number {
+    return foundationTextFaceMetric(size, weight, design, { instance in return instance.ascender })
 }
 
-public function foundationTextDescent(size: Float, weight: Float, design: borrow CAFontDesign = .Default) -> Float {
-    return kira_text_descent(caFontPath(design), size * textOversample(), weight) / textOversample()
+public function foundationTextDescent(
+    size: Number,
+    weight: Number,
+    design: borrow CAFontDesign = .Default
+) -> Number {
+    return foundationTextFaceMetric(size, weight, design, { instance in return instance.descender })
+}
+
+// One of the face's line metrics at `size` and `weight`, in points; nothing
+// where no face can be read.
+function foundationTextFaceMetric(
+    size: Number,
+    weight: Number,
+    design: borrow CAFontDesign,
+    metric: (FaceInstance) -> Number
+) -> Number {
+    var engine = nativeRecover<TextEngine>(textEngine())
+    return match engine.runInstance(design, size * GlyphRaster.oversample, weight) {
+        Some(instance) -> metric(move instance) / GlyphRaster.oversample
+        None -> 0
+    }
+}
+
+// One edge of a run's visible ink, in points; nothing for a run with none.
+function foundationTextInkEdge(
+    content: borrow String,
+    size: Number,
+    weight: Number,
+    design: borrow CAFontDesign,
+    edge: (TextInk) -> Number
+) -> Number {
+    var engine = nativeRecover<TextEngine>(textEngine())
+    return match engine.runInk(design, content, size * GlyphRaster.oversample, weight) {
+        Some(ink) -> edge(move ink) / GlyphRaster.oversample
+        None -> 0
+    }
 }
 
 // Where a run's baseline sits inside a box `height` tall — the same arithmetic
 // the rasterizer does, in one place, so the two cannot drift apart.
-public function foundationTextBaseline(size: Float, weight: Float, height: Float, design: borrow CAFontDesign = .Default) -> Float {
+public function foundationTextBaseline(
+    size: Number,
+    weight: Number,
+    height: Number,
+    design: borrow CAFontDesign = .Default
+) -> Number {
     let ascent = foundationTextAscent(size, weight, design)
     let descent = foundationTextDescent(size, weight, design)
     let lineBox = ascent + descent
@@ -68,47 +113,57 @@ public function foundationTextBaseline(size: Float, weight: Float, height: Float
 // Visible glyph bounds relative to the baseline. These are deliberately kept
 // separate from line height: layout must not reserve the font's invisible
 // leading when a text leaf is placed inside a padded card or stack.
-public function foundationTextRunInkTop(content: borrow String, size: Float, weight: Float, design: borrow CAFontDesign = .Default) -> Float {
-    return kira_text_run_ink_top(caFontPath(design), content, size * textOversample(), weight) / textOversample()
+public function foundationTextRunInkTop(
+    content: borrow String,
+    size: Number,
+    weight: Number,
+    design: borrow CAFontDesign = .Default
+) -> Number {
+    return foundationTextInkEdge(content, size, weight, design, { ink in return ink.top })
 }
 
-public function foundationTextRunInkBottom(content: borrow String, size: Float, weight: Float, design: borrow CAFontDesign = .Default) -> Float {
-    return kira_text_run_ink_bottom(caFontPath(design), content, size * textOversample(), weight) / textOversample()
+public function foundationTextRunInkBottom(
+    content: borrow String,
+    size: Number,
+    weight: Number,
+    design: borrow CAFontDesign = .Default
+) -> Number {
+    return foundationTextInkEdge(content, size, weight, design, { ink in return ink.bottom })
 }
 
-public function foundationTextRunInkLeft(content: borrow String, size: Float, weight: Float, design: borrow CAFontDesign = .Default) -> Float {
-    return kira_text_run_ink_left(caFontPath(design), content, size * textOversample(), weight) / textOversample()
+public function foundationTextRunInkLeft(
+    content: borrow String,
+    size: Number,
+    weight: Number,
+    design: borrow CAFontDesign = .Default
+) -> Number {
+    return foundationTextInkEdge(content, size, weight, design, { ink in return ink.left })
 }
 
-public function foundationTextRunInkRight(content: borrow String, size: Float, weight: Float, design: borrow CAFontDesign = .Default) -> Float {
-    return kira_text_run_ink_right(caFontPath(design), content, size * textOversample(), weight) / textOversample()
+public function foundationTextRunInkRight(
+    content: borrow String,
+    size: Number,
+    weight: Number,
+    design: borrow CAFontDesign = .Default
+) -> Number {
+    return foundationTextInkEdge(content, size, weight, design, { ink in return ink.right })
 }
 
-// Decode an opaque String into its Unicode codepoints (up to 512), so an editable
-// text buffer can be SEEDED from an existing String. String is otherwise opaque
-// (count/+/== only); the native decoder walks the UTF-8 bytes in one call.
-public function foundationStringToCodepoints(content: borrow String) -> [Int] {
-    var codes: [Int] = []
-    if content.count > 0 {
-        let max = 512
-        let out: int32_t_ptr = allocateBytes(U64(max * 4))
-        let count = Int(kira_text_decode_codepoints(content, out, I32(max)))
-        var i = 0
-        while i < count {
-            codes.append(Int(signedWordAt(out, U64(i * 4))))
-            i += 1
-        }
-        freeBytes(out)
-    }
-    return move codes
+// A String's Unicode scalars, so an editable text buffer can be seeded from
+// an existing String.
+public function foundationStringToCodepoints(content: borrow String) -> [Number] {
+    return textScalars(content)
 }
 
 // Build a display String from a codepoint slice [start, end) — the inverse of
 // foundationStringToCodepoints, for rendering/measuring an editable buffer.
-public function foundationStringFromCodepoints(codes: borrow [Int], start: Int, end: Int) -> String {
+public function foundationStringFromCodepoints(
+    codes: borrow [Number],
+    start: Number,
+    end: Number
+) -> String {
     var s = ""
-    var i = start
-    while i < end {
+    for i in start..end {
         if i >= 0 && i < codes.count {
             // A number that names no scalar adds nothing.
             match scalarText(codes[i]) {
@@ -116,17 +171,18 @@ public function foundationStringFromCodepoints(codes: borrow [Int], start: Int, 
                 None -> {}
             }
         }
-        i += 1
     }
     return s
 }
 
-public function foundationTextMeasure(content: borrow String, size: Float, weight: Float, design: borrow CAFontDesign = .Default) -> Size {
+public function foundationTextMeasure(
+    content: borrow String,
+    size: Number,
+    weight: Number,
+    design: borrow CAFontDesign = .Default
+) -> Size {
     if content.count <= 0 {
-        return Size {
-            width: 0.0,
-            height: foundationTextIntrinsicHeight(size: size)
-        }
+        return Size { width: 0.0, height: foundationTextIntrinsicHeight(size: size) }
     }
 
     var width = foundationTextRunWidth(content: content, size: size, weight: weight, design: design)
@@ -134,10 +190,7 @@ public function foundationTextMeasure(content: borrow String, size: Float, weigh
         width = foundationTextIntrinsicWidth(size: size, characterCount: content.count)
     }
 
-    return Size {
-        width: width,
-        height: foundationTextLineBox(size, weight, design)
-    }
+    return Size { width: width, height: foundationTextLineBox(size, weight, design) }
 }
 
 // The height of one line of a run: the box the RASTERIZER treats as a full line,
@@ -149,9 +202,17 @@ public function foundationTextMeasure(content: borrow String, size: Float, weigh
 // a point below "Copy" beside it, because one of them has a descender and the
 // other does not. Ask for whichever is larger and the fallback is only ever
 // reached on purpose.
-public function foundationTextLineBox(size: Float, weight: Float, design: borrow CAFontDesign = .Default) -> Float {
+public function foundationTextLineBox(
+    size: Number,
+    weight: Number,
+    design: borrow CAFontDesign = .Default
+) -> Number {
     var height = foundationTextRunLineHeight(size: size, weight: weight, design: design)
-    let lineBox = foundationTextAscent(size, weight, design) + foundationTextDescent(size, weight, design)
+    let lineBox = foundationTextAscent(size, weight, design) + foundationTextDescent(
+        size,
+        weight,
+        design
+    )
     if lineBox > height {
         height = lineBox
     }
@@ -168,7 +229,13 @@ public function foundationTextLineBox(size: Float, weight: Float, design: borrow
 // One function for both sides of a wrapped text: layout asks it how tall the
 // text stands at a width, and the compositor asks it what to draw, so the box
 // and the ink cannot disagree about where a line ends.
-public function foundationTextLines(content: borrow String, size: Float, weight: Float, width: Float, design: borrow CAFontDesign = .Default) -> [String] {
+public function foundationTextLines(
+    content: borrow String,
+    size: Number,
+    weight: Number,
+    width: Number,
+    design: borrow CAFontDesign = .Default
+) -> [String] {
     var lines: [String] = []
     let codes = foundationStringToCodepoints(content)
     var lineStart = 0
@@ -178,7 +245,12 @@ public function foundationTextLines(content: borrow String, size: Float, weight:
     while i <= codes.count {
         if i < codes.count && codes[i] != 32 {
             i += 1
-        } else if foundationTextRunWidth(content: foundationStringFromCodepoints(codes, lineStart, i), size: size, weight: weight, design: design) <= width {
+        } else if foundationTextRunWidth(
+            content: foundationStringFromCodepoints(codes, lineStart, i),
+            size: size,
+            weight: weight,
+            design: design
+        ) <= width {
             fitEnd = i
             i += 1
         } else if fitEnd > lineStart {
@@ -202,58 +274,37 @@ public function foundationTextLines(content: borrow String, size: Float, weight:
 
 // The box a run takes when it wraps to `width`: its widest line across, and a
 // line box for every line down.
-public function foundationTextWrappedSize(content: borrow String, size: Float, weight: Float, width: Float, design: borrow CAFontDesign = .Default) -> Size {
+public function foundationTextWrappedSize(
+    content: borrow String,
+    size: Number,
+    weight: Number,
+    width: Number,
+    design: borrow CAFontDesign = .Default
+) -> Size {
     let lines = foundationTextLines(content, size, weight, width, design)
-    var widest: Float = 0.0
+    var widest: Number = 0.0
     for line in lines {
-        widest = max(widest, foundationTextRunWidth(content: line, size: size, weight: weight, design: design))
+        widest = max(
+            widest,
+            foundationTextRunWidth(content: line, size: size, weight: weight, design: design)
+        )
     }
     return Size {
         width: widest,
-        height: foundationTextLineBox(size, weight, design) * max(Float(lines.count), 1.0)
+        height: foundationTextLineBox(size, weight, design) * max(Number(lines.count), 1.0)
     }
 }
 
 public class FoundationTextMeasurer {
-    function intrinsicWidth(size: Float, characterCount: Int) -> Float {
+    function intrinsicWidth(size: Number, characterCount: Number) -> Number {
         return foundationTextIntrinsicWidth(size: size, characterCount: characterCount)
     }
 
-    function intrinsicHeight(size: Float) -> Float {
+    function intrinsicHeight(size: Number) -> Number {
         return foundationTextIntrinsicHeight(size: size)
     }
 
-    function measure(content: borrow String, size: Float, weight: Float) -> Size {
+    function measure(content: borrow String, size: Number, weight: Number) -> Size {
         return foundationTextMeasure(content: content, size: size, weight: weight)
     }
-}
-
-// --- Symbol metrics ----------------------------------------------------------
-//
-// Where a symbol's ink sits inside its own box, as fractions of that box from
-// its top edge. A library is not one shape: a folder fills the middle of its
-// canvas and an open folder is drawn lower and shorter, so a caller that sizes
-// or places symbols against text has to ask per SYMBOL — exactly as it asks a
-// font per glyph. Asking one constant for the whole set is how one symbol lands
-// on the line and the next one sits below it.
-
-public function foundationIconInkTop(svg: borrow String) -> Float {
-    return kira_icon_ink_top(svg)
-}
-
-public function foundationIconInkBottom(svg: borrow String) -> Float {
-    return kira_icon_ink_bottom(svg)
-}
-
-// The shape of a symbol's ink: its width over its height. A folder is wider
-// than it is tall and a chevron is narrower, so a caller that wants the INK to
-// occupy a box needs the shape of that box rather than a square.
-public function foundationIconInkAspect(svg: borrow String) -> Float {
-    return kira_icon_ink_aspect(svg)
-}
-
-// How much of its own box a symbol's drawing covers: low for a stroked symbol,
-// high for a solid one.
-public function foundationIconInkDensity(svg: borrow String) -> Float {
-    return kira_icon_ink_density(svg)
 }

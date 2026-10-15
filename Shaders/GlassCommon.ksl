@@ -24,9 +24,10 @@ const washCeiling: Float = 0.9
 // appearances, ADDED where the rim faces it -- full along the top and bottom
 // edges, a fifth of that down the sides, as the platform's dark menu measures
 // (+65 against +13). On light glass it has nowhere to go; on dark glass it is
-// the thin highlight that edges the panel. It is not a gray the rim is mixed
-// toward: mixed toward the edge's burn gray, a dark panel gets a flat gray
-// outline.
+// the thin highlight that edges the whole piece, sides included: lit only top
+// and bottom, the sides are left to the dark burn line and the piece reads as
+// outlined. It is not a gray the rim is mixed toward: mixed toward the edge's
+// burn gray, a dark panel gets a flat gray outline.
 const specularSideShare: Float = 0.2
 
 function specular(rgb: Float3, inside: Float, width: Float, intensity: Float, normal: Float2) -> Float3 {
@@ -57,7 +58,9 @@ const blurEdgeEnd: Float = 3.0
 const edgeLightOffset: Float = 40.0
 const edgeLightSpread: Float = 40.0
 const edgeLightDodgeBlur: Float = 10.0
-const edgeLightBurnBlur: Float = 30.0
+const edgeLightBurnBlur: Float = 40.0
+const edgeLightTopShare: Float = 0.5
+const edgeLightBottomShare: Float = 1.25
 
 // The sharp backdrop under a glass fragment.
 //
@@ -90,8 +93,12 @@ function innerShadow(distance: Float, blur: Float) -> Float {
 // `rgb` lit along its top and bottom edges, given the distances to the holes
 // the light's two inner shadows leave: both bands added in `dodge`'s gray, and
 // the top one, wider, burned in `burn`'s.
+//
+// The kit gives both dodges one gray, but the platform's own renders light
+// the bottom band at five quarters of it and the top at half, and burn the
+// top over a blur of 40 rather than the kit's 30; these are the platform's.
 function edgeLight(rgb: Float3, topHole: Float, bottomHole: Float, dodge: Float, burn: Float) -> Float3 {
-    let lit = dodge * (innerShadow(topHole, edgeLightDodgeBlur) + innerShadow(bottomHole, edgeLightDodgeBlur))
+    let lit = dodge * (edgeLightTopShare * innerShadow(topHole, edgeLightDodgeBlur) + edgeLightBottomShare * innerShadow(bottomHole, edgeLightDodgeBlur))
     let burned = (1.0 - burn) * innerShadow(topHole, edgeLightBurnBlur)
     return rgb + Float3(lit - burned, lit - burned, lit - burned)
 }
@@ -201,92 +208,90 @@ function sdRound(point: Float2, halfSize: Float2, radius: Float) -> Float {
     return min(max(q.x, q.y), 0.0) + length(outside) - radius
 }
 
-// A squircle is a superellipse in each corner, not a circular corner with a
-// larger radius. Keeping the straight portions of the rounded-rect SDF and
-// replacing only the corner distance gives a C1-continuous transition into the
-// edges while leaving the authored radius as the edge-to-corner distance.
-// Two is a circular rounded rectangle; increasing the exponent makes the
-// superellipse progressively more square.
-const squircleExponent: Float = 2.5
+// The continuous corner Apple draws (CALayer `cornerCurve = .continuous`).
+//
+// Its curve leaves the straight edge `continuousReach` times the radius from
+// the corner, not at the radius, and bends in so its curvature grows from zero
+// at the edge to the peak at the diagonal; on the diagonal it sits where a
+// circle of the radius would. It is measured in the corner's own box, `reach`
+// on a side: `unit` is how far into that box the point is along each axis,
+// zero to one. A circle's level set there is the length of `unit`; the
+// continuous one pulls it out by a term that is nothing along the axes and
+// largest across the diagonal, shaped by a quartic in how diagonal the point
+// is (`slant`). These are Apple's numbers, read off QuartzCore's shader
+// (see apple-ref/GLASS.md); the code is our own.
+//
+// A box too short for the whole curve -- its half side under the reach --
+// turns circular as the half side falls from the reach to the radius, each
+// axis on its own, which is how a continuous pill ends as a capsule.
+const continuousReach: Float = 1.5286649
+const continuousReachLess: Float = 0.5286649
 
-function sdSquircle(point: Float2, halfSize: Float2, radius: Float) -> Float {
-    if radius <= 0.0 {
-        return sdRound(point, halfSize, radius)
+function sdContinuous(point: Float2, halfSize: Float2, radius: Float) -> Float {
+    let r = min(radius, min(halfSize.x, halfSize.y))
+    if r <= 0.0 {
+        return sdRound(point, halfSize, 0.0)
     }
-    let cornerOrigin = Float2(
-        max(halfSize.x - radius, 0.0),
-        max(halfSize.y - radius, 0.0)
+    // How far each axis has gone from continuous to circular.
+    let blendX = clamp((continuousReach - halfSize.x / r) / continuousReachLess, 0.0, 1.0)
+    let blendY = clamp((continuousReach - halfSize.y / r) / continuousReachLess, 0.0, 1.0)
+    let reach = r * continuousReach
+    let corner = mix(reach, r, max(blendX, blendY))
+    let q = abs(point) - halfSize
+    let unit = Float2(max((q.x + reach) / reach, 0.0), max((q.y + reach) / reach, 0.0))
+    let span = length(unit)
+    let high = max(unit.x, unit.y)
+    let slant = 0.0
+    if high > 0.0 {
+        slant = clamp(min(unit.x, unit.y) / high, 0.0, 1.0)
+    }
+    let shape = (((3.15602 - 0.92605 * slant) * slant - 3.64124) * slant + 1.26807) * slant + 0.26853
+    let pull = slant * slant * clamp(span, 0.0, 1.0) * shape
+    let continuous = span + 1.0 - 1.0 / (1.0 - pull)
+    // The circle of the radius in the same box and units.
+    let ring = Float2(
+        max(unit.x * continuousReach - continuousReachLess, 0.0),
+        max(unit.y * continuousReach - continuousReachLess, 0.0)
     )
-    let q = abs(point) - cornerOrigin
-    // One axis is still on a straight edge. This is also the entire interior
-    // when the point has not reached the corner quadrant yet.
-    if q.x <= 0.0 || q.y <= 0.0 {
-        let outside = Float2(max(q.x, 0.0), max(q.y, 0.0))
-        return min(max(q.x, q.y), 0.0) + length(outside) - radius
-    }
-
-    // Normalize the implicit superellipse by its boundary gradient. The raw
-    // superellipse equation is smooth but is not a Euclidean distance field;
-    // this normalization keeps the one-pixel coverage ramp consistent through
-    // the corner instead of making the diagonal edge look sharper or softer.
-    let safeRadius = max(radius, 0.001)
-    let nx = q.x / safeRadius
-    let ny = q.y / safeRadius
-    let nxPow = pow(nx, squircleExponent)
-    let nyPow = pow(ny, squircleExponent)
-    let sum = max(nxPow + nyPow, 0.000001)
-    let radial = pow(sum, 1.0 / squircleExponent)
-    let gx = pow(nx, squircleExponent - 1.0)
-    let gy = pow(ny, squircleExponent - 1.0)
-    let gradient = max(length(Float2(gx, gy)), 0.000001)
-    let estimate = ((radial - 1.0) * safeRadius) / gradient
-    // Past the outline the gradient outgrows the radial term, and the estimate
-    // falls back toward zero the farther out it goes -- harmless one pixel off
-    // the edge, but a shadow blurred across forty points read its corners as
-    // touching the shape and drew them as dark squares. The shape lies inside
-    // its box, so the box's distance is a floor that grows as it should.
-    if estimate > 0.0 {
-        return max(estimate, length(max(abs(point) - halfSize, Float2(0.0, 0.0))))
-    }
-    return estimate
+    let circular = length(ring) / continuousReach + continuousReachLess / continuousReach
+    let alongX = mix(continuous, circular, blendX)
+    let alongY = mix(continuous, circular, blendY)
+    // Which axis's blend counts, eased across the diagonal.
+    let side = -1.0
+    if unit.y > unit.x { side = 1.0 }
+    let weight = clamp(0.5 - side + side * slant, 0.0, 1.0)
+    let level = mix(alongX, alongY, weight)
+    let inside = min(max(q.x + corner, q.y + corner), 0.0)
+    return reach * (level - 1.0) + inside
 }
 
 // A box whose corner is `radius` along each side, as far as that side allows.
 //
-// Well below both half sides it is the squircle, exponent and all. Over the
-// last quarter of the short side the exponent starts easing from the
-// squircle's to two; past the short side the corner stays as tall as it and
-// keeps widening, a quarter superellipse wider than it is tall; past the long
-// one too it is the ellipse the box holds, and a square's full radius its
-// circle. One radius runs the whole way from the card to the ellipse, which is
-// what lets a surface turn from one into the other as one shape.
+// Up to the short side it is the continuous corner, which has turned circular
+// by the time the radius reaches the short side. Past it the corner stays as
+// tall as the short side and keeps widening, a quarter ellipse wider than it is
+// tall; past the long side too it is the ellipse the box holds, and a square's
+// full radius its circle. One radius runs the whole way from the card to the
+// ellipse, which is what lets a surface turn from one into the other as one
+// shape.
 function sdWideCorner(point: Float2, halfSize: Float2, radius: Float) -> Float {
     let shortSide = min(halfSize.x, halfSize.y)
-    let longSide = max(halfSize.x, halfSize.y)
-    // The corner rounds out from the squircle's over the last quarter of the
-    // short side, not from the short side on: a square box has no run from
-    // short to long, and its full radius would stay a rounded square where
-    // it should be a circle.
-    let rounding = shortSide * 0.25
-    if radius <= shortSide - rounding {
-        return sdSquircle(point, halfSize, radius)
+    if radius <= shortSide {
+        return sdContinuous(point, halfSize, radius)
     }
-    let widened = clamp((radius - shortSide + rounding) / max(longSide - shortSide + rounding, 0.001), 0.0, 1.0)
-    let exponent = squircleExponent + (2.0 - squircleExponent) * widened
     let corner = Float2(max(min(radius, halfSize.x), 0.001), max(min(radius, halfSize.y), 0.001))
     let q = abs(point) - (halfSize - corner)
     let edge = abs(point) - halfSize
     if q.x <= 0.0 || q.y <= 0.0 {
         return min(max(edge.x, edge.y), 0.0) + length(max(edge, Float2(0.0, 0.0)))
     }
-    // The implicit superellipse over its gradient, as the squircle's is, but
-    // with the corner's two radii apart.
+    // The ellipse's implicit value over its gradient: a distance near the
+    // outline, floored past it by the box's own distance so a wide blur does
+    // not read the corner as touching the shape.
     let nx = q.x / corner.x
     let ny = q.y / corner.y
-    let sum = max(pow(nx, exponent) + pow(ny, exponent), 0.000001)
-    let radial = pow(sum, 1.0 / exponent)
-    let scale = pow(sum, 1.0 / exponent - 1.0)
-    let gradient = max(length(Float2(pow(nx, exponent - 1.0) / corner.x, pow(ny, exponent - 1.0) / corner.y)) * scale, 0.000001)
+    let radial = max(sqrt(nx * nx + ny * ny), 0.000001)
+    let gradient = max(length(Float2(nx / corner.x, ny / corner.y)) / radial, 0.000001)
     let estimate = (radial - 1.0) / gradient
     if estimate > 0.0 {
         return max(estimate, length(max(edge, Float2(0.0, 0.0))))
@@ -305,12 +310,24 @@ function clipShapeCoverage(px: Float2, clip: Float4, corner: Float2) -> Float {
     let extent = Float2((clip.z - clip.x) * 0.5, (clip.w - clip.y) * 0.5)
     let center = Float2((clip.x + clip.z) * 0.5, (clip.y + clip.w) * 0.5)
     let point = px - center
-    if corner.y > 1.5 {
+    // The shape is the corner's kind plus four times a mask of the corners
+    // left square (ClipShape.kira): top leading 1, top trailing 2, bottom
+    // leading 4, bottom trailing 8.
+    let square = floor(corner.y / 4.0)
+    let kind = corner.y - square * 4.0
+    let bit = 1.0
+    if point.x >= 0.0 { bit = 2.0 }
+    if point.y >= 0.0 { bit = bit * 4.0 }
+    let shifted = floor(square / bit)
+    if shifted - floor(shifted * 0.5) * 2.0 > 0.5 {
+        return 1.0
+    }
+    if kind > 1.5 {
         return clamp(0.5 - sdWideCorner(point, extent, corner.x), 0.0, 1.0)
     }
     let radius = min(corner.x, min(extent.x, extent.y))
-    if corner.y > 0.5 {
-        return clamp(0.5 - sdSquircle(point, extent, radius), 0.0, 1.0)
+    if kind > 0.5 {
+        return clamp(0.5 - sdContinuous(point, extent, radius), 0.0, 1.0)
     }
     return clamp(0.5 - sdRound(point, extent, radius), 0.0, 1.0)
 }
@@ -403,18 +420,18 @@ function smoothUnion(first: Float, second: Float, k: Float) -> Float {
 // off the fused body rather than off one half of it.
 // One rounded rectangle, with the corner the surface asked for.
 //
-// `kind` at zero is a circular corner; one is the continuous superellipse a
-// squircle is — the curvature runs into the straight edges instead of meeting
-// them at a point where it jumps, which is the difference between a rounded
-// rectangle and the shape Apple's panels actually are; two is the squircle
-// whose corner keeps widening past the short side into the ellipse the box
-// holds -- see `sdWideCorner`.
+// `kind` at zero is a circular corner; one is Apple's continuous corner -- the
+// curvature runs into the straight edges instead of meeting them at a point
+// where it jumps, which is the difference between a rounded rectangle and the
+// shape Apple's panels actually are (see `sdContinuous`); two is the
+// continuous corner that keeps widening past the short side into the ellipse
+// the box holds -- see `sdWideCorner`.
 function shapeDistance(point: Float2, halfSize: Float2, radius: Float, kind: Float) -> Float {
     if kind > 1.5 {
         return sdWideCorner(point, halfSize, radius)
     }
     if kind > 0.5 {
-        return sdSquircle(point, halfSize, radius)
+        return sdContinuous(point, halfSize, radius)
     }
     return sdRound(point, halfSize, radius)
 }

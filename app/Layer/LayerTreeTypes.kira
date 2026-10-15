@@ -2,16 +2,16 @@ import Foundation
 
 public enum CALevel {
     Inline
-    Overlay(Int)
+    Overlay(Number)
 }
 
 public struct CALayerNode {
     var id: LayerId = LayerId(0)
     var parentId: LayerId = LayerId(0)
-    var key: Int = 0
+    var key: Number = 0
     var childIds: [LayerId] = []
     var content: CAContent = .Empty
-    var contentSignature: Int = 0
+    var contentSignature: Number = 0
     // Geometry channels, in the PARENT's coordinates.
     var posX: CAChannel = CAChannel {}
     var posY: CAChannel = CAChannel {}
@@ -24,7 +24,10 @@ public struct CALayerNode {
     // Set every frame by whatever pulls the layer, so it is never animated.
     var deformation: CADeformation = CADeformation {}
     // Appearance channels — animatable like geometry. Color is perceptual.
-    var fillColor: CAColorChannel = CAColorChannel { from: CAColor { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }, model: CAColor { r: 1.0, g: 1.0, b: 1.0, a: 1.0 } }
+    var fillColor: CAColorChannel = CAColorChannel {
+        from: CAColor { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
+        model: CAColor { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }
+    }
     // The fill as it was set, and the wash laid over it while the pointer is
     // on the layer. `fillColor` animates to one or the other.
     var restingFill: CAColor = CAColor { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }
@@ -50,8 +53,8 @@ public struct CALayerNode {
     // between rather than swapping outlines in one frame.
     var textWeight: CAChannel = CAChannel { model: 400.0, presentation: 400.0 }
     // Anchor as a fraction of bounds: scale and rotation pivot here.
-    var anchorX: Float = 0.5
-    var anchorY: Float = 0.5
+    var anchorX: Number = 0.5
+    var anchorY: Number = 0.5
     var clip: Bool = false
     // Whether opacity applies to the composited SUBTREE (an offscreen group)
     // rather than to this layer's own content only.
@@ -59,7 +62,9 @@ public struct CALayerNode {
     // This subtree renders into its own texture. A nonzero id names a target
     // registered with the compositor; zero asks for a compositor-owned cache.
     var renderTarget: Bool = false
-    var blur: Float = 0.0
+    // The gaussian blur over the subtree, in points, animated as SwiftUI's
+    // `.blur(radius:)` is when the radius changes in an animated transaction.
+    var blur: CAChannel = CAChannel {}
     var renderTargetId: RenderTargetId = RenderTargetId(0)
     // This layer refracts a captured, blurred copy of what is drawn beneath it.
     var capturesBackdrop: Bool = false
@@ -67,7 +72,7 @@ public struct CALayerNode {
     var hit: Bool = false
     var interactive: Bool = false
     var slidesPress: Bool = false
-    var hitKey: Int = 0
+    var hitKey: Number = 0
     var scrolls: Bool = false
     // Lifted onto the overlay list: skipped by the in-place walk and drawn from
     // the canvas root instead, so it escapes its parent's clip and order.
@@ -76,7 +81,7 @@ public struct CALayerNode {
     // How the layer leaves, and, while it is leaving, the clock reading it is
     // gone at; negative while it is not leaving.
     var removal: CARemoval = CARemoval {}
-    var leavingUntil: Float = -1.0
+    var leavingUntil: Number = -1.0
     var damaged: Bool = true
     var reused: Bool = false
 }

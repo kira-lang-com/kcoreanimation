@@ -1,0 +1,137 @@
+import Foundation
+
+// Measuring runs, shaped as they are drawn: their advance, the face's line metrics, and their visible
+// ink, each from the instance the compositor draws the run with.
+
+extend TextEngine {
+    // A run's advance in pixels: each glyph's, in order.
+    function runWidth(
+        borrow mut self,
+        design: borrow CAFontDesign,
+        text: borrow String,
+        size: Number,
+        weight: Number
+    ) -> Number {
+        let font = match face(design) {
+            Some(font) -> font
+            None -> return 0
+        }
+        let instance = instance(font, size, weight, design == .MonospacedDigits)
+        let key = "\(instance.key) \(text)"
+        match runs.value(key) {
+            Some(known) -> return known
+            None -> {}
+        }
+        var width: Number = 0
+        for shaped in shapedRun(instance, text) {
+            width += shaped.advance
+        }
+        if runs.count() >= TextCache.runs { runs.removeAll() }
+        runs.set(move key, width)
+        return width
+    }
+
+    // The instance a run in `design` at `size` and `weight` is drawn with.
+    function runInstance(
+        borrow mut self,
+        design: borrow CAFontDesign,
+        size: Number,
+        weight: Number
+    ) -> FaceInstance? {
+        return match face(design) {
+            Some(font) -> .Some(instance(font, size, weight, design == .MonospacedDigits))
+            None -> .None
+        }
+    }
+
+    // A run's visible ink, measured at four times its size so a fraction of
+    // a pixel survives being divided back down; nothing for a run with no ink.
+    function runInk(
+        borrow mut self,
+        design: borrow CAFontDesign,
+        text: borrow String,
+        size: Number,
+        weight: Number
+    ) -> TextInk? {
+        if text.count == 0 || size <= 0 { return .None }
+        let font = match face(design) {
+            Some(font) -> font
+            None -> return .None
+        }
+        let step = TextCache.inkWeightStep
+        let instance = instance(
+            font,
+            size * TextCache.inkScale,
+            round(weight / step) * step,
+            design == .MonospacedDigits
+        )
+        let key = "\(instance.key) \(text)"
+        match inks.value(key) {
+            Some(known) -> return known
+            None -> {}
+        }
+        let ink = inkOf(instance, text)
+        if inks.count() >= TextCache.inks { inks.removeAll() }
+        inks.set(move key, copy ink)
+        return ink
+    }
+
+    function inkOf(
+        borrow mut self,
+        instance: borrow FaceInstance,
+        text: borrow String
+    ) -> TextInk? {
+        let font = fonts[instance.font.raw]
+        let scale = TextCache.inkScale
+        var pen: Number = 0
+        var found: TextInk? = .None
+        var lead: Number = 0
+        for shaped in shapedRun(instance, text) {
+            let glyph = shaped.glyph
+            let glyphX = pen + shaped.offset
+            pen += shaped.advance
+            let box = match font.glyphBox(glyph, instance.coordinates, instance.scale) {
+                Some(box) -> box
+                None -> continue
+            }
+            let left = glyphX + Number(box.left)
+            let right = glyphX + Number(box.right)
+            let glyphInk = TextInk {
+                left: left,
+                right: right,
+                top: Number(box.top) + shaped.rise,
+                bottom: Number(box.bottom) + shaped.rise
+            }
+            match found {
+                Some(ink) -> found = .Some(ink.joined(glyphInk))
+                None -> {
+                    lead = glyphX
+                    found = .Some(glyphInk)
+                }
+            }
+        }
+        return match found {
+            Some(ink) -> .Some(
+                TextInk {
+                    left: (ink.left - lead) / scale,
+                    right: ink.right / scale,
+                    top: ink.top / scale,
+                    bottom: -ink.bottom / scale
+                }
+            )
+            None -> .None
+        }
+    }
+}
+
+extend TextInk {
+    // The ink of both, in one box.
+    function joined(borrow self, other: borrow TextInk) -> TextInk {
+        return TextInk {
+            left: min(left, other.left),
+            right: max(right, other.right),
+            top: max(top, other.top),
+            bottom: min(bottom, other.bottom)
+        }
+    }
+}

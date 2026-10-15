@@ -1,4 +1,5 @@
 import Foundation
+import Heap
 import Ember
 import KiraLayout
 extend UiBatch {
@@ -10,41 +11,46 @@ extend UiBatch {
     function setBackgroundPromotable(allowed: Bool) {
         var state = nativeRecover<UiBatchState>(self.storage)
         state.backgroundPromotable = allowed
-        return
     }
 
-    function beginFrameSlots(graphics: borrow EMGraphics) {
+    function beginFrameSlots(graphics: borrow Graphics) {
         var state = nativeRecover<UiBatchState>(self.storage)
         for i in 0..state.streams.count {
             // A slot with no buffer yet claims nothing, and the HUD claims its own in
             // beginHud: its stream is rewritten on the HUD's cadence, not this
             // frame's, and advancing its ring twice in one frame would hand a running
             // frame's slot back out.
-            if state.streams[i].buffer.id != 0 && i != hudStreamIndex().raw {
+            if state.streams[i].buffer.id != 0 && i != DrawStreams.hud.raw {
                 // Byte offset to float index: a slot stride is a multiple of the 256-byte
                 // binding alignment, so this division is exact.
-                state.streams[i].frameBase = graphics.dynamicBufferFrameStart(state.streams[i].buffer) / 4
+                state.streams[i].frameBase = trunc(
+                    graphics.dynamicBufferFrameStart(state.streams[i].buffer) / 4
+                )
             }
         }
         if state.streams.count > 0 {
             state.frameBase = state.streams[state.streamIndex.raw].frameBase
         }
-        return
     }
 }
-
 
 // Start a frame: rewind to stream 0 (the layer boundaries are re-discovered as this
 // frame's glass surfaces arrive) and record the viewport size in points, the
 // backing scale, and the drawable's extent in physical pixels.
 extend UiBatch {
-    function beginBatch(viewportW: Float, viewportH: Float, scale: Float, drawableW: Int, drawableH: Int) {
+    function beginBatch(
+        viewportW: Number,
+        viewportH: Number,
+        scale: Number,
+        drawableW: Number,
+        drawableH: Number
+    ) {
         var state = nativeRecover<UiBatchState>(self.storage)
         var i = 0
         // Everything but the HUD: its stream is rewritten only when the HUD itself
         // refreshes, so a frame that rebuilds the UI without touching the HUD keeps
         // showing the HUD it last wrote instead of blinking it away for a frame.
-        while i < hudStreamIndex().raw && i < state.streams.count {
+        while i < DrawStreams.hud.raw && i < state.streams.count {
             state.streams[i].quadCount = 0
             state.streams[i].glassBoundCount = 0
             i += 1
@@ -84,15 +90,13 @@ extend UiBatch {
         // once each, so the claims are what restarts with the frame. Ranges list
         // this frame's dirty interiors only.
         state.glassSurfaceCursor = 0
-        for claimSlot in 0..state.glassCacheClaimed.count {
-            state.glassCacheClaimed[claimSlot] = 0
+        for slot in 0..state.glassCacheSlots.count {
+            state.glassCacheSlots[slot].claimed = false
         }
         state.glassCacheRangeCount = 0
-        uiGlassStatsResetEmission(state)
-        return
+        state.resetGlassEmissionStats()
     }
 }
-
 
 // Hand one stream's written prefix to the GPU.
 //
@@ -101,7 +105,7 @@ extend UiBatch {
 // why every stream is committed together, once, before the frame's first pass
 // rather than at each draw that reads one.
 extend UiBatch {
-    function commitStream(graphics: borrow EMGraphics, index: DrawStreamId) {
+    function commitStream(graphics: borrow Graphics, index: DrawStreamId) {
         var state = nativeRecover<UiBatchState>(self.storage)
         if index.raw < 0 || index.raw >= state.streams.count {
             return
@@ -121,12 +125,10 @@ extend UiBatch {
         graphics.commitDynamicBuffer(
             state.streams[index.raw].buffer,
             state.streams[index.raw].contentsPtr,
-            state.streams[index.raw].frameBase + quads * quadFloatCount()
+            state.streams[index.raw].frameBase + quads * QuadLayout.floatCount
         )
-        return
     }
 }
-
 
 // Upload the glyph atlas if anything was packed into it since the last frame.
 //
@@ -134,25 +136,28 @@ extend UiBatch {
 // is the only shape sokol has, and sokol refuses a second one in the same frame.
 // A steady screen packs no new glyphs and pays nothing.
 extend UiBatch {
-    function commitAtlas(graphics: borrow EMGraphics) {
+    function commitAtlas(graphics: borrow Graphics) {
         var state = nativeRecover<UiBatchState>(self.storage)
-        if !state.atlasDirty || state.atlasTexture.id == 0 || pointerIsNull(state.atlasPixels) {
+        if !state.atlasDirty || state.atlasTexture.id == 0 || isNull(state.atlasPixels) {
             return
         }
         // Only the shelves written since the last upload go up.
         let top = state.atlasDirtyTop < 0 ? 0 : state.atlasDirtyTop
         let bottom = state.atlasDirtyBottom > state.atlasH ? state.atlasH : state.atlasDirtyBottom
         if bottom > top {
-            graphics.updateTextureRows(state.atlasTexture, state.atlasPixels, top, bottom - top)
+            graphics.updateTextureRows(
+                state.atlasTexture,
+                state.atlasPixels,
+                UN32(top),
+                UN32(bottom - top)
+            )
         }
         state.atlasDirty = false
-        return
     }
 }
 
-
 extend UiBatch {
-    function batchScale() -> Float {
+    function batchScale() -> Number {
         var state = nativeRecover<UiBatchState>(self.storage)
         return state.scale
     }
@@ -163,26 +168,11 @@ extend UiBatch {
     }
 }
 
-
-
-
-
-
-
-
-
-
 // ---------------------------------------------------------------------------
 // Liquid glass (mode 3): capture-the-backdrop → separable blur → refracted
 // composite, the batched-compositor port of the Ember liquid_glass
 // example. See UiBatchState's stream fields for the split mechanics.
 // ---------------------------------------------------------------------------
-
-
-
-
-
-
 
 // Park the active stream and open the next one — a new glass layer. The stream just
 // parked is drawn TWICE: once into the (points-sized) scene capture that feeds this
@@ -190,7 +180,7 @@ extend UiBatch {
 // visible content stays crisp on Retina while the glass refracts the
 // example-matching blur pyramid. Streams past the two allocated up front are created
 // here, on the first frame that actually stacks glass.
-public function openStream(state: borrow mut UiBatchState, graphics: borrow EMGraphics) {
+public function openStream(state: borrow mut UiBatchState, graphics: borrow Graphics) {
     state.streams[state.streamIndex.raw].quadCount = state.quadCount
     let nextStream = DrawStreamId(state.streamIndex.raw + 1)
     createDrawStream(state, graphics, nextStream)
@@ -205,7 +195,6 @@ public function openStream(state: borrow mut UiBatchState, graphics: borrow EMGr
     // previous layer marked without walking the grid.
     state.gridStamp += 1
     state.glassRectCount = 0
-    return
 }
 
 // Aim emission at the HUD's own stream and claim its next ring slot. Everything the
@@ -214,82 +203,48 @@ public function openStream(state: borrow mut UiBatchState, graphics: borrow EMGr
 // (a full frame writing its HUD after the application tree) and on a frame that does
 // nothing else at all — nothing here reads or resets the UI's per-frame state.
 extend UiBatch {
-    function beginHud(graphics: borrow EMGraphics) {
+    function beginHud(graphics: borrow Graphics) {
         var state = nativeRecover<UiBatchState>(self.storage)
-        let hud = hudStreamIndex()
+        let hud = DrawStreams.hud
         createDrawStream(state, graphics, hud)
         // Hand the live count back to the stream the caller was emitting into. Only the
         // mirrored hot fields move; the entry itself is left as the walk left it.
         state.streams[state.streamIndex.raw].quadCount = state.quadCount
         state.hudReturnStream = state.streamIndex
-        state.streams[hud.raw].frameBase = graphics.dynamicBufferFrameStart(state.streams[hud.raw].buffer) / 4
+        state.streams[hud.raw].frameBase = trunc(
+            graphics.dynamicBufferFrameStart(state.streams[hud.raw].buffer) / 4
+        )
         state.streamIndex = hud
         state.contentsPtr = state.streams[hud.raw].contentsPtr
         state.frameBase = state.streams[hud.raw].frameBase
         state.quadCount = 0
-        return
     }
 }
-
 
 // Close the HUD stream and put emission back where beginHud found it.
 extend UiBatch {
     function endHud() {
         var state = nativeRecover<UiBatchState>(self.storage)
-        state.streams[hudStreamIndex().raw].quadCount = state.quadCount
+        state.streams[DrawStreams.hud.raw].quadCount = state.quadCount
         let back = state.hudReturnStream
         state.streamIndex = back
         state.contentsPtr = state.streams[back.raw].contentsPtr
         state.frameBase = state.streams[back.raw].frameBase
         state.quadCount = state.streams[back.raw].quadCount
-        return
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 extend UiBatch {
     // Release resources whose ownership cannot be expressed by RawPtr fields.
     // GPU resources remain typed values and are released by UiBatchState drop glue.
     function releaseOwnedCpuMemory() {
         var state = nativeRecover<UiBatchState>(self.storage)
-        if state.monoFace != RawPtr.null {
-            kira_text_face_destroy(state.monoFace)
-            state.monoFace = nullPointer()
-        }
-        if state.face != RawPtr.null {
-            kira_text_face_destroy(state.face)
-            state.face = nullPointer()
-        }
-        if state.engine != RawPtr.null {
-            kira_text_engine_destroy(state.engine)
-            state.engine = nullPointer()
-        }
-        if !pointerIsNull(state.atlasPixels) {
+        if !isNull(state.atlasPixels) {
             freeBytes(state.atlasPixels)
             state.atlasPixels = nullPointer()
         }
-        state.fontReady = false
-        return
+        state.textFace = .None
+        state.monoFace = .None
+        state.faceInstance = .None
     }
 }

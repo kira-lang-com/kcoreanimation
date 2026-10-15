@@ -1,0 +1,132 @@
+import Foundation
+
+// Where a symbol's ink sits inside its own box, as fractions of that box. A
+// symbol set is not one shape: a folder fills the middle of its canvas and an
+// open folder is drawn lower and shorter, so a caller that sizes or places
+// symbols against text asks per symbol, exactly as it asks a font per glyph.
+//
+// Ink is measured off a small drawing rather than off the path data, because
+// ink is what a stroke covers, round caps and all, not where its centerline
+// runs.
+
+namespace SymbolInkProbe {
+    // The square a symbol is drawn into to be measured.
+    let size: Number = 64
+    // A level below this is antialiasing haze, not ink.
+    let threshold: U8 = 16
+    // Symbols measured before the cache starts over. A screen shows far fewer
+    // distinct symbols than this.
+    let cached: Number = 1024
+}
+
+public struct SymbolInk {
+    let left: Number
+    let top: Number
+    let right: Number
+    let bottom: Number
+    // How much of the ink's own box the drawing covers: a stroked symbol is
+    // mostly the paper it is drawn on, a solid one is mostly ink.
+    let density: Number
+
+    // The ink's width over its height. A folder is wider than it is tall and
+    // a chevron is narrower.
+    function aspect(borrow self) -> Number {
+        return (right - left) / (bottom - top)
+    }
+}
+
+// Where `source`'s ink sits, or nothing when it draws no ink.
+public function symbolInk(source: borrow String) -> SymbolInk? {
+    var engine = nativeRecover<TextEngine>(textEngine())
+    match engine.symbolInks.value(source) {
+        Some(ink) -> return .Some(ink)
+        None -> {}
+    }
+    let ink = match measuredInk(source) {
+        Ok(ink) -> ink
+        Error(failure) -> {
+            log warn("symbol cannot be measured", traceText(failure))
+            return .None
+        }
+    }
+    if engine.symbolInks.count() >= SymbolInkProbe.cached { engine.symbolInks.removeAll() }
+    engine.symbolInks.set(copy source, copy ink)
+    return .Some(ink)
+}
+
+function measuredInk(source: borrow String) -> Result<SymbolInk, SymbolFailure> {
+    let size = SymbolInkProbe.size
+    let probe = match symbolCoverage(source, size, 0.0) {
+        Ok(probe) -> probe
+        Error(failure) -> return .Error(failure)
+    }
+    var firstRow: Number? = .None
+    var lastRow: Number = 0
+    var firstColumn = size
+    var lastColumn: Number = 0
+    var covered: Number = 0
+    for y in 0..size {
+        for x in 0..size {
+            if probe.levels[y * size + x] < SymbolInkProbe.threshold { continue }
+            covered++
+            if firstRow == .None { firstRow = .Some(y) }
+            lastRow = y
+            firstColumn = min(firstColumn, x)
+            lastColumn = max(lastColumn, x)
+        }
+    }
+    let top = match firstRow {
+        Some(row) -> row
+        None -> return .Error(.NoInk)
+    }
+    let box = (lastColumn - firstColumn + 1) * (lastRow - top + 1)
+    return .Ok(
+        SymbolInk {
+            left: firstColumn / size,
+            top: top / size,
+            right: (lastColumn + 1) / size,
+            bottom: (lastRow + 1) / size,
+            density: covered / box
+        }
+    )
+}
+
+// `source` drawn so its ink fills `width` by `height` exactly, grown `growth`
+// pixels heavier: no canvas margin around it, so a symbol's box is its ink and
+// it starts and stands where a letter would.
+public function symbolInkCoverage(
+    source: borrow String,
+    width: Number,
+    height: Number,
+    growth: Number
+) -> Result<SymbolCoverage, SymbolFailure> {
+    if width <= 0 || height <= 0 { return .Error(.EmptySize) }
+    let ink = match symbolInk(source) {
+        Some(ink) -> ink
+        None -> return .Error(.NoInk)
+    }
+    // The square the whole canvas is drawn at for its ink to come out
+    // `height` tall, and where the ink sits inside it.
+    let square = trunc(height / (ink.bottom - ink.top) + 0.5)
+    let full = match symbolCoverage(source, square, Float(growth)) {
+        Ok(full) -> full
+        Error(failure) -> return .Error(failure)
+    }
+    let fromX = trunc(ink.left * square + 0.5)
+    let fromY = trunc(ink.top * square + 0.5)
+    var levels: [U8] = []
+    for y in 0..height {
+        for x in 0..width {
+            levels.append(full.levelAt(fromX + x, fromY + y))
+        }
+    }
+    return .Ok(SymbolCoverage { width: width, height: height, levels: levels })
+}
+
+extend SymbolCoverage {
+    // The level at (`x`, `y`); paper outside the drawing.
+    function levelAt(borrow self, x: Number, y: Number) -> U8 {
+        if x < 0 || y < 0 || x >= width || y >= height { return 0 }
+        return levels[y * width + x]
+    }
+}

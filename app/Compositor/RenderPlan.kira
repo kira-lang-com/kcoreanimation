@@ -24,55 +24,53 @@ public enum CAPassKind {
     RenderTarget
 }
 
-// kind 0..6 mirror caContentKind; 100 is a composite of another pass's texture.
-public function caCompositeKind() -> Int {
-    return 100
-}
+public namespace DrawKind {
+    // kind 0..6 mirror CAContent.kind; 100 is a composite of another pass's texture.
+    let composite: Number = 100
 
-public function caShadowKind() -> Int {
-    return 101
+    let shadow: Number = 101
 }
 
 public struct CADrawCmd {
     var layer: LayerId = LayerId(0)
-    var kind: Int = 0
+    var kind: Number = 0
     var content: CAContent = .Empty
     var quad: CAOrientedQuad = CAOrientedQuad {}
     var worldBounds: Rect = Rect {}
-    var localWidth: Float = 0.0
-    var localHeight: Float = 0.0
-    var opacity: Float = 1.0
+    var localWidth: Number = 0.0
+    var localHeight: Number = 0.0
+    var opacity: Number = 1.0
     var fill: CAColor = CAColor {}
     var border: CAColor = CAColor {}
-    var cornerRadius: Float = 0.0
-    var borderWidth: Float = 0.0
-    var shadowRadius: Float = 0.0
+    var cornerRadius: Number = 0.0
+    var borderWidth: Number = 0.0
+    var shadowRadius: Number = 0.0
     // For a shadow command: how far the shadow falls from the layer casting
     // it, and whether that layer is glass -- which captures what is behind it,
     // the shadow included, so a shadow under glass stops at the glass's edge
     // instead of darkening the glass from beneath.
     var shadowOffset: Point = Point {}
     var shadowKnockout: Bool = false
-    var shapeKind: Int = 0
-    var lengthScale: Float = 1.0
-    var textScale: Float = 1.0
+    var shapeKind: Number = 0
+    var lengthScale: Number = 1.0
+    var textScale: Number = 1.0
     // The weight a run is drawn at, as its layer's weight channel has it now.
-    var textWeight: Float = 400.0
-    var glassWash: Float = 0.0
-    var glassWashLuma: Float = 1.0
+    var textWeight: Number = 400.0
+    var glassWash: Number = 0.0
+    var glassWashLuma: Number = 1.0
     var capturesBackdrop: Bool = false
-    var clipMinX: Float = 0.0
-    var clipMinY: Float = 0.0
-    var clipMaxX: Float = 1000000.0
-    var clipMaxY: Float = 1000000.0
-    var clipRadius: Float = 0.0
-    var clipShapeKind: Int = 0
+    var clipMinX: Number = 0.0
+    var clipMinY: Number = 0.0
+    var clipMaxX: Number = 1000000.0
+    var clipMaxY: Number = 1000000.0
+    var clipRadius: Number = 0.0
+    var clipShapeKind: Number = 0
     // For a composite command: the pass whose texture is drawn. -1 otherwise.
-    var sourcePass: Option<RenderPassId> = .None
+    var sourcePass: RenderPassId? = .None
     // For a composite command: the blur it is drawn with, in points.
-    var blur: Float = 0.0
+    var blur: Number = 0.0
     var hit: Bool = false
-    var hitKey: Int = 0
+    var hitKey: Number = 0
 }
 
 public struct CAPass {
@@ -83,7 +81,7 @@ public struct CAPass {
     // for its cached transient target. The retained tree never owns GPU objects.
     var targetId: RenderTargetId = RenderTargetId(0)
     // The alpha the isolated subtree composites at.
-    var groupOpacity: Float = 1.0
+    var groupOpacity: Number = 1.0
     // World-space extent of every command this pass draws. Offscreen execution
     // translates this origin to (0,0), so the texture is exactly the subtree's
     // painted extent rather than a full-window scratch image.
@@ -94,7 +92,7 @@ public struct CAPass {
     // pass to be presented again even with no structural damage.
     var dirty: Bool = false
     var requiresRefresh: Bool = false
-    var signature: Int = 0
+    var signature: Number = 0
     var cmds: [CADrawCmd] = []
 }
 
@@ -105,71 +103,69 @@ public struct CARenderPlan {
 
 // Append a command to a pass, folding the command's damage into the pass. Pass
 // records are read/written whole (the retained-tree discipline).
-public function caRectUnion(a: borrow Rect, b: borrow Rect) -> Rect {
+public function rectUnion(a: borrow Rect, b: borrow Rect) -> Rect {
     let minX = min(a.x, b.x)
     let minY = min(a.y, b.y)
     let maxX = max(a.x + a.width, b.x + b.width)
     let maxY = max(a.y + a.height, b.y + b.height)
-    return Rect {
-        x: minX,
-        y: minY,
-        width: maxX - minX,
-        height: maxY - minY
+    return Rect { x: minX, y: minY, width: maxX - minX, height: maxY - minY }
+}
+
+extend CADrawCmd {
+    function requiresRefresh() -> Bool {
+        if self.capturesBackdrop {
+            return true
+        }
+        return match self.content {
+            Texture(t) -> true
+            Glass(g) -> true
+            Text(t) -> t.adaptiveInk
+            Empty -> false
+            Solid(s) -> false
+            Icon(i) -> false
+            Gradient(g) -> false
+        }
     }
 }
 
-public function caCommandRequiresRefresh(cmd: borrow CADrawCmd) -> Bool {
-    if cmd.capturesBackdrop {
-        return true
+extend CARenderPlan {
+    function emit(borrow mut self, passIndex: RenderPassId, cmd: CADrawCmd, damaged: Bool) {
+        let p = passIndex.raw
+        // Wrapping arithmetic: the signature accumulates one factor of 31 per command,
+        // so a plain checked multiply overflows `Number` after a dozen or so commands.
+        // A change-detection hash only needs to differ when the input differs, which
+        // wrapping preserves — the same reason Foundation's `fnvStep` wraps.
+        self.passes[p].signature = wrappingAdd(
+            wrappingAdd(wrappingMul(self.passes[p].signature, 31), cmd.kind),
+            wrappingMul(cmd.layer.raw, 7)
+        )
+        if damaged {
+            self.passes[p].dirty = true
+        }
+        if cmd.requiresRefresh() {
+            self.passes[p].requiresRefresh = true
+        }
+        // Written in place: copying the pass out would copy every command it
+        // already holds, once per command emitted.
+        if self.passes[p].hasBounds {
+            self.passes[p].bounds = rectUnion(self.passes[p].bounds, cmd.worldBounds)
+        } else {
+            self.passes[p].bounds = cmd.worldBounds
+            self.passes[p].hasBounds = true
+        }
+        self.passes[p].cmds.append(move cmd)
     }
-    return match cmd.content {
-        Texture(t) -> true
-        Glass(g) -> true
-        Text(t) -> t.adaptiveInk
-        Empty -> false
-        Solid(s) -> false
-        Icon(i) -> false
-        Gradient(g) -> false
-    }
-}
 
-public function caPlanEmit(plan: borrow mut CARenderPlan, passIndex: RenderPassId, cmd: CADrawCmd, damaged: Bool) {
-    let p = passIndex.raw
-    // Wrapping arithmetic: the signature accumulates one factor of 31 per command,
-    // so a plain checked multiply overflows `Int` after a dozen or so commands.
-    // A change-detection hash only needs to differ when the input differs, which
-    // wrapping preserves — the same reason Foundation's `fnvStep` wraps.
-    plan.passes[p].signature = wrappingAdd(
-        wrappingAdd(wrappingMul(plan.passes[p].signature, 31), cmd.kind),
-        wrappingMul(cmd.layer.raw, 7)
-    )
-    if damaged {
-        plan.passes[p].dirty = true
+    // How many passes the plan runs, and how many draws in a given pass — the
+    // numbers a pass-planning test asserts.
+    function passCount() -> Number {
+        return self.passes.count
     }
-    if caCommandRequiresRefresh(cmd) {
-        plan.passes[p].requiresRefresh = true
-    }
-    // Written in place: copying the pass out would copy every command it
-    // already holds, once per command emitted.
-    if plan.passes[p].hasBounds {
-        plan.passes[p].bounds = caRectUnion(plan.passes[p].bounds, cmd.worldBounds)
-    } else {
-        plan.passes[p].bounds = cmd.worldBounds
-        plan.passes[p].hasBounds = true
-    }
-    plan.passes[p].cmds.append(move cmd)
-    return
-}
 
-// How many passes the plan runs, and how many draws in a given pass — the
-// numbers a pass-planning test asserts.
-public function caPlanPassCount(plan: borrow CARenderPlan) -> Int {
-    return plan.passes.count
-}
-
-public function caPlanDrawCount(plan: borrow CARenderPlan, passIndex: RenderPassId) -> Int {
-    if passIndex.raw < 0 || passIndex.raw >= plan.passes.count {
-        return 0
+    function drawCount(passIndex: RenderPassId) -> Number {
+        if passIndex.raw < 0 || passIndex.raw >= self.passes.count {
+            return 0
+        }
+        return self.passes[passIndex.raw].cmds.count
     }
-    return plan.passes[passIndex.raw].cmds.count
 }

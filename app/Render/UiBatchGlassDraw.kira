@@ -10,34 +10,44 @@ import Ember
 
 // The sharp tap (slot 1) and blurred backdrop (slot 2) stream `stream` draws with:
 // stream 0 sits under all glass and takes the frame's defaults, and stream j
-// refracts glass layer j-1's capture. Returned as the bind group ids
-// drawStream takes.
-public function glassSharpStreamGroup(state: borrow mut UiBatchState, stream: DrawStreamId) -> BindGroup {
+// refracts glass layer j-1's capture. Returned as the slots drawStream takes:
+// none when the stream takes the frame's defaults.
+public function glassSharpStreamGroup(
+    state: borrow mut UiBatchState,
+    stream: DrawStreamId
+) -> BindGroup? {
     return match stream.raw <= 0 {
-        true -> shareBindGroup(state.emptyGroup)
+        true -> .None
         false -> match stream.raw {
             1 -> match state.directBackdropLayer0 {
-                true -> shareBindGroup(state.directBackdropSharpGroup)
-                false -> shareBindGroup(state.glassLayers[0].sceneSharpGroup)
+                true -> copy state.directBackdropSharpGroup
+                false -> copy state.glassLayers[0].sceneSharpGroup
             }
-            else -> shareBindGroup(state.glassLayers[stream.raw - 1].sceneSharpGroup)
+            else -> copy state.glassLayers[stream.raw - 1].sceneSharpGroup
         }
     }
 }
 
 // Both blurred levels, in the one group they share.
-public function glassSoftNearStreamGroup(state: borrow mut UiBatchState, stream: DrawStreamId) -> BindGroup {
+public function glassSoftNearStreamGroup(
+    state: borrow mut UiBatchState,
+    stream: DrawStreamId
+) -> BindGroup? {
     if stream.raw <= 0 {
-        return shareBindGroup(state.emptyGroup)
+        return .None
     }
-    return shareBindGroup(state.glassLayers[stream.raw - 1].softNearGroup)
+    return copy state.glassLayers[stream.raw - 1].softNearGroup
 }
 
 // Draw everything below `layer + 1` once. Capture callers may invoke this under
 // several scissors; the opaque background draw resets an overlapping region before
 // the same premultiplied UI is replayed, so overlapping padded bounds remain exact.
 extend UiBatch {
-    function glassDrawCaptureContents(state: borrow mut UiBatchState, encoder: borrow mut RenderEncoder, layer: GlassLayerId) {
+    function glassDrawCaptureContents(
+        state: borrow mut UiBatchState,
+        encoder: borrow mut RenderEncoder,
+        layer: GlassLayerId
+    ) {
         state.glassStatCaptureReplays += 1
         drawBackground(state, encoder)
         var captured = 0
@@ -48,22 +58,24 @@ extend UiBatch {
                 streamId,
                 state.streams[captured].quadCount,
                 glassSharpStreamGroup(state, streamId),
-                glassSoftNearStreamGroup(state, streamId),
-                state.emptyGroup
+                glassSoftNearStreamGroup(state, streamId)
             )
             captured += 1
         }
-        return
     }
 }
-
 
 // Add one capture bound, coalescing overlap with an existing region. Bounds arrive
 // in layout order; adjacent swatches and dock controls therefore fold into one
 // growing union instead of replaying their overlapping blur halos independently.
-public function glassMergeCaptureBound(state: borrow mut UiBatchState, x0: Float, y0: Float, x1: Float, y1: Float) {
-    var i = 0
-    while i < state.captureRectCount {
+public function glassMergeCaptureBound(
+    state: borrow mut UiBatchState,
+    x0: Number,
+    y0: Number,
+    x1: Number,
+    y1: Number
+) {
+    for i in 0..state.captureRectCount {
         let base = i * 4
         let rx0 = state.captureRects[base]
         let ry0 = state.captureRects[base + 1]
@@ -76,7 +88,6 @@ public function glassMergeCaptureBound(state: borrow mut UiBatchState, x0: Float
             if y1 > ry1 { state.captureRects[base + 3] = y1 }
             return
         }
-        i += 1
     }
     let base = state.captureRectCount * 4
     if base + 3 < state.captureRects.count {
@@ -91,13 +102,15 @@ public function glassMergeCaptureBound(state: borrow mut UiBatchState, x0: Float
         state.captureRects.append(y1)
     }
     state.captureRectCount += 1
-    return
 }
 
 // Create (or re-create after a resize) the interior-cache texture, its
 // nearest-texel sampler and the bind group that rides the atlas slot around
 // copy runs. A fresh texture invalidates every key: nothing cached yet.
-public function glassEnsureInteriorCache(state: borrow mut UiBatchState, graphics: borrow EMGraphics) {
+public function glassEnsureInteriorCache(
+    state: borrow mut UiBatchState,
+    graphics: borrow Graphics
+) {
     // Exactly the drawable, from the backend. The cache pass rasterizes the same
     // quads as the composite and the copy quads read the result back at their own
     // device position, so one texel per swapchain pixel is not an optimization —
@@ -108,12 +121,8 @@ public function glassEnsureInteriorCache(state: borrow mut UiBatchState, graphic
     if state.glassCacheTexture.id != 0 && state.glassCacheW == cacheW && state.glassCacheH == cacheH {
         return
     }
-    if state.glassCacheGroup.id != 0 {
-        glassDestroyBindGroup(graphics, state.glassCacheGroup)
-        // Unbound, not empty: the slot is rebuilt below or left unread, and an
-        // empty group's state box would be orphaned by that rebuild.
-        state.glassCacheGroup = unboundBindGroup()
-    }
+    glassDestroyBindGroup(graphics, state.glassCacheGroup)
+    state.glassCacheGroup = .None
     if state.glassCacheTexture.id != 0 {
         glassDestroyTexture(graphics, state.glassCacheTexture)
         state.glassCacheTexture = emptyGraphicsTexture()
@@ -121,30 +130,45 @@ public function glassEnsureInteriorCache(state: borrow mut UiBatchState, graphic
     if cacheW <= 0 || cacheH <= 0 {
         return
     }
-    let cacheTex = textureOrReport(graphics.createTexture(TextureDescriptor {
-        label: "kira-ui-glass-interior-cache",
-        width: cacheW,
-        height: cacheH,
-        format: .Swapchain,
-        usage: .RenderTargetSampled,
-        sampleCount: 1,
-        storage: .Transient
-    }), "glass interior cache")
+    let cacheTex = textureOrReport(
+        graphics.createTexture(
+            TextureDescriptor {
+                label: "kira-ui-glass-interior-cache",
+                width: UN32(cacheW),
+                height: UN32(cacheH),
+                format: .Swapchain,
+                usage: .RenderTargetSampled,
+                sampleCount: 1,
+                storage: .Transient
+            }
+        ),
+        "glass interior cache"
+    )
     if state.glassCacheSampler.id == 0 {
         // Nearest: a copy fragment lands exactly on its texel center, and
         // nearest guarantees the fetch returns that texel's bytes unchanged.
-        state.glassCacheSampler = samplerOrReport(graphics.createSampler(SamplerDescriptor {
-            label: "kira-ui-glass-cache-nearest",
-            minFilter: .Nearest,
-            magFilter: .Nearest,
-            addressModeU: .ClampToEdge,
-            addressModeV: .ClampToEdge
-        }), "glass cache sampler")
+        state.glassCacheSampler = samplerOrReport(
+            graphics.createSampler(
+                SamplerDescriptor {
+                    label: "kira-ui-glass-cache-nearest",
+                    minFilter: .Nearest,
+                    magFilter: .Nearest,
+                    addressModeU: .ClampToEdge,
+                    addressModeV: .ClampToEdge
+                }
+            ),
+            "glass cache sampler"
+        )
     }
     let sampler = state.glassCacheSampler
-    let group = bindGroupOrReport(graphics.beginBindGroup("kira-ui-glass-cache"), "group")
-    graphics.bindGroupAddTexture(group, atlasTextureSlot(), cacheTex)
-    graphics.bindGroupAddSampler(group, atlasSamplerSlot(), sampler)
+    let group = optionalBindGroup(graphics.beginBindGroup("kira-ui-glass-cache"), "group")
+    match group {
+        Some(cacheGroup) -> {
+            graphics.bindGroupAddTexture(cacheGroup, ShaderSlot.atlasTexture, cacheTex)
+            graphics.bindGroupAddSampler(cacheGroup, ShaderSlot.atlasSampler, sampler)
+        }
+        None -> {}
+    }
     state.glassCacheTexture = cacheTex
     state.glassCacheGroup = group
     state.glassCacheW = cacheW
@@ -153,7 +177,6 @@ public function glassEnsureInteriorCache(state: borrow mut UiBatchState, graphic
     // A fresh texture holds nothing: bump the epoch (folded into every key)
     // so each surface misses once and re-renders into it.
     state.glassCacheEpochValue += 1
-    return
 }
 
 // The cache pass: clear on first use, preserve previously cached interiors on
@@ -172,7 +195,7 @@ public function glassInteriorCachePass(state: borrow mut UiBatchState) -> Render
         },
         loadAction: load,
         storeAction: .Store,
-        clearColor: Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 },
+        clearColor: RGBAColor { r: 0.0, g: 0.0, b: 0.0, a: 0.0 },
         resolveTarget: emptyRenderTarget(),
         hasResolveTarget: false
     }
@@ -191,33 +214,71 @@ public function glassInteriorCachePass(state: borrow mut UiBatchState) -> Render
 // Re-render each dirty surface's interior quads into the cache with the same
 // pipelines, bind groups and index ranges the live path would use — the cache
 // holds exactly the bytes the composite would have produced.
-public function glassDrawCacheRanges(state: borrow mut UiBatchState, encoder: borrow mut RenderEncoder) {
+public function glassDrawCacheRanges(
+    state: borrow mut UiBatchState,
+    encoder: borrow mut RenderEncoder
+) {
     encoder.setIndexBuffer(state.indexBuffer, .Uint32)
-    encoder.setBindGroup(atlasBindGroup(), state.atlasGroup)
-    var r = 0
-    while r < state.glassCacheRangeCount {
-        let stream = state.glassCacheRangeStream[r]
+    encoder.setBindGroup(EncoderGroup.atlas, state.atlasGroup)
+    for slot in 0..state.glassCacheRangeCount {
+        let range = state.glassCacheRanges[slot]
+        let stream = range.stream
         if state.probeGlassLayers {
-            print(717272)
-            print(r)
-            print(stream.raw)
-            print(state.glassCacheRangeStart[r])
-            print(state.glassCacheRangeBand[r])
-            print(state.glassCacheRangeLens[r])
-            print(state.glassCacheRangeCore[r])
+            log debug(
+                "glass cache range",
+                slot,
+                stream.raw,
+                range.start,
+                range.band,
+                range.lens,
+                range.core
+            )
         }
-        encoder.setBindGroup(vertexBindGroup(), state.streams[stream.raw].vertsGroup)
-        encoder.setBindGroup(externalBindGroup(), glassSharpStreamGroup(state, stream))
-        encoder.setBindGroup(softNearBindGroup(), glassSoftNearStreamGroup(state, stream))
+        encoder.setBindGroup(EncoderGroup.vertex, state.streams[stream.raw].vertsGroup)
+        let sharp = streamExternalGroup(state, glassSharpStreamGroup(state, stream))
+        let softNear = streamSoftNearGroup(state, glassSoftNearStreamGroup(state, stream))
+        encoder.setBindGroup(EncoderGroup.external, sharp)
+        encoder.setBindGroup(EncoderGroup.softNear, softNear)
         // One pipeline for the whole interior: the band shader is byte-equal
         // to the full glass branch everywhere at least 0.5pt inside (verified
         // by whole-frame compare), so the cache holds exactly the bytes the
         // composite would produce. The lens/core split only matters for
         // per-frame cost, and a cache render is a rare, one-off frame.
-        let total = state.glassCacheRangeBand[r] + state.glassCacheRangeLens[r] + state.glassCacheRangeCore[r]
         encoder.setPipeline(state.glassBandPipeline)
-        encoder.drawIndexedRange(total * 6, state.glassCacheRangeStart[r] * 6)
-        r += 1
+        encoder.drawIndexedRange(
+            UN32(range.quadCount() * QuadIndices.perQuad),
+            UN32(range.start * QuadIndices.perQuad)
+        )
     }
-    return
+}
+
+// Apple's continuous corner leaves the straight edge this many radii from the
+// corner (`CALayer cornerCurveExpansionFactor`); `GlassCommon.sdContinuous`
+// draws it.
+namespace ContinuousCorner {
+    let reach: Number = 1.5286649
+}
+
+// Whether the surface at `x`, `y`, `w` by `h` reaches into a corner of its
+// clip, when the clip is a rounded box. A continuous corner's curve starts
+// further from the corner than its radius: `ContinuousCorner.reach` times it.
+public function glassReachesClipCorner(
+    x: Number,
+    y: Number,
+    w: Number,
+    h: Number,
+    clipMinX: Number,
+    clipMinY: Number,
+    clipMaxX: Number,
+    clipMaxY: Number,
+    clipRadius: Number,
+    clipShapeKind: Number
+) -> Bool {
+    if clipRadius <= 0.0 { return false }
+    let reach = clipShapeKindOf(clipShapeKind) > 0.5 ? clipRadius * ContinuousCorner.reach : clipRadius
+    let left = x < clipMinX + reach
+    let right = x + w > clipMaxX - reach
+    let top = y < clipMinY + reach
+    let bottom = y + h > clipMaxY - reach
+    return (left || right) && (top || bottom)
 }

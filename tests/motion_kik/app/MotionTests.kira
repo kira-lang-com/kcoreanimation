@@ -3,24 +3,28 @@ import KCoreAnimation
 
 // --- helpers ---------------------------------------------------------------
 
-// Folds a float to an Int the runner can compare, keeping `digits` of it.
+// Folds a float to an Number the runner can compare, keeping `digits` of it.
 //
 // Rounded rather than truncated. These are physical quantities reached through
 // exponentials and roots, so the last digit carries the arithmetic's own error
 // — a spring that arrives at 99.99999 has arrived, and a truncating fold would
 // report it as 99.99 and fail a test about whether it got there.
-function mtScaled(value: Float, digits: Int) -> Int {
+function scaled(value: Number, digits: Number) -> Number {
     var scale = 1.0
-    var index = 0
-    while index < digits {
+    for _ in 0..digits {
         scale = scale * 10.0
-        index = index + 1
     }
-    return Int(round(value * scale))
+    return round(value * scale)
 }
 
 // Runs a spring for `seconds` at a given frame rate and answers where it got to.
-function mtRunSpring(spring: MotionSpring, from: Float, velocity: Float, seconds: Float, fps: Float) -> Float {
+function runSpring(
+    spring: MotionSpring,
+    from: Number,
+    velocity: Number,
+    seconds: Number,
+    fps: Number
+) -> Number {
     var state = motionSpringStart(move spring, from, velocity)
     let step = 1.0 / fps
     // Counted rather than accumulated against a deadline: `1.0/60.0` is not
@@ -28,20 +32,17 @@ function mtRunSpring(spring: MotionSpring, from: Float, velocity: Float, seconds
     // steps at different rates and the two runs stop at different times. That
     // would make the frame-rate test below measure the loop rather than the
     // spring.
-    let steps = Int(round(seconds * fps))
-    var index = 0
     var value = from
-    while index < steps {
+    for _ in 0..Number(round(seconds * fps)) {
         let sample = motionSpringAdvance(state, step)
         value = sample.value
-        index = index + 1
     }
     return value
 }
 
 // The furthest a spring ever gets from where it started, which is how far past
 // the target it went when the target is ahead of it.
-function mtSpringPeak(spring: MotionSpring, from: Float, seconds: Float) -> Float {
+function springPeak(spring: MotionSpring, from: Number, seconds: Number) -> Number {
     var state = motionSpringStart(move spring, from, 0.0)
     var peak = from
     var elapsed = 0.0
@@ -62,7 +63,7 @@ function mtSpringPeak(spring: MotionSpring, from: Float, seconds: Float) -> Floa
 construct MtCriticallyDampedArrives() extends Test {
     test {
         let spring = MotionSpring { response: 0.4, damping: 1.0, target: 100.0 }
-        return mtScaled(mtRunSpring(move spring, 0.0, 0.0, 1.5, 120.0), 2)
+        return scaled(runSpring(move spring, 0.0, 0.0, 1.5, 120.0), 2)
     }
     expect { return .Ok(10000) }
 }
@@ -72,7 +73,7 @@ construct MtCriticallyDampedArrives() extends Test {
 construct MtCriticallyDampedNeverOvershoots() extends Test {
     test {
         let spring = MotionSpring { response: 0.4, damping: 1.0, target: 100.0 }
-        let peak = mtSpringPeak(move spring, 0.0, 2.0)
+        let peak = springPeak(move spring, 0.0, 2.0)
         if peak > 100.0 {
             return 1
         }
@@ -85,12 +86,18 @@ construct MtCriticallyDampedNeverOvershoots() extends Test {
 construct MtUnderdampedOvershootsThenSettles() extends Test {
     test {
         let bouncy = MotionSpring { response: 0.5, damping: 0.7, target: 100.0 }
-        let peak = mtSpringPeak(move bouncy, 0.0, 3.0)
-        let settled = mtRunSpring(MotionSpring { response: 0.5, damping: 0.7, target: 100.0 }, 0.0, 0.0, 3.0, 120.0)
+        let peak = springPeak(move bouncy, 0.0, 3.0)
+        let settled = runSpring(
+            MotionSpring { response: 0.5, damping: 0.7, target: 100.0 },
+            0.0,
+            0.0,
+            3.0,
+            120.0
+        )
         if peak <= 100.5 {
             return 0
         }
-        return mtScaled(settled, 1)
+        return scaled(settled, 1)
     }
     expect { return .Ok(1000) }
 }
@@ -100,7 +107,7 @@ construct MtUnderdampedOvershootsThenSettles() extends Test {
 construct MtOverdampedArrives() extends Test {
     test {
         let spring = MotionSpring { response: 0.4, damping: 2.5, target: 100.0 }
-        return mtScaled(mtRunSpring(move spring, 0.0, 0.0, 3.0, 120.0), 1)
+        return scaled(runSpring(move spring, 0.0, 0.0, 3.0, 120.0), 1)
     }
     expect { return .Ok(1000) }
 }
@@ -111,9 +118,21 @@ construct MtOverdampedArrives() extends Test {
 // dropped.
 construct MtSpringIsFrameRateIndependent() extends Test {
     test {
-        let slow = mtRunSpring(MotionSpring { response: 0.5, damping: 0.7, target: 100.0 }, 0.0, 0.0, 0.6, 60.0)
-        let fast = mtRunSpring(MotionSpring { response: 0.5, damping: 0.7, target: 100.0 }, 0.0, 0.0, 0.6, 240.0)
-        return mtScaled(abs(slow - fast), 3)
+        let slow = runSpring(
+            MotionSpring { response: 0.5, damping: 0.7, target: 100.0 },
+            0.0,
+            0.0,
+            0.6,
+            60.0
+        )
+        let fast = runSpring(
+            MotionSpring { response: 0.5, damping: 0.7, target: 100.0 },
+            0.0,
+            0.0,
+            0.6,
+            240.0
+        )
+        return scaled(abs(slow - fast), 3)
     }
     expect { return .Ok(0) }
 }
@@ -124,7 +143,11 @@ construct MtSpringIsFrameRateIndependent() extends Test {
 // avoid.
 construct MtRetargetIsContinuous() extends Test {
     test {
-        var state = motionSpringStart(MotionSpring { response: 0.5, damping: 0.7, target: 100.0 }, 0.0, 0.0)
+        var state = motionSpringStart(
+            MotionSpring { response: 0.5, damping: 0.7, target: 100.0 },
+            0.0,
+            0.0
+        )
         var elapsed = 0.0
         while elapsed < 0.2 {
             let ignored = motionSpringAdvance(state, 0.008)
@@ -133,7 +156,10 @@ construct MtRetargetIsContinuous() extends Test {
         let before = motionSpringSample(state, state.elapsed)
         motionSpringRetarget(state, 0.0)
         let after = motionSpringSample(state, state.elapsed)
-        return mtScaled(abs(after.value - before.value), 4) * 10 + mtScaled(abs(after.velocity - before.velocity), 2)
+        return scaled(abs(after.value - before.value), 4) * 10 + scaled(
+            abs(after.velocity - before.velocity),
+            2
+        )
     }
     expect { return .Ok(0) }
 }
@@ -142,8 +168,20 @@ construct MtRetargetIsContinuous() extends Test {
 // there sooner than one that starts still.
 construct MtInitialVelocityIsCarried() extends Test {
     test {
-        let thrown = mtRunSpring(MotionSpring { response: 0.5, damping: 1.0, target: 100.0 }, 0.0, 300.0, 0.15, 240.0)
-        let still = mtRunSpring(MotionSpring { response: 0.5, damping: 1.0, target: 100.0 }, 0.0, 0.0, 0.15, 240.0)
+        let thrown = runSpring(
+            MotionSpring { response: 0.5, damping: 1.0, target: 100.0 },
+            0.0,
+            300.0,
+            0.15,
+            240.0
+        )
+        let still = runSpring(
+            MotionSpring { response: 0.5, damping: 1.0, target: 100.0 },
+            0.0,
+            0.0,
+            0.15,
+            240.0
+        )
         if thrown > still {
             return 1
         }
@@ -159,7 +197,7 @@ construct MtCoefficientsRoundTrip() extends Test {
         let stiffness = motionSpringStiffness(original)
         let damping = motionSpringDampingCoefficient(original)
         let rebuilt = motionSpringFromCoefficients(stiffness, damping, 0.0)
-        return mtScaled(rebuilt.response, 4) * 10000 + mtScaled(rebuilt.damping, 4)
+        return scaled(rebuilt.response, 4) * 10000 + scaled(rebuilt.damping, 4)
     }
     expect { return .Ok(50007000) }
 }
@@ -169,8 +207,8 @@ construct MtReducedMotionRemovesOvershoot() extends Test {
     test {
         let plain = motionCurveFor(.Bouncy, 100.0, false)
         let reduced = motionCurveFor(.Bouncy, 100.0, true)
-        let plainPeak = mtSpringPeak(move plain, 0.0, 2.0)
-        let reducedPeak = mtSpringPeak(move reduced, 0.0, 2.0)
+        let plainPeak = springPeak(move plain, 0.0, 2.0)
+        let reducedPeak = springPeak(move reduced, 0.0, 2.0)
         if plainPeak > 100.5 && reducedPeak <= 100.0 {
             return 1
         }
@@ -186,12 +224,12 @@ construct MtReducedMotionRemovesOvershoot() extends Test {
 // 340.65. These are the assertion because they are what the shipping system
 // does — a curve that merely looked similar would miss them.
 construct MtRubberBandMatchesThePlatformCurve() extends Test {
-    test { return mtScaled(motionRubberBand(5.0, 960.0, 0.55), 2) }
+    test { return scaled(motionRubberBand(5.0, 960.0, 0.55), 2) }
     expect { return .Ok(274) }
 }
 
 construct MtRubberBandResistsAFullPull() extends Test {
-    test { return mtScaled(motionRubberBand(960.0, 960.0, 0.55), 2) }
+    test { return scaled(motionRubberBand(960.0, 960.0, 0.55), 2) }
     expect { return .Ok(34065) }
 }
 
@@ -214,7 +252,7 @@ construct MtRubberBandInverseRoundTrips() extends Test {
     test {
         let banded = motionRubberBand(137.0, 800.0, 0.55)
         let recovered = motionRubberBandInverse(banded, 800.0, 0.55)
-        return mtScaled(abs(recovered - 137.0), 3)
+        return scaled(abs(recovered - 137.0), 3)
     }
     expect { return .Ok(0) }
 }
@@ -223,9 +261,9 @@ construct MtRubberBandInverseRoundTrips() extends Test {
 // past the bottom.
 construct MtRubberBandIsSymmetric() extends Test {
     test {
-        let up = motionRubberBandSigned(0.0 - 60.0, 800.0, 0.55)
+        let up = motionRubberBandSigned(-60.0, 800.0, 0.55)
         let down = motionRubberBandSigned(60.0, 800.0, 0.55)
-        return mtScaled(up + down, 4)
+        return scaled(up + down, 4)
     }
     expect { return .Ok(0) }
 }
@@ -235,7 +273,7 @@ construct MtRubberBandIsSymmetric() extends Test {
 // A fling at 1000 points a second travels about 499.5 points before stopping.
 // This is the continuous form of the platform's per-millisecond decay rate.
 construct MtDecayProjectsAFling() extends Test {
-    test { return mtScaled(motionDecayProjection(1000.0, 0.998), 1) }
+    test { return scaled(motionDecayProjection(1000.0, 0.998), 1) }
     expect { return .Ok(4995) }
 }
 
@@ -243,8 +281,8 @@ construct MtDecayProjectsAFling() extends Test {
 // does not.
 construct MtFastDecayStopsSooner() extends Test {
     test {
-        let normal = motionDecayProjection(1000.0, motionDecayRateNormal())
-        let fast = motionDecayProjection(1000.0, motionDecayRateFast())
+        let normal = motionDecayProjection(1000.0, MotionDecay.rateNormal)
+        let fast = motionDecayProjection(1000.0, MotionDecay.rateFast)
         if fast < normal {
             return 1
         }
@@ -259,7 +297,7 @@ construct MtDecayReachesItsProjection() extends Test {
     test {
         let projected = motionDecayProjection(1000.0, 0.998)
         let travelled = motionDecayOffset(1000.0, 0.998, 20.0)
-        return mtScaled(abs(projected - travelled), 1)
+        return scaled(abs(projected - travelled), 1)
     }
     expect { return .Ok(0) }
 }
@@ -280,7 +318,7 @@ construct MtDecayVelocityFallsTowardZero() extends Test {
 // --- snapping --------------------------------------------------------------
 
 construct MtSnapPicksTheNearestItem() extends Test {
-    test { return Int(motionSnapNearest(137.0, 50.0, 0.0)) }
+    test { return trunc(motionSnapNearest(137.0, 50.0, 0.0)) }
     expect { return .Ok(150) }
 }
 
@@ -291,15 +329,15 @@ construct MtSnapFollowsTheThrowsStrength() extends Test {
         let flick = motionSnapNearest(0.0 + motionDecayProjection(200.0, 0.998), 50.0, 0.0)
         let throw = motionSnapNearest(0.0 + motionDecayProjection(2000.0, 0.998), 50.0, 0.0)
         if throw > flick {
-            return Int(flick)
+            return trunc(flick)
         }
-        return 0 - 1
+        return -1
     }
     expect { return .Ok(100) }
 }
 
 // A paged surface moves by one, however hard it is thrown.
 construct MtPagingAdvancesOneStep() extends Test {
-    test { return Int(motionSnapNextPage(0.0, 900.0, 100.0, 0.0)) }
+    test { return trunc(motionSnapNextPage(0.0, 900.0, 100.0, 0.0)) }
     expect { return .Ok(100) }
 }

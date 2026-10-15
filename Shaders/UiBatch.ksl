@@ -1,7 +1,7 @@
 // The UI compositor's single shader. Every primitive the UI Foundation draws goes
 // through it, selected per vertex by `mode`:
 //   0 — SDF rounded-rect / border surface (local = pixel offset from the center)
-//   0.25 — SDF squircle / border surface (a fourth-power superellipse corner)
+//   0.25 — SDF continuous-corner surface / border (Apple's continuous corner)
 //   1 — glyph or icon coverage from the atlas (local = uv)
 //   2 — an external texture (a TextureView), `local` carrying its uv
 //   3 — liquid glass: refract the captured backdrop through the rounded shape
@@ -311,7 +311,7 @@ function blurredBoxCoverage(point: Float2, halfSize: Float2, radius: Float, sigm
 
 function surfaceDistance(point: Float2, halfSize: Float2, radius: Float, mode: Float) -> Float {
     if mode > 0.1 && mode < 0.5 {
-        return GlassCommon.sdSquircle(point, halfSize, radius)
+        return GlassCommon.sdContinuous(point, halfSize, radius)
     }
     return GlassCommon.sdRound(point, halfSize, radius)
 }
@@ -320,56 +320,62 @@ function surfaceDistance(point: Float2, halfSize: Float2, radius: Float, mode: F
 function clipCoverage(input: VertexOut) -> Float {
     return GlassCommon.clipShapeCoverage(input.px, input.clip, input.clipCorner)
 }
-// A layer's gaussian blur, read off the texture its tree was drawn into:
-// the center and three rings of taps out to `reach` -- the blur's radius in
-// the texture's own coordinates -- weighted by a gaussian whose sigma is a
-// little under half of it. A tap past the texture's edge reads clear rather
-// than the edge again: the texture was held open by the reach, and what lies
-// past it is nothing.
-function blurTap(tex: Texture2d, smp: Sampler, uv: Float2, at: Float2, reach: Float2) -> Float4 {
+// A gaussian blur read off a texture: the center and three rings of taps out
+// to `reach` -- the blur's radius in the texture's own coordinates -- weighted
+// by a gaussian whose sigma is a little under half of it. A tap outside
+// `within`, the box (left, top, right, bottom) the picture lies in, reads
+// clear rather than the edge again: a layer's texture was held open by the
+// reach, and a glyph's box in the atlas has its neighbours past it, and what
+// lies past either is nothing.
+function blurTap(tex: Texture2d, smp: Sampler, uv: Float2, at: Float2, reach: Float2, within: Float4) -> Float4 {
     let p = uv + at * reach
-    let inside = clamp(p.x * 4096.0, 0.0, 1.0) * clamp((1.0 - p.x) * 4096.0, 0.0, 1.0) * clamp(p.y * 4096.0, 0.0, 1.0) * clamp((1.0 - p.y) * 4096.0, 0.0, 1.0)
+    let inside = clamp((p.x - within.x) * 4096.0, 0.0, 1.0) * clamp((within.z - p.x) * 4096.0, 0.0, 1.0) * clamp((p.y - within.y) * 4096.0, 0.0, 1.0) * clamp((within.w - p.y) * 4096.0, 0.0, 1.0)
     return sample(tex, smp, p) * inside
 }
 
+// A layer's gaussian blur, read off the texture its tree was drawn into.
 function blurredSample(tex: Texture2d, smp: Sampler, uv: Float2, reach: Float2) -> Float4 {
-    let s0 = blurTap(tex, smp, uv, Float2(0.0, 0.0), reach) * 0.090178446
-    let s1 = s0 + blurTap(tex, smp, uv, Float2(0.333333, 0.000000), reach) * 0.068541679
-    let s2 = s1 + blurTap(tex, smp, uv, Float2(0.166667, 0.288675), reach) * 0.068541679
-    let s3 = s2 + blurTap(tex, smp, uv, Float2(-0.166667, 0.288675), reach) * 0.068541679
-    let s4 = s3 + blurTap(tex, smp, uv, Float2(-0.333333, 0.000000), reach) * 0.068541679
-    let s5 = s4 + blurTap(tex, smp, uv, Float2(-0.166667, -0.288675), reach) * 0.068541679
-    let s6 = s5 + blurTap(tex, smp, uv, Float2(0.166667, -0.288675), reach) * 0.068541679
-    let s7 = s6 + blurTap(tex, smp, uv, Float2(0.643951, 0.172546), reach) * 0.030096135
-    let s8 = s7 + blurTap(tex, smp, uv, Float2(0.471405, 0.471405), reach) * 0.030096135
-    let s9 = s8 + blurTap(tex, smp, uv, Float2(0.172546, 0.643951), reach) * 0.030096135
-    let s10 = s9 + blurTap(tex, smp, uv, Float2(-0.172546, 0.643951), reach) * 0.030096135
-    let s11 = s10 + blurTap(tex, smp, uv, Float2(-0.471405, 0.471405), reach) * 0.030096135
-    let s12 = s11 + blurTap(tex, smp, uv, Float2(-0.643951, 0.172546), reach) * 0.030096135
-    let s13 = s12 + blurTap(tex, smp, uv, Float2(-0.643951, -0.172546), reach) * 0.030096135
-    let s14 = s13 + blurTap(tex, smp, uv, Float2(-0.471405, -0.471405), reach) * 0.030096135
-    let s15 = s14 + blurTap(tex, smp, uv, Float2(-0.172546, -0.643951), reach) * 0.030096135
-    let s16 = s15 + blurTap(tex, smp, uv, Float2(0.172546, -0.643951), reach) * 0.030096135
-    let s17 = s16 + blurTap(tex, smp, uv, Float2(0.471405, -0.471405), reach) * 0.030096135
-    let s18 = s17 + blurTap(tex, smp, uv, Float2(0.643951, -0.172546), reach) * 0.030096135
-    let s19 = s18 + blurTap(tex, smp, uv, Float2(0.984808, 0.173648), reach) * 0.007634326
-    let s20 = s19 + blurTap(tex, smp, uv, Float2(0.866025, 0.500000), reach) * 0.007634326
-    let s21 = s20 + blurTap(tex, smp, uv, Float2(0.642788, 0.766044), reach) * 0.007634326
-    let s22 = s21 + blurTap(tex, smp, uv, Float2(0.342020, 0.939693), reach) * 0.007634326
-    let s23 = s22 + blurTap(tex, smp, uv, Float2(0.000000, 1.000000), reach) * 0.007634326
-    let s24 = s23 + blurTap(tex, smp, uv, Float2(-0.342020, 0.939693), reach) * 0.007634326
-    let s25 = s24 + blurTap(tex, smp, uv, Float2(-0.642788, 0.766044), reach) * 0.007634326
-    let s26 = s25 + blurTap(tex, smp, uv, Float2(-0.866025, 0.500000), reach) * 0.007634326
-    let s27 = s26 + blurTap(tex, smp, uv, Float2(-0.984808, 0.173648), reach) * 0.007634326
-    let s28 = s27 + blurTap(tex, smp, uv, Float2(-0.984808, -0.173648), reach) * 0.007634326
-    let s29 = s28 + blurTap(tex, smp, uv, Float2(-0.866025, -0.500000), reach) * 0.007634326
-    let s30 = s29 + blurTap(tex, smp, uv, Float2(-0.642788, -0.766044), reach) * 0.007634326
-    let s31 = s30 + blurTap(tex, smp, uv, Float2(-0.342020, -0.939693), reach) * 0.007634326
-    let s32 = s31 + blurTap(tex, smp, uv, Float2(-0.000000, -1.000000), reach) * 0.007634326
-    let s33 = s32 + blurTap(tex, smp, uv, Float2(0.342020, -0.939693), reach) * 0.007634326
-    let s34 = s33 + blurTap(tex, smp, uv, Float2(0.642788, -0.766044), reach) * 0.007634326
-    let s35 = s34 + blurTap(tex, smp, uv, Float2(0.866025, -0.500000), reach) * 0.007634326
-    let s36 = s35 + blurTap(tex, smp, uv, Float2(0.984808, -0.173648), reach) * 0.007634326
+    return blurredSampleWithin(tex, smp, uv, reach, Float4(0.0, 0.0, 1.0, 1.0))
+}
+
+function blurredSampleWithin(tex: Texture2d, smp: Sampler, uv: Float2, reach: Float2, within: Float4) -> Float4 {
+    let s0 = blurTap(tex, smp, uv, Float2(0.0, 0.0), reach, within) * 0.090178446
+    let s1 = s0 + blurTap(tex, smp, uv, Float2(0.333333, 0.000000), reach, within) * 0.068541679
+    let s2 = s1 + blurTap(tex, smp, uv, Float2(0.166667, 0.288675), reach, within) * 0.068541679
+    let s3 = s2 + blurTap(tex, smp, uv, Float2(-0.166667, 0.288675), reach, within) * 0.068541679
+    let s4 = s3 + blurTap(tex, smp, uv, Float2(-0.333333, 0.000000), reach, within) * 0.068541679
+    let s5 = s4 + blurTap(tex, smp, uv, Float2(-0.166667, -0.288675), reach, within) * 0.068541679
+    let s6 = s5 + blurTap(tex, smp, uv, Float2(0.166667, -0.288675), reach, within) * 0.068541679
+    let s7 = s6 + blurTap(tex, smp, uv, Float2(0.643951, 0.172546), reach, within) * 0.030096135
+    let s8 = s7 + blurTap(tex, smp, uv, Float2(0.471405, 0.471405), reach, within) * 0.030096135
+    let s9 = s8 + blurTap(tex, smp, uv, Float2(0.172546, 0.643951), reach, within) * 0.030096135
+    let s10 = s9 + blurTap(tex, smp, uv, Float2(-0.172546, 0.643951), reach, within) * 0.030096135
+    let s11 = s10 + blurTap(tex, smp, uv, Float2(-0.471405, 0.471405), reach, within) * 0.030096135
+    let s12 = s11 + blurTap(tex, smp, uv, Float2(-0.643951, 0.172546), reach, within) * 0.030096135
+    let s13 = s12 + blurTap(tex, smp, uv, Float2(-0.643951, -0.172546), reach, within) * 0.030096135
+    let s14 = s13 + blurTap(tex, smp, uv, Float2(-0.471405, -0.471405), reach, within) * 0.030096135
+    let s15 = s14 + blurTap(tex, smp, uv, Float2(-0.172546, -0.643951), reach, within) * 0.030096135
+    let s16 = s15 + blurTap(tex, smp, uv, Float2(0.172546, -0.643951), reach, within) * 0.030096135
+    let s17 = s16 + blurTap(tex, smp, uv, Float2(0.471405, -0.471405), reach, within) * 0.030096135
+    let s18 = s17 + blurTap(tex, smp, uv, Float2(0.643951, -0.172546), reach, within) * 0.030096135
+    let s19 = s18 + blurTap(tex, smp, uv, Float2(0.984808, 0.173648), reach, within) * 0.007634326
+    let s20 = s19 + blurTap(tex, smp, uv, Float2(0.866025, 0.500000), reach, within) * 0.007634326
+    let s21 = s20 + blurTap(tex, smp, uv, Float2(0.642788, 0.766044), reach, within) * 0.007634326
+    let s22 = s21 + blurTap(tex, smp, uv, Float2(0.342020, 0.939693), reach, within) * 0.007634326
+    let s23 = s22 + blurTap(tex, smp, uv, Float2(0.000000, 1.000000), reach, within) * 0.007634326
+    let s24 = s23 + blurTap(tex, smp, uv, Float2(-0.342020, 0.939693), reach, within) * 0.007634326
+    let s25 = s24 + blurTap(tex, smp, uv, Float2(-0.642788, 0.766044), reach, within) * 0.007634326
+    let s26 = s25 + blurTap(tex, smp, uv, Float2(-0.866025, 0.500000), reach, within) * 0.007634326
+    let s27 = s26 + blurTap(tex, smp, uv, Float2(-0.984808, 0.173648), reach, within) * 0.007634326
+    let s28 = s27 + blurTap(tex, smp, uv, Float2(-0.984808, -0.173648), reach, within) * 0.007634326
+    let s29 = s28 + blurTap(tex, smp, uv, Float2(-0.866025, -0.500000), reach, within) * 0.007634326
+    let s30 = s29 + blurTap(tex, smp, uv, Float2(-0.642788, -0.766044), reach, within) * 0.007634326
+    let s31 = s30 + blurTap(tex, smp, uv, Float2(-0.342020, -0.939693), reach, within) * 0.007634326
+    let s32 = s31 + blurTap(tex, smp, uv, Float2(-0.000000, -1.000000), reach, within) * 0.007634326
+    let s33 = s32 + blurTap(tex, smp, uv, Float2(0.342020, -0.939693), reach, within) * 0.007634326
+    let s34 = s33 + blurTap(tex, smp, uv, Float2(0.642788, -0.766044), reach, within) * 0.007634326
+    let s35 = s34 + blurTap(tex, smp, uv, Float2(0.866025, -0.500000), reach, within) * 0.007634326
+    let s36 = s35 + blurTap(tex, smp, uv, Float2(0.984808, -0.173648), reach, within) * 0.007634326
     return s36
 }
 
@@ -571,6 +577,20 @@ shader UiBatch {
                 out.color = Float4(0.0, 0.0, 0.0, 0.0)
                 return out
             }
+            // --- mode 1.5: a glyph's shadow ---
+            // The glyph's own coverage under a gaussian, so a run's shadow is the
+            // shape of its letters, as SwiftUI's on a `Text` is, rather than of
+            // the box they are set in. `border` is the glyph's box in the atlas,
+            // which the taps keep inside, and `shape.y` the blur's reach in atlas
+            // uv; the quad is grown by the reach so the falloff has room.
+            if input.shape.z > 1.25 && input.shape.z < 1.75 {
+                let reach = input.shape.y
+                let within = Float4(input.border.x, input.border.y, input.border.z, input.border.w)
+                let cov = blurredSampleWithin(atlas, atlasSmp, input.local, Float2(reach, reach), within).x
+                let alpha = input.fill.w * cov * clipCoverage(input)
+                out.color = Float4(input.fill.x * alpha, input.fill.y * alpha, input.fill.z * alpha, alpha)
+                return out
+            }
             // --- mode 2: external texture ---
             if input.shape.z > 1.5 {
                 let transition = clamp(input.shape.w, 0.0, 1.0)
@@ -584,7 +604,9 @@ shader UiBatch {
                 // Steady light/dark mode samples exactly one 4K source. Sampling
                 // both and mixing by a compile-time-unknown 0 or 1 doubled the
                 // dominant fullscreen bandwidth forever after the 350ms crossfade.
-                if input.border.x > 0.0 || input.border.y > 0.0 {
+                // Mode 2.0 samples a scene texture at full detail; only 2.1
+                // explicitly requests a Gaussian blur for an isolated pass.
+                if input.shape.z > 2.05 {
                     let texel = blurredSample(external, externalSmp, input.local, Float2(input.border.x, input.border.y))
                     let alpha = texel.w * input.fill.w * textureCoverage
                     out.color = Float4(texel.x * input.fill.w * textureCoverage, texel.y * input.fill.w * textureCoverage, texel.z * input.fill.w * textureCoverage, alpha)

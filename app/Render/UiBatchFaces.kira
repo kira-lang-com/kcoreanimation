@@ -1,0 +1,46 @@
+import Foundation
+import Ember
+
+// The face a batch sets its runs in: which of its two faces a design takes,
+// the instance at a run's size and weight, and the line metrics read from it.
+
+extend UiBatchState {
+    // The ascender and descender cached under `key`, if a run asked for them.
+    function metricsFor(key: Number) -> (Number, Number)? {
+        for (known, ascender, descender) in metrics {
+            if known == key { return .Some((ascender, descender)) }
+        }
+        return .None
+    }
+
+    // Which face a run in `design` is set in: 1 for the monospaced one, 0 for the
+    // default, which also sets monospaced runs where the host has no face for them,
+    // and 2 for the default with tabular figures.
+    function faceKey(design: borrow CAFontDesign) -> Number {
+        if design == .Monospaced && self.monoFace.isSome() {
+            return 1
+        }
+        return design == .MonospacedDigits ? 2 : 0
+    }
+
+    // Sets a face to a run's size and weight, reading its vertical metrics into
+    // the state, unless it already stands there. False where there is no face.
+    function setFace(borrow mut self, sizeKey: Number, weightKey: Number, faceKey: Number) -> Bool {
+        if self.fontSizeSet == sizeKey && self.fontWeightSet == weightKey && self.fontFaceSet == faceKey {
+            return true
+        }
+        let face = match faceKey == 1 ? self.monoFace : self.textFace {
+            Some(face) -> face
+            None -> return false
+        }
+        var engine = nativeRecover<TextEngine>(textEngine())
+        let instance = engine.instance(face, sizeKey, glyphWeightAxis(weightKey), faceKey == 2)
+        self.ascender = instance.ascender
+        self.descender = instance.descender
+        self.faceInstance = .Some(instance)
+        self.fontSizeSet = sizeKey
+        self.fontWeightSet = weightKey
+        self.fontFaceSet = faceKey
+        return true
+    }
+}

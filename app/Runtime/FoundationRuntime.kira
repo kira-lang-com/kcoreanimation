@@ -10,24 +10,26 @@ import Foundation
 
 // The page an ordinary window is cleared to: the paper an interface is drawn
 // on, and what shows wherever it draws nothing.
-public function foundationPageColor() -> Color {
-    return Color {
-        r: 0.96,
-        g: 0.95,
-        b: 0.93,
-        a: 1.0
-    }
+public function foundationPageColor() -> RGBAColor {
+    return RGBAColor { r: 0.96, g: 0.95, b: 0.93, a: 1.0 }
 }
 
 // The page a TRANSPARENT window is cleared to: the desktop's key color, so
 // every pixel the interface does not paint is a hole rather than paper. See
-// Ember' Public/WindowComposition.kira.
-public function foundationTransparentPage() -> Color {
-    return graphicsTransparentKey()
+// Ember's Public/WindowComposition.kira. The key crosses as its COLORREF,
+// red in the low byte, so it is unpacked here.
+public function foundationTransparentPage() -> RGBAColor {
+    let key: Number = TransparentKey.colorRef
+    return RGBAColor {
+        r: (key & 0xff) / 255,
+        g: ((key >> 8) & 0xff) / 255,
+        b: ((key >> 16) & 0xff) / 255,
+        a: 1.0
+    }
 }
 
 // Which of the two a window is drawn on.
-public function foundationPageFor(transparent: Bool) -> Color {
+public function foundationPageFor(transparent: Bool) -> RGBAColor {
     if transparent {
         return foundationTransparentPage()
     }
@@ -39,29 +41,29 @@ public function foundationPageFor(transparent: Bool) -> Color {
 // it builds, and the input read side (FoundationInputSnapshot.kira) publishes
 // it to the ambient slot store for camera/tool code in any package.
 public struct FoundationUiContext {
-    var frameCount: Int = 0
+    var frameCount: Number = 0
     var viewport: Size = Size {}
-    var pointerX: Float = 0.0
-    var pointerY: Float = 0.0
-    var hoveredKey: Int = 0
-    var pressedKey: Int = 0
-    var clickedKey: Int = 0
-    var focusedKey: Int = 0
-    var scrollX: Float = 0.0
-    var scrollY: Float = 0.0
-    var lastTextCodepoint: Int = 0
-    var lastKeyCode: Int = 0
+    var pointerX: Number = 0.0
+    var pointerY: Number = 0.0
+    var hoveredKey: Number = 0
+    var pressedKey: Number = 0
+    var clickedKey: Number = 0
+    var focusedKey: Number = 0
+    var scrollX: Number = 0.0
+    var scrollY: Number = 0.0
+    var lastTextCodepoint: Number = 0
+    var lastKeyCode: Number = 0
     // Total events dispatched since app start. The interactive runner's
     // re-present fast path compares this against the last presented frame's
     // count: no new events + same viewport → the rebuilt tree could not differ.
-    var eventCount: Int = 0
+    var eventCount: Number = 0
     // Drag tracking: the press origin, whether a drag is in progress, and which
     // region owns it (so move/end keep targeting the press region even if the
     // pointer leaves it).
-    var pressX: Float = 0.0
-    var pressY: Float = 0.0
+    var pressX: Number = 0.0
+    var pressY: Number = 0.0
     var dragging: Bool = false
-    var dragKey: Int = 0
+    var dragKey: Number = 0
     // Active input-method composition (pinyin buffer + Hanzi candidates). Read by
     // the view builder to render the preedit/candidate bar; mutated by dispatch.
     var ime: ImeComposition = ImeComposition {}
@@ -69,8 +71,8 @@ public struct FoundationUiContext {
     // (0 none, 1 left, 2 right, 3 middle), a held-key bitmask (see
     // foundationKeyBit), and modifier keys. Only left presses drive widget
     // onPress; right/middle still deliver drags to gesture regions.
-    var pressButton: Int = 0
-    var keysMask: Int = 0
+    var pressButton: Number = 0
+    var keysMask: Number = 0
     var modShift: Bool = false
     var modAlt: Bool = false
 }
@@ -78,14 +80,14 @@ public struct FoundationUiContext {
 // Bit for a held key in keysMask -- the fly keys, by the character on them,
 // which is the code every backend reports a letter key as. Zero for keys we do
 // not track.
-public function foundationKeyBit(keyCode: Int) -> Int {
-    if keyCode == 87 { return 1 }   // W
-    if keyCode == 65 { return 2 }   // A
-    if keyCode == 83 { return 4 }   // S
-    if keyCode == 68 { return 8 }   // D
-    if keyCode == 81 { return 16 }  // Q
-    if keyCode == 69 { return 32 }  // E
-    if keyCode == 70 { return 64 }  // F
+public function foundationKeyBit(keyCode: Number) -> Number {
+    if keyCode == 87 { return 1 } // W
+    if keyCode == 65 { return 2 } // A
+    if keyCode == 83 { return 4 } // S
+    if keyCode == 68 { return 8 } // D
+    if keyCode == 81 { return 16 } // Q
+    if keyCode == 69 { return 32 } // E
+    if keyCode == 70 { return 64 } // F
     return 0
 }
 
@@ -105,7 +107,7 @@ public enum FoundationGradient {
 
 // The gradient axis a described surface fills along, as the compositor's layer
 // content spells it.
-public function foundationLayerGradientAxis(gradient: borrow FoundationGradient) -> Int {
+public function foundationLayerGradientAxis(gradient: borrow FoundationGradient) -> Number {
     match gradient {
         None -> return 0
         Down -> return 1
@@ -114,26 +116,10 @@ public function foundationLayerGradientAxis(gradient: borrow FoundationGradient)
     }
 }
 
-// Build an EMGraphics handle from the active frame so the backend can create
-// resources and submit batched draws on whichever backend the runtime selected.
-public function foundationFrameGraphics(frame: borrow RenderFrame) -> EMGraphics {
-    return EMGraphics {
-        userData: frame.userData,
-        backend: frame.backend,
-        backendContext: frame.backendContext
-    }
-}
-
 // Per-frame duration (seconds) for the live FPS readout, from whichever clock
 // the backend keeps it on.
-public function foundationFrameDuration(frame: borrow RenderFrame) -> Float {
+public function foundationFrameDuration(frame: borrow RenderFrame) -> Number {
     return frame.statistics().frameSeconds
-}
-
-// No-op default for a runner's `engineFrame` hook.
-public function foundationNoopEngineFrame(frame: borrow mut RenderFrame) {
-    let ignored = frame.backend
-    return
 }
 
 public function foundationNoContinuousRebuild() -> Bool { return false }

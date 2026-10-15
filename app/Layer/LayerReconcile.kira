@@ -16,207 +16,244 @@ import Foundation
 // weight a layer starts at.
 public struct CADescribedLook {
     var fill: CAColor = CAColor {}
-    var cornerRadius: Float = 0.0
-    var borderWidth: Float = 0.0
+    var cornerRadius: Number = 0.0
+    var borderWidth: Number = 0.0
     var borderColor: CAColor = CAColor {}
-    var textWeight: Float = 400.0
+    var textWeight: Number = 400.0
 }
 
-public function caDescribedLook(layer: borrow CALayerDescription) -> CADescribedLook {
-    var look = CADescribedLook {
-        fill: layer.backgroundColor,
-        cornerRadius: layer.cornerRadius,
-        borderWidth: layer.borderWidth,
-        borderColor: layer.borderColor
-    }
-    match layer.content {
-        Solid(s) -> {
-            look.fill = s.fill
-            look.cornerRadius = s.cornerRadius
-            look.borderWidth = s.borderWidth
-            look.borderColor = s.border
+extend CALayerDescription {
+    function describedLook() -> CADescribedLook {
+        var look = CADescribedLook {
+            fill: self.backgroundColor,
+            cornerRadius: self.cornerRadius,
+            borderWidth: self.borderWidth,
+            borderColor: self.borderColor
         }
-        Text(t) -> {
-            look.fill = t.color
-            look.textWeight = t.weight
+        match self.content {
+            Solid(s) -> {
+                look.fill = s.fill
+                look.cornerRadius = s.cornerRadius
+                look.borderWidth = s.borderWidth
+                look.borderColor = s.border
+            }
+            Text(t) -> {
+                look.fill = t.color
+                look.textWeight = t.weight
+            }
+            Icon(i) -> look.fill = i.tint
+            Glass(g) -> look.fill = g.tint
+            Gradient(r) -> look.fill = r.start
+            Texture(x) -> {}
+            Empty -> {}
         }
-        Icon(i) -> look.fill = i.tint
-        Glass(g) -> look.fill = g.tint
-        Gradient(r) -> look.fill = r.start
-        Texture(x) -> {}
-        Empty -> {}
+        return look
     }
-    return look
 }
 
-// `geometryImmediate` puts the layer where the layout says at once while every
-// other property animates as it would: what a live resize asks for.
-//
-// The node is found once and the transaction read once, and every value is
-// set where it stands: going through the tree's setters looked the node up
-// and copied the timing again for each of them.
-public function caApplyLayerDescription(tree: borrow mut CALayerTree, id: LayerId, layer: borrow CALayerDescription, geometryImmediate: Bool = false) {
-    tree.setContent(id, layer.content)
-    var i = 0
-    match tree.nodeSlot(id) {
-        None -> { return }
-        Some(slot) -> { i = slot.raw }
-    }
-    let look = caDescribedLook(layer)
-    let timing = tree.currentTiming()
-    let clock = tree.clock
-    var damaged = false
-    if geometryImmediate {
-        let placed = caImmediateTiming()
-        if caApplyTiming(tree.nodes[i].posX, placed, layer.position.x, clock) { damaged = true }
-        if caApplyTiming(tree.nodes[i].posY, placed, layer.position.y, clock) { damaged = true }
-        if caApplyTiming(tree.nodes[i].boundsW, placed, layer.size.width, clock) { damaged = true }
-        if caApplyTiming(tree.nodes[i].boundsH, placed, layer.size.height, clock) { damaged = true }
-    } else {
-        if caApplyTiming(tree.nodes[i].posX, timing, layer.position.x, clock) { damaged = true }
-        if caApplyTiming(tree.nodes[i].posY, timing, layer.position.y, clock) { damaged = true }
-        if caApplyTiming(tree.nodes[i].boundsW, timing, layer.size.width, clock) { damaged = true }
-        if caApplyTiming(tree.nodes[i].boundsH, timing, layer.size.height, clock) { damaged = true }
-    }
-    if caApplyTiming(tree.nodes[i].opacity, timing, layer.opacity, clock) { damaged = true }
-    if tree.nodes[i].groupOpacity != layer.allowsGroupOpacity {
-        tree.nodes[i].groupOpacity = layer.allowsGroupOpacity
-        damaged = true
-    }
-    if caApplyTiming(tree.nodes[i].scaleX, timing, layer.scaleX, clock) { damaged = true }
-    if caApplyTiming(tree.nodes[i].scaleY, timing, layer.scaleY, clock) { damaged = true }
-    if caApplyTiming(tree.nodes[i].rotation, timing, layer.rotation, clock) { damaged = true }
-    let was = tree.nodes[i].deformation
-    if was.x != layer.deformation.x || was.y != layer.deformation.y || was.scaleX != layer.deformation.scaleX || was.scaleY != layer.deformation.scaleY {
-        tree.nodes[i].deformation = copy layer.deformation
-        damaged = true
-    }
-    if tree.nodes[i].anchorX != layer.anchorPoint.x || tree.nodes[i].anchorY != layer.anchorPoint.y {
-        tree.nodes[i].anchorX = layer.anchorPoint.x
-        tree.nodes[i].anchorY = layer.anchorPoint.y
-        damaged = true
-    }
-    if caApplyTiming(tree.nodes[i].cornerRadius, timing, look.cornerRadius, clock) { damaged = true }
-    if caApplyTiming(tree.nodes[i].borderWidth, timing, look.borderWidth, clock) { damaged = true }
-    if caApplyTiming(tree.nodes[i].textWeight, timing, look.textWeight, clock) { damaged = true }
-    // The wash a hover or a press lays over the fill, and the fill under it,
-    // land as one color.
-    tree.nodes[i].hoverColor = layer.hoverColor
-    tree.nodes[i].pressColor = layer.pressColor
-    tree.nodes[i].restingFill = look.fill
-    let shown = caShownFill(tree.nodes[i], id == tree.hoveredId, id == tree.pressedId)
-    if caColorApplyTiming(tree.nodes[i].fillColor, timing, shown, clock) { damaged = true }
-    if caColorApplyTiming(tree.nodes[i].borderColor, timing, look.borderColor, clock) { damaged = true }
-    let shadowOpacity = layer.shadow.color.a > 0.0 ? 1.0 : 0.0
-    if caApplyTiming(tree.nodes[i].shadowRadius, timing, layer.shadow.radius, clock) { damaged = true }
-    if caApplyTiming(tree.nodes[i].shadowOpacity, timing, shadowOpacity, clock) { damaged = true }
-    if caApplyTiming(tree.nodes[i].shadowX, timing, layer.shadow.offset.x, clock) { damaged = true }
-    if caApplyTiming(tree.nodes[i].shadowY, timing, layer.shadow.offset.y, clock) { damaged = true }
-    if caColorApplyTiming(tree.nodes[i].shadowColor, timing, layer.shadow.color, clock) { damaged = true }
-    if tree.nodes[i].clip != layer.clipsChildren {
-        tree.nodes[i].clip = layer.clipsChildren
-        damaged = true
-    }
-    if tree.nodes[i].renderTarget != layer.renderTarget || tree.nodes[i].renderTargetId != RenderTargetId(0) {
-        tree.nodes[i].renderTarget = layer.renderTarget
-        tree.nodes[i].renderTargetId = RenderTargetId(0)
-        damaged = true
-    }
-    if tree.nodes[i].blur != layer.blur {
-        tree.nodes[i].blur = layer.blur
-        damaged = true
-    }
-    if tree.nodes[i].capturesBackdrop != layer.capturesBackdrop {
-        tree.nodes[i].capturesBackdrop = layer.capturesBackdrop
-        damaged = true
-    }
-    tree.nodes[i].hit = layer.hittable
-    tree.nodes[i].interactive = layer.interactive
-    tree.nodes[i].slidesPress = layer.slidesPress
-    tree.nodes[i].hitKey = layer.hitKey
-    tree.nodes[i].scrolls = layer.scrollAxis != .None
-    tree.nodes[i].removal = layer.removal
-    if damaged {
-        tree.nodes[i].damaged = true
-    }
-    tree.setLevel(id, layer.level)
-    return
-}
-
-// A layer new to the tree takes its first values where they are, as Core
-// Animation's does: there is nothing on screen for it to move from. Animating
-// them would grow every view that appears out of the top-leading corner, from
-// the zero size and position a fresh layer starts at.
-// An entrance moves it in from where that names instead.
-public function caReconcileLayer(tree: borrow mut CALayerTree, parent: LayerId, layer: borrow CALayerDescription, geometryImmediate: Bool = false) -> LayerId {
-    var id = tree.matchChild(parent, layer.key)
-    let appearing = id == caNoLayer()
-    if appearing {
-        id = tree.makeLayer(parent, layer.key, layer.content)
-    }
-    tree.reuse(id)
-    var timed = false
-    match layer.animation {
-        Inherit -> {}
-        Timed(timing) -> {
-            tree.beginTransaction(copy timing)
-            timed = true
+extend CALayerTree {
+    // `geometryImmediate` puts the layer where the layout says at once while every
+    // other property animates as it would: what a live resize asks for.
+    //
+    // The node is found once and the transaction read once, and every value is
+    // set where it stands: going through the tree's setters looked the node up
+    // and copied the timing again for each of them.
+    function applyLayerDescription(
+        borrow mut self,
+        id: LayerId,
+        layer: borrow CALayerDescription,
+        geometryImmediate: Bool = false
+    ) {
+        self.setContent(id, layer.content)
+        var i = 0
+        match self.nodeSlot(id) {
+            None -> { return }
+            Some(slot) -> { i = slot.raw }
         }
-    }
-    if appearing || layer.disablesActions {
-        let enters = appearing && layer.entrance.active && !layer.disablesActions
-        tree.beginTransaction(caImmediateTiming())
-        caApplyLayerDescription(tree, id, layer)
-        if enters {
-            tree.setPosition(id, layer.position.x + layer.entrance.offset.x, layer.position.y + layer.entrance.offset.y)
-            tree.setOpacity(id, layer.entrance.opacity)
+        let look = layer.describedLook()
+        let timing = self.currentTiming()
+        let clock = self.clock
+        var damaged = false
+        if geometryImmediate {
+            let placed = immediateTiming()
+            if self.nodes[i].posX.applyTiming(placed, layer.position.x, clock) { damaged = true }
+            if self.nodes[i].posY.applyTiming(placed, layer.position.y, clock) { damaged = true }
+            if self.nodes[i].boundsW.applyTiming(placed, layer.size.width, clock) { damaged = true }
+            if self.nodes[i].boundsH.applyTiming(placed, layer.size.height, clock) {
+                damaged = true
+            }
+        } else {
+            if self.nodes[i].posX.applyTiming(timing, layer.position.x, clock) { damaged = true }
+            if self.nodes[i].posY.applyTiming(timing, layer.position.y, clock) { damaged = true }
+            if self.nodes[i].boundsW.applyTiming(timing, layer.size.width, clock) { damaged = true }
+            if self.nodes[i].boundsH.applyTiming(timing, layer.size.height, clock) {
+                damaged = true
+            }
         }
-        tree.commitTransaction()
-        if enters {
-            tree.setPosition(id, layer.position.x, layer.position.y)
-            tree.setOpacity(id, layer.opacity)
+        if self.nodes[i].opacity.applyTiming(timing, layer.opacity, clock) { damaged = true }
+        if self.nodes[i].groupOpacity != layer.allowsGroupOpacity {
+            self.nodes[i].groupOpacity = layer.allowsGroupOpacity
+            damaged = true
         }
-    } else {
-        caApplyLayerDescription(tree, id, layer, geometryImmediate)
+        if self.nodes[i].scaleX.applyTiming(timing, layer.scaleX, clock) { damaged = true }
+        if self.nodes[i].scaleY.applyTiming(timing, layer.scaleY, clock) { damaged = true }
+        if self.nodes[i].rotation.applyTiming(timing, layer.rotation, clock) { damaged = true }
+        let was = self.nodes[i].deformation
+        if was.x != layer.deformation.x || was.y != layer.deformation.y || was.scaleX != layer.deformation.scaleX || was.scaleY != layer.deformation.scaleY {
+            self.nodes[i].deformation = copy layer.deformation
+            damaged = true
+        }
+        if self.nodes[i].anchorX != layer.anchorPoint.x || self.nodes[i].anchorY != layer.anchorPoint.y {
+            self.nodes[i].anchorX = layer.anchorPoint.x
+            self.nodes[i].anchorY = layer.anchorPoint.y
+            damaged = true
+        }
+        if self.nodes[i].driveCornerRadius(timing, look.cornerRadius, clock) {
+            damaged = true
+        }
+        if self.nodes[i].borderWidth.applyTiming(timing, look.borderWidth, clock) { damaged = true }
+        if self.nodes[i].textWeight.applyTiming(timing, look.textWeight, clock) { damaged = true }
+        // The wash a hover or a press lays over the fill, and the fill under it,
+        // land as one color.
+        self.nodes[i].hoverColor = layer.hoverColor
+        self.nodes[i].pressColor = layer.pressColor
+        self.nodes[i].restingFill = look.fill
+        let shown = self.nodes[i].shownFill(id == self.hoveredId, id == self.pressedId)
+        if self.nodes[i].fillColor.applyTiming(timing, shown, clock) { damaged = true }
+        if self.nodes[i].borderColor.applyTiming(timing, look.borderColor, clock) { damaged = true }
+        let shadowOpacity = layer.shadow.color.a > 0.0 ? 1.0 : 0.0
+        if self.nodes[i].shadowRadius.applyTiming(timing, layer.shadow.radius, clock) {
+            damaged = true
+        }
+        if self.nodes[i].shadowOpacity.applyTiming(timing, shadowOpacity, clock) { damaged = true }
+        if self.nodes[i].shadowX.applyTiming(timing, layer.shadow.offset.x, clock) {
+            damaged = true
+        }
+        if self.nodes[i].shadowY.applyTiming(timing, layer.shadow.offset.y, clock) {
+            damaged = true
+        }
+        if self.nodes[i].shadowColor.applyTiming(timing, layer.shadow.color, clock) {
+            damaged = true
+        }
+        if self.nodes[i].clip != layer.clipsChildren {
+            self.nodes[i].clip = layer.clipsChildren
+            damaged = true
+        }
+        if self.nodes[i].renderTarget != layer.renderTarget || self.nodes[i].renderTargetId != RenderTargetId(
+            0
+        ) {
+            self.nodes[i].renderTarget = layer.renderTarget
+            self.nodes[i].renderTargetId = RenderTargetId(0)
+            damaged = true
+        }
+        if self.nodes[i].blur.applyTiming(timing, layer.blur, clock) { damaged = true }
+        if self.nodes[i].capturesBackdrop != layer.capturesBackdrop {
+            self.nodes[i].capturesBackdrop = layer.capturesBackdrop
+            damaged = true
+        }
+        self.nodes[i].hit = layer.hittable
+        self.nodes[i].interactive = layer.interactive
+        self.nodes[i].slidesPress = layer.slidesPress
+        self.nodes[i].hitKey = layer.hitKey
+        self.nodes[i].scrolls = layer.scrollAxis != .None
+        self.nodes[i].removal = layer.removal
+        if damaged {
+            self.nodes[i].damaged = true
+        }
+        self.setLevel(id, layer.level)
     }
-    var children: [LayerId] = []
-    for child in layer.sublayers {
-        children.append(caReconcileLayer(tree, id, child, geometryImmediate))
-    }
-    tree.setChildren(id, move children)
-    if timed {
-        tree.commitTransaction()
-    }
-    return id
-}
 
-public function caReconcile(tree: borrow mut CALayerTree, root: borrow CALayerDescription, geometryImmediate: Bool = false) -> LayerId {
-    tree.beginReconcile()
-    var rootId = tree.rootId
-    if rootId == caNoLayer() {
-        rootId = tree.makeLayer(caNoLayer(), root.key, root.content)
+    // A layer new to the tree takes its first values where they are, as Core
+    // Animation's does: there is nothing on screen for it to move from. Animating
+    // them would grow every view that appears out of the top-leading corner, from
+    // the zero size and position a fresh layer starts at.
+    // An entrance moves it in from where that names instead.
+    function reconcileLayer(
+        borrow mut self,
+        parent: LayerId,
+        layer: borrow CALayerDescription,
+        geometryImmediate: Bool = false
+    ) -> LayerId {
+        var id = self.matchChild(parent, layer.key)
+        let appearing = id == Layers.none
+        if appearing {
+            id = self.makeLayer(parent, layer.key, layer.content)
+        }
+        self.reuse(id)
+        var timed = false
+        match layer.animation {
+            Inherit -> {}
+            Timed(timing) -> {
+                self.beginTransaction(copy timing)
+                timed = true
+            }
+        }
+        if appearing || layer.disablesActions {
+            let enters = appearing && layer.entrance.active && !layer.disablesActions
+            self.beginTransaction(immediateTiming())
+            self.applyLayerDescription(id, layer)
+            if enters {
+                let entrance = layer.entrance
+                self.setPosition(
+                    id,
+                    layer.position.x + entrance.offset.x + entrance.offsetFraction.x * layer.size.width,
+                    layer.position.y + entrance.offset.y + entrance.offsetFraction.y * layer.size.height
+                )
+                self.setOpacity(id, entrance.opacity)
+                self.setScale(id, layer.scaleX * entrance.scale, layer.scaleY * entrance.scale)
+            }
+            self.commitTransaction()
+            if enters {
+                self.setPosition(id, layer.position.x, layer.position.y)
+                self.setOpacity(id, layer.opacity)
+                self.setScale(id, layer.scaleX, layer.scaleY)
+            }
+        } else {
+            self.applyLayerDescription(id, layer, geometryImmediate)
+        }
+        var children: [LayerId] = []
+        for child in layer.sublayers {
+            children.append(self.reconcileLayer(id, child, geometryImmediate))
+        }
+        self.setChildren(id, move children)
+        if timed {
+            self.commitTransaction()
+        }
+        return id
     }
-    tree.reuse(rootId)
-    caApplyLayerDescription(tree, rootId, root, geometryImmediate)
-    var children: [LayerId] = []
-    for child in root.sublayers {
-        children.append(caReconcileLayer(tree, rootId, child, geometryImmediate))
+
+    function reconcile(
+        borrow mut self,
+        root: borrow CALayerDescription,
+        geometryImmediate: Bool = false
+    ) -> LayerId {
+        self.beginReconcile()
+        var rootId = self.rootId
+        if rootId == Layers.none {
+            rootId = self.makeLayer(Layers.none, root.key, root.content)
+        }
+        self.reuse(rootId)
+        self.applyLayerDescription(rootId, root, geometryImmediate)
+        var children: [LayerId] = []
+        for child in root.sublayers {
+            children.append(self.reconcileLayer(rootId, child, geometryImmediate))
+        }
+        self.setChildren(rootId, move children)
+        self.endReconcile()
+        return rootId
     }
-    tree.setChildren(rootId, move children)
-    tree.endReconcile()
-    return rootId
-}
 
-// A window being resized: every layer takes the new layout's frame at once, as
-// UIKit's content follows a live resize, while a fade, a color or a press that
-// was already running carries on rather than jumping to its end.
-public function caReconcileResizing(tree: borrow mut CALayerTree, root: borrow CALayerDescription) -> LayerId {
-    return caReconcile(tree, root, true)
-}
+    // A window being resized: every layer takes the new layout's frame at once, as
+    // UIKit's content follows a live resize, while a fade, a color or a press that
+    // was already running carries on rather than jumping to its end.
+    function reconcileResizing(borrow mut self, root: borrow CALayerDescription) -> LayerId {
+        return self.reconcile(root, true)
+    }
 
-public function caReconcileImmediate(tree: borrow mut CALayerTree, root: borrow CALayerDescription) -> LayerId {
-    tree.beginTransaction(caImmediateTiming())
-    let rootId = caReconcile(tree, root)
-    tree.commitTransaction()
-    return rootId
+    function reconcileImmediate(borrow mut self, root: borrow CALayerDescription) -> LayerId {
+        self.beginTransaction(immediateTiming())
+        let rootId = self.reconcile(root)
+        self.commitTransaction()
+        return rootId
+    }
 }

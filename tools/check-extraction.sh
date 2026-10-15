@@ -44,8 +44,8 @@ for file in Paint.kira Materials.kira Text.kira TextInputHelpers.kira TextureVie
 done
 
 test -f "$root/NativeLibs/Text/kira_text.c" || fail "missing text native seam"
-test -f "$root/NativeLibs/Icon/kira_icon.c" || fail "missing icon native seam"
-test -f "$root/NativeLibs/StateStore/kira_state_store.c" || fail "missing state store shim"
+test -f "$root/app/Content/Symbol/SymbolRaster.kira" || fail "missing symbol rasterizer"
+test -f "$root/app/Runtime/FoundationState.kira" || fail "missing state store"
 test -f "$root/Shaders/UiBatch.ksl" || fail "missing batch shader source"
 test -f "$root/generated/shaders/UiBatch.frag.glsl" || fail "missing generated shader artifact"
 

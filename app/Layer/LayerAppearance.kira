@@ -4,111 +4,158 @@ import Foundation
 // file stays under the size ceiling. One node's geometry, opacity, transform and
 // appearance channels are all sampled at the frame's absolute clock here.
 
-// A fresh layer's appearance channels take their initial values from its
-// content, so a `.Solid` built with a fill and a radius draws with them and a
-// later `setFillColor`/`setCornerRadius` animates from there.
-public function caInitAppearanceFromContent(node: borrow mut CALayerNode) {
-    match node.content {
-        Empty -> {
-            return
+extend CALayerNode {
+    // A fresh layer's appearance channels take their initial values from its
+    // content, so a `.Solid` built with a fill and a radius draws with them and a
+    // later `setFillColor`/`setCornerRadius` animates from there.
+    function initAppearanceFromContent(borrow mut self) {
+        match self.content {
+            Empty -> {
+                return
+            }
+            Solid(s) -> {
+                self.fillColor = s.fill.channel()
+                self.borderColor = s.border.channel()
+                self.cornerRadius = channel(s.cornerRadius)
+                self.borderWidth = channel(s.borderWidth)
+                return
+            }
+            Text(t) -> {
+                self.fillColor = t.color.channel()
+                self.textWeight = channel(t.weight)
+                return
+            }
+            Texture(x) -> {
+                return
+            }
+            Icon(i) -> {
+                self.fillColor = i.tint.channel()
+                return
+            }
+            Glass(g) -> {
+                self.fillColor = g.tint.channel()
+                return
+            }
+            Gradient(r) -> {
+                self.fillColor = r.start.channel()
+                return
+            }
         }
-        Solid(s) -> {
-            node.fillColor = caColorChannel(s.fill)
-            node.borderColor = caColorChannel(s.border)
-            node.cornerRadius = caChannel(s.cornerRadius)
-            node.borderWidth = caChannel(s.borderWidth)
-            return
+    }
+
+    function sample(borrow mut self, now: Number) -> Bool {
+        var moving = false
+        if self.posX.sampleAt(now) {
+            moving = true
         }
-        Text(t) -> {
-            node.fillColor = caColorChannel(t.color)
-            node.textWeight = caChannel(t.weight)
-            return
+        if self.posY.sampleAt(now) {
+            moving = true
         }
-        Texture(x) -> {
-            return
+        if self.boundsW.sampleAt(now) {
+            moving = true
         }
-        Icon(i) -> {
-            node.fillColor = caColorChannel(i.tint)
-            return
+        if self.boundsH.sampleAt(now) {
+            moving = true
         }
-        Glass(g) -> {
-            node.fillColor = caColorChannel(g.tint)
-            return
+        if self.opacity.sampleAt(now) {
+            moving = true
         }
-        Gradient(r) -> {
-            node.fillColor = caColorChannel(r.start)
-            return
+        if self.scaleX.sampleAt(now) {
+            moving = true
         }
+        if self.scaleY.sampleAt(now) {
+            moving = true
+        }
+        if self.rotation.sampleAt(now) {
+            moving = true
+        }
+        if self.cornerRadius.sampleAt(now) {
+            moving = true
+        }
+        if self.borderWidth.sampleAt(now) {
+            moving = true
+        }
+        if self.textWeight.sampleAt(now) {
+            moving = true
+        }
+        if self.shadowRadius.sampleAt(now) {
+            moving = true
+        }
+        if self.blur.sampleAt(now) {
+            moving = true
+        }
+        if self.shadowOpacity.sampleAt(now) {
+            moving = true
+        }
+        if self.shadowX.sampleAt(now) {
+            moving = true
+        }
+        if self.shadowY.sampleAt(now) {
+            moving = true
+        }
+        if self.fillColor.sampleAt(now) {
+            moving = true
+        }
+        if self.platterX.sampleAt(now) {
+            moving = true
+        }
+        if self.platterY.sampleAt(now) {
+            moving = true
+        }
+        if self.platterW.sampleAt(now) {
+            moving = true
+        }
+        if self.platterH.sampleAt(now) {
+            moving = true
+        }
+        if self.borderColor.sampleAt(now) {
+            moving = true
+        }
+        if self.shadowColor.sampleAt(now) {
+            moving = true
+        }
+        return moving
     }
 }
 
-public function caSampleNode(node: borrow mut CALayerNode, now: Float) -> Bool {
-    var moving = false
-    if caChannelSampleAt(node.posX, now) {
-        moving = true
+// A radius past this is a capsule's "as round as the box allows", never a
+// length a spring should travel: the curve would run through numbers no
+// layer is that large.
+namespace CornerLimits {
+    let springable: Number = 1000000
+}
+
+extend CALayerNode {
+    // Drives the corner radius toward `radius` under `timing`. A corner never
+    // reaches past half the layer's shorter side, so the target is fitted to
+    // the box first: a capsule's unbounded radius becomes the radius it draws
+    // with, and a capsule that turns into a rounded rectangle travels a real
+    // curve between the two. A radius still beyond any length, on a layer with
+    // no size yet, lands at once.
+    function driveCornerRadius(
+        borrow mut self,
+        timing: borrow CATiming,
+        radius: Number,
+        now: Number
+    ) -> Bool {
+        let limit = min(self.boundsW.model, self.boundsH.model) / 2
+        var target = radius
+        var changed = false
+        if limit > 0 {
+            target = min(radius, limit)
+            if self.cornerRadius.presentation > limit && !self.cornerRadius.animating {
+                changed = self.cornerRadius.presentation != limit
+                self.cornerRadius.setImmediate(limit)
+            }
+        }
+        let far = self.cornerRadius.presentation > CornerLimits.springable
+        if target > CornerLimits.springable || far {
+            let moved = self.cornerRadius.model != target
+                || self.cornerRadius.presentation != target
+                || self.cornerRadius.animating
+            self.cornerRadius.setImmediate(target)
+            return changed || moved
+        }
+        return self.cornerRadius.applyTiming(timing, target, now) || changed
     }
-    if caChannelSampleAt(node.posY, now) {
-        moving = true
-    }
-    if caChannelSampleAt(node.boundsW, now) {
-        moving = true
-    }
-    if caChannelSampleAt(node.boundsH, now) {
-        moving = true
-    }
-    if caChannelSampleAt(node.opacity, now) {
-        moving = true
-    }
-    if caChannelSampleAt(node.scaleX, now) {
-        moving = true
-    }
-    if caChannelSampleAt(node.scaleY, now) {
-        moving = true
-    }
-    if caChannelSampleAt(node.rotation, now) {
-        moving = true
-    }
-    if caChannelSampleAt(node.cornerRadius, now) {
-        moving = true
-    }
-    if caChannelSampleAt(node.borderWidth, now) {
-        moving = true
-    }
-    if caChannelSampleAt(node.textWeight, now) {
-        moving = true
-    }
-    if caChannelSampleAt(node.shadowRadius, now) {
-        moving = true
-    }
-    if caChannelSampleAt(node.shadowOpacity, now) {
-        moving = true
-    }
-    if caChannelSampleAt(node.shadowX, now) {
-        moving = true
-    }
-    if caChannelSampleAt(node.shadowY, now) {
-        moving = true
-    }
-    if caColorChannelSampleAt(node.fillColor, now) {
-        moving = true
-    }
-    if caChannelSampleAt(node.platterX, now) {
-        moving = true
-    }
-    if caChannelSampleAt(node.platterY, now) {
-        moving = true
-    }
-    if caChannelSampleAt(node.platterW, now) {
-        moving = true
-    }
-    if caChannelSampleAt(node.platterH, now) {
-        moving = true
-    }
-    if caColorChannelSampleAt(node.borderColor, now) {
-        moving = true
-    }
-    if caColorChannelSampleAt(node.shadowColor, now) {
-        moving = true
-    }
-    return moving
 }

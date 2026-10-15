@@ -1,0 +1,415 @@
+import Foundation
+
+// A TrueType font read straight from its bytes: the table directory, the
+// metrics every size is scaled from, the character map and where each glyph's
+// outline is. Every number in the file is big-endian, and offsets into it are
+// `Int`, because this is the one layer that reads the file's own layout.
+//
+// Only TrueType outlines are read. A CFF font ('OTTO') is refused, and the
+// engine sets text in its bundled face instead.
+
+enum FontFailure {
+    // The file is not there, or could not be read.
+    Unreadable(String)
+    // The file is shorter than a table it names.
+    Truncated
+    // Not a TrueType font or collection.
+    NotTrueType
+    // A collection with no face at the index asked for.
+    NoSuchFace(Number)
+    // A table every TrueType face has is missing.
+    MissingTable(String)
+    // No Unicode character map the engine reads.
+    NoCharacterMap
+}
+
+distinct GlyphId = Int
+
+// The four-byte tags of the tables read, and the file signatures.
+namespace FontTag {
+    let collection: Int = 0x74746366
+    let trueType: Int = 0x00010000
+    let apple: Int = 0x74727565
+    let head: Int = 0x68656164
+    let hhea: Int = 0x68686561
+    let hmtx: Int = 0x686D7478
+    let maxp: Int = 0x6D617870
+    let cmap: Int = 0x636D6170
+    let loca: Int = 0x6C6F6361
+    let glyf: Int = 0x676C7966
+    let os2: Int = 0x4F532F32
+    let fvar: Int = 0x66766172
+    let avar: Int = 0x61766172
+    let gvar: Int = 0x67766172
+}
+
+// Byte positions inside the tables, from the OpenType specification.
+namespace FontLayout {
+    let tableCount: Int = 4
+    let tableRecords: Int = 12
+    let tableRecordSize: Int = 16
+    let collectionFaces: Int = 8
+    let collectionOffsets: Int = 12
+    let headFlags: Int = 16
+    let headUnitsPerEm: Int = 18
+    let headLocaFormat: Int = 50
+    let hheaAscender: Int = 4
+    let hheaDescender: Int = 6
+    let hheaLineGap: Int = 8
+    let hheaMetricCount: Int = 34
+    let maxpGlyphCount: Int = 4
+    let os2TypoAscender: Int = 68
+    let os2TypoDescender: Int = 70
+    let os2TypoLineGap: Int = 72
+    let longMetricSize: Int = 4
+}
+
+// Bit 3 of `head.flags`: the font is drawn at whole pixels per em only, and
+// a fractional size is rounded before it is scaled.
+namespace HeadFlags {
+    let integerPpem: Int = 8
+}
+
+// How `loca` spells a glyph's offset: half the offset in 16 bits, or all of
+// it in 32.
+enum LocaFormat {
+    Short
+    Long
+}
+
+// The Unicode character map read, by its format.
+enum CharacterMap {
+    // Format 4: segments of the Basic Multilingual Plane.
+    Segments(Int)
+    // Format 12: groups over every plane.
+    Groups(Int)
+}
+
+// Where each table the engine reads starts, and how long it is.
+struct FontTable {
+    let offset: Int
+    let length: Int
+}
+
+struct FontFile {
+    let data: FontBytes
+    let unitsPerEm: Float
+    let glyphCount: Int
+    let longMetrics: Int
+    let locaFormat: LocaFormat
+    let integerPpem: Bool
+    let ascender: Float
+    let descender: Float
+    let lineGap: Float
+    let hmtx: FontTable
+    let loca: FontTable
+    let glyf: FontTable
+    let characterMap: CharacterMap
+    let variations: FontVariations
+    let layout: OpenTypeLayout
+
+    // The glyph a Unicode scalar is drawn with; `.notdef`, glyph 0, where the
+    // font has none, which draws the font's own missing-glyph box.
+    function glyph(codepoint: Int) -> GlyphId {
+        let found = match characterMap {
+            Segments(table) -> segmentGlyph(table, codepoint)
+            Groups(table) -> groupGlyph(table, codepoint)
+        }
+        return GlyphId(found < glyphCount ? found : 0)
+    }
+
+    function segmentGlyph(borrow self, table: Int, codepoint: Int) -> Int {
+        if codepoint > 0xFFFF { return 0 }
+        let segments = data.u16(table + 6) / 2
+        let ends = table + 14
+        let starts = ends + segments * 2 + 2
+        let deltas = starts + segments * 2
+        let ranges = deltas + segments * 2
+        var low: Int = 0
+        var high = segments
+        while low < high {
+            let middle = (low + high) / 2
+            if data.u16(ends + middle * 2) < codepoint { low = middle + 1 } else { high = middle }
+        }
+        if low >= segments { return 0 }
+        let start = data.u16(starts + low * 2)
+        if codepoint < start { return 0 }
+        let delta = data.u16(deltas + low * 2)
+        let range = data.u16(ranges + low * 2)
+        if range == 0 { return (codepoint + delta) & 0xFFFF }
+        let at = ranges + low * 2 + range + (codepoint - start) * 2
+        if at + 2 > data.bytes.count { return 0 }
+        let glyph = data.u16(at)
+        return glyph == 0 ? 0 : (glyph + delta) & 0xFFFF
+    }
+
+    function groupGlyph(borrow self, table: Int, codepoint: Int) -> Int {
+        let groups = data.u32(table + 12)
+        let first = table + 16
+        var low: Int = 0
+        var high = groups
+        while low < high {
+            let middle = (low + high) / 2
+            let group = first + middle * 12
+            if data.u32(group + 4) < codepoint {
+                low = middle + 1
+            } else if data.u32(group) > codepoint {
+                high = middle
+            } else {
+                return data.u32(group + 8) + codepoint - data.u32(group)
+            }
+        }
+        return 0
+    }
+
+    // The advance and left side bearing `hmtx` gives a glyph, in font units.
+    function horizontalMetrics(borrow self, glyph: GlyphId) -> (Float, Float) {
+        let index = glyph.raw
+        let size = FontLayout.longMetricSize
+        if index < longMetrics {
+            let at = hmtx.offset + index * size
+            return (Float(data.u16(at)), Float(data.i16(at + 2)))
+        }
+        let advance = data.u16(hmtx.offset + (longMetrics - 1) * size)
+        let bearing = hmtx.offset + longMetrics * size + (index - longMetrics) * 2
+        if bearing + 2 > hmtx.offset + hmtx.length { return (Float(advance), 0.0) }
+        return (Float(advance), Float(data.i16(bearing)))
+    }
+
+    // Where a glyph's outline is in `glyf`, or nothing for a glyph with no
+    // outline, as a space has none.
+    function outlineRange(borrow self, glyph: GlyphId) -> (Int, Int)? {
+        let index = glyph.raw
+        if index < 0 || index >= glyphCount { return .None }
+        let (start, end) = match locaFormat {
+            Short -> (
+                data.u16(loca.offset + index * 2) * 2,
+                data.u16(loca.offset + index * 2 + 2) * 2
+            )
+            Long -> (data.u32(loca.offset + index * 4), data.u32(loca.offset + index * 4 + 4))
+        }
+        if end <= start || end > glyf.length { return .None }
+        return .Some((glyf.offset + start, glyf.offset + end))
+    }
+}
+
+namespace FontFixed {
+    let f2dot14: Float = 16384
+    let f16dot16: Float = 65536
+}
+
+// The face at `index` in a font file or collection.
+function fontFile(bytes: [U8], index: Number) -> Result<FontFile, FontFailure> {
+    let reader = FontBytes { bytes: move bytes }
+    if reader.bytes.count < FontLayout.tableRecords { return .Error(.Truncated) }
+    var directory: Int = 0
+    if reader.u32(0) == FontTag.collection {
+        if index < 0 || index >= reader.u32(FontLayout.collectionFaces) {
+            return .Error(.NoSuchFace(index))
+        }
+        directory = reader.u32(FontLayout.collectionOffsets + Int(index) * 4)
+    }
+    let signature = reader.u32(directory)
+    if signature != FontTag.trueType && signature != FontTag.apple {
+        return .Error(.NotTrueType)
+    }
+    let tables = match reader.tables(directory) {
+        Ok(tables) -> tables
+        Error(failure) -> return .Error(failure)
+    }
+    return faceFromTables(move reader, tables)
+}
+
+function faceFromTables(
+    reader: FontBytes,
+    tables: borrow [(Int, FontTable)]
+) -> Result<FontFile, FontFailure> {
+    let head = try requiredTable(tables, FontTag.head) otherwise return .Error(
+        .MissingTable("head")
+    )
+    let hhea = try requiredTable(tables, FontTag.hhea) otherwise return .Error(
+        .MissingTable("hhea")
+    )
+    let hmtx = try requiredTable(tables, FontTag.hmtx) otherwise return .Error(
+        .MissingTable("hmtx")
+    )
+    let maxp = try requiredTable(tables, FontTag.maxp) otherwise return .Error(
+        .MissingTable("maxp")
+    )
+    let loca = try requiredTable(tables, FontTag.loca) otherwise return .Error(
+        .MissingTable("loca")
+    )
+    let glyf = try requiredTable(tables, FontTag.glyf) otherwise return .Error(
+        .MissingTable("glyf")
+    )
+    let cmap = try requiredTable(tables, FontTag.cmap) otherwise return .Error(
+        .MissingTable("cmap")
+    )
+    let characterMap = match reader.characterMap(cmap.offset) {
+        Some(map) -> map
+        None -> return .Error(.NoCharacterMap)
+    }
+    let (ascender, descender, lineGap) = reader.lineMetrics(
+        hhea.offset,
+        tableNamed(tables, FontTag.os2)
+    )
+    let variations = reader.variations(
+        tableNamed(tables, FontTag.fvar),
+        tableNamed(tables, FontTag.avar),
+        tableNamed(tables, FontTag.gvar)
+    )
+    let layout = reader.openTypeLayout(
+        tableNamed(tables, LayoutTag.gsub),
+        tableNamed(tables, LayoutTag.gpos),
+        tableNamed(tables, LayoutTag.gdef)
+    )
+    let unitsPerEm = Float(reader.u16(head.offset + FontLayout.headUnitsPerEm))
+    let glyphCount = reader.u16(maxp.offset + FontLayout.maxpGlyphCount)
+    let longMetrics = max(reader.u16(hhea.offset + FontLayout.hheaMetricCount), 1)
+    let locaFormat: LocaFormat = reader.i16(
+        head.offset + FontLayout.headLocaFormat
+    ) == 0 ? .Short : .Long
+    let integerPpem = (reader.u16(head.offset + FontLayout.headFlags) & HeadFlags.integerPpem) != 0
+    return .Ok(
+        FontFile {
+            data: move reader,
+            unitsPerEm: unitsPerEm,
+            glyphCount: glyphCount,
+            longMetrics: longMetrics,
+            locaFormat: locaFormat,
+            integerPpem: integerPpem,
+            ascender: ascender,
+            descender: descender,
+            lineGap: lineGap,
+            hmtx: hmtx,
+            loca: loca,
+            glyf: glyf,
+            characterMap: characterMap,
+            variations: variations,
+            layout: layout
+        }
+    )
+}
+
+enum TableFailure {
+    Missing
+}
+
+function requiredTable(
+    tables: borrow [(Int, FontTable)],
+    tag: Int
+) -> Result<FontTable, TableFailure> {
+    return match tableNamed(tables, tag) {
+        Some(table) -> .Ok(table)
+        None -> .Error(.Missing)
+    }
+}
+
+function tableNamed(tables: borrow [(Int, FontTable)], tag: Int) -> FontTable? {
+    for (named, table) in tables {
+        if named == tag { return .Some(table) }
+    }
+    return .None
+}
+
+// A font's bytes, read as the file spells its numbers: big-endian.
+struct FontBytes {
+    let bytes: [U8]
+
+    function u8(borrow self, at: Int) -> Int {
+        return Int(bytes[at])
+    }
+
+    function i8(borrow self, at: Int) -> Int {
+        let value = u8(at)
+        return value >= 0x80 ? value - 0x100 : value
+    }
+
+    // A 2.14 fixed-point number.
+    function f2dot14(borrow self, at: Int) -> Float {
+        return Float(i16(at)) / FontFixed.f2dot14
+    }
+
+    // A 16.16 fixed-point number.
+    function fixed(borrow self, at: Int) -> Float {
+        let raw = u32(at)
+        let signed = raw >= 0x80000000 ? raw - 0x100000000 : raw
+        return Float(signed) / FontFixed.f16dot16
+    }
+
+    function u16(borrow self, at: Int) -> Int {
+        return (Int(bytes[at]) << 8) | Int(bytes[at + 1])
+    }
+
+    function i16(borrow self, at: Int) -> Int {
+        let value = u16(at)
+        return value >= 0x8000 ? value - 0x10000 : value
+    }
+
+    function u32(borrow self, at: Int) -> Int {
+        return (u16(at) << 16) | u16(at + 2)
+    }
+
+    // The table directory at `directory`: each table's tag and extent, every
+    // one checked to lie inside the file.
+    function tables(borrow self, directory: Int) -> Result < [(Int, FontTable)], FontFailure > {
+        if directory + FontLayout.tableRecords > bytes.count { return .Error(.Truncated) }
+        let count = u16(directory + FontLayout.tableCount)
+        let records = directory + FontLayout.tableRecords
+        if records + count * FontLayout.tableRecordSize > bytes.count { return .Error(.Truncated) }
+        var tables: [(Int, FontTable)] = []
+        for index in 0..count {
+            let record = records + index * FontLayout.tableRecordSize
+            let table = FontTable { offset: u32(record + 8), length: u32(record + 12) }
+            if table.offset + table.length > bytes.count { return .Error(.Truncated) }
+            tables.append((u32(record), table))
+        }
+        return .Ok(tables)
+    }
+
+    // The character map the engine reads: a full-repertoire format 12 table
+    // first, then a format 4 one, each only under a Unicode encoding.
+    function characterMap(borrow self, cmap: Int) -> CharacterMap? {
+        var segments: CharacterMap? = .None
+        for index in 0..u16(cmap + 2) {
+            let record = cmap + 4 + index * 8
+            if !unicodeEncoding(u16(record), u16(record + 2)) { continue }
+            let table = cmap + u32(record + 4)
+            match u16(table) {
+                12 -> return .Some(.Groups(table))
+                4 -> segments = .Some(.Segments(table))
+                // Other formats map other repertoires, or none the engine reads.
+                else -> {}
+            }
+        }
+        return segments
+    }
+
+    // A face's line metrics in font units: `hhea`'s, and the OS/2 typographic
+    // ones where `hhea` leaves both ends at zero, as FreeType reads them.
+    function lineMetrics(borrow self, hhea: Int, os2: FontTable?) -> (Float, Float, Float) {
+        let ascender = i16(hhea + FontLayout.hheaAscender)
+        let descender = i16(hhea + FontLayout.hheaDescender)
+        if ascender != 0 || descender != 0 {
+            return (Float(ascender), Float(descender), Float(i16(hhea + FontLayout.hheaLineGap)))
+        }
+        return match os2 {
+            Some(table) -> (
+                Float(i16(table.offset + FontLayout.os2TypoAscender)),
+                Float(i16(table.offset + FontLayout.os2TypoDescender)),
+                Float(i16(table.offset + FontLayout.os2TypoLineGap))
+            )
+            None -> (0.0, 0.0, 0.0)
+        }
+    }
+}
+
+// Unicode platform 0, any encoding; or Windows platform 3 with its BMP (1)
+// or full (10) Unicode encoding.
+function unicodeEncoding(platform: Int, encoding: Int) -> Bool {
+    return match platform {
+        0 -> true
+        3 -> encoding == 1 || encoding == 10
+        else -> false
+    }
+}

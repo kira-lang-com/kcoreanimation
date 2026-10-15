@@ -1,0 +1,426 @@
+import Foundation
+
+// A glyph's outline out of `glyf`, at a place in the font's design space: its
+// quadratic contours in font units, its advance, and the origin the outline
+// is drawn from. A composite glyph is its components placed and transformed
+// into one outline.
+
+struct OutlinePoint {
+    var x: Float
+    var y: Float
+    let onCurve: Bool
+}
+
+// A simple glyph's points and the index of each contour's last point.
+struct GlyphPoints {
+    var points: [OutlinePoint] = []
+    var ends: [Int] = []
+}
+
+struct GlyphOutline {
+    var shape: GlyphPoints = GlyphPoints {}
+    // Where the pen stands, in the outline's own x: `xMin` less the left
+    // side bearing, moved as the instance moves the first phantom point.
+    var origin: Float = 0.0
+    var advance: Float = 0.0
+}
+
+// The bits of a simple glyph's point flags and of a component's flags.
+namespace OutlineFlags {
+    let onCurve: Int = 0x01
+    let shortX: Int = 0x02
+    let shortY: Int = 0x04
+    let repeats: Int = 0x08
+    let sameOrPositiveX: Int = 0x10
+    let sameOrPositiveY: Int = 0x20
+    let wordArguments: Int = 0x0001
+    let offsetArguments: Int = 0x0002
+    let scale: Int = 0x0008
+    let moreComponents: Int = 0x0020
+    let axisScales: Int = 0x0040
+    let twoByTwo: Int = 0x0080
+}
+
+namespace OutlineLayout {
+    let header: Int = 10
+    let xMin: Int = 2
+    // Components nest no deeper than this; a font that nests further is
+    // cyclic or broken.
+    let componentDepth: Int = 8
+    // The four points `gvar` adds after a glyph's own: the origin, the
+    // advance, and the two vertical ones.
+    let phantomPoints: Int = 4
+}
+
+// One component of a composite glyph: the glyph it draws and the affine
+// transform that places it.
+struct GlyphComponent {
+    let glyph: GlyphId
+    let placed: Bool
+    var dx: Float
+    var dy: Float
+    let xx: Float
+    let xy: Float
+    let yx: Float
+    let yy: Float
+}
+
+extend FontFile {
+    // `glyph`'s outline at `coordinates`, shifted so the pen origin is x 0.
+    function glyphOutline(glyph: GlyphId, coordinates: borrow [Float]) -> GlyphOutline {
+        var outline = rawOutline(glyph, coordinates, 0)
+        if outline.origin != 0.0 {
+            for index in 0..outline.shape.points.count {
+                outline.shape.points[index].x -= outline.origin
+            }
+        }
+        return outline
+    }
+
+    // `glyph`'s advance at `coordinates`, in font units, without loading
+    // its outline where the font does not vary.
+    function glyphAdvance(glyph: GlyphId, coordinates: borrow [Float]) -> Float {
+        let (advance, _) = horizontalMetrics(glyph)
+        if !variations.glyphs.isSome() || isDefault(coordinates) { return advance }
+        let count = match outlineRange(glyph) {
+            Some(range) -> ownPointCount(range)
+            None -> 0
+        }
+        let deltas = glyphDeltas(
+            glyph,
+            count + OutlineLayout.phantomPoints,
+            coordinates,
+            GlyphPoints {}
+        )
+        return advance + deltas[count + 1].x - deltas[count].x
+    }
+
+    function rawOutline(glyph: GlyphId, coordinates: borrow [Float], depth: Int) -> GlyphOutline {
+        let (advance, bearing) = horizontalMetrics(glyph)
+        let (start, _) = match outlineRange(glyph) {
+            Some(range) -> range
+            None -> return phantomOutline(glyph, GlyphPoints {}, -bearing, advance, coordinates)
+        }
+        let origin = Float(data.i16(start + OutlineLayout.xMin)) - bearing
+        if data.i16(start) >= 0 {
+            return phantomOutline(glyph, simplePoints(start), origin, advance, coordinates)
+        }
+        if depth >= OutlineLayout.componentDepth { return GlyphOutline { advance: advance } }
+        return compositeOutline(glyph, start, origin, advance, coordinates, depth)
+    }
+
+    // A simple glyph's outline, moved to `coordinates` with its phantom
+    // points.
+    function phantomOutline(
+        glyph: GlyphId,
+        shape: GlyphPoints,
+        origin: Float,
+        advance: Float,
+        coordinates: borrow [Float]
+    ) -> GlyphOutline {
+        var outline = GlyphOutline { shape: move shape, origin: origin, advance: advance }
+        if !variations.glyphs.isSome() || isDefault(coordinates) { return outline }
+        let count = outline.shape.points.count
+        let deltas = glyphDeltas(
+            glyph,
+            count + OutlineLayout.phantomPoints,
+            coordinates,
+            outline.shape
+        )
+        for index in 0..count {
+            outline.shape.points[index].x += deltas[index].x
+            outline.shape.points[index].y += deltas[index].y
+        }
+        outline.origin += deltas[count].x
+        outline.advance += deltas[count + 1].x - deltas[count].x
+        return outline
+    }
+
+    // How many points a glyph has of its own: a simple glyph's points, or a
+    // composite's components.
+    function ownPointCount(range: borrow (Int, Int)) -> Int {
+        let (start, _) = range
+        let contours = data.i16(start)
+        if contours > 0 { return data.u16(start + OutlineLayout.header + (contours - 1) * 2) + 1 }
+        if contours == 0 { return 0 }
+        return components(start).count
+    }
+
+    function simplePoints(start: Int) -> GlyphPoints {
+        let contours = data.i16(start)
+        var shape = GlyphPoints {}
+        for contour in 0..contours {
+            shape.ends.append(data.u16(start + OutlineLayout.header + contour * 2))
+        }
+        if contours == 0 { return shape }
+        let count = shape.ends[contours - 1] + 1
+        let instructions = start + OutlineLayout.header + contours * 2
+        let (flags, xs) = pointFlags(instructions + 2 + data.u16(instructions), count)
+        let (xValues, ys) = coordinateRun(
+            xs,
+            flags,
+            OutlineFlags.shortX,
+            OutlineFlags.sameOrPositiveX
+        )
+        let (yValues, _) = coordinateRun(
+            ys,
+            flags,
+            OutlineFlags.shortY,
+            OutlineFlags.sameOrPositiveY
+        )
+        for (index, flag) in flags.enumerated() {
+            shape.points.append(
+                OutlinePoint {
+                    x: xValues[index],
+                    y: yValues[index],
+                    onCurve: (flag & OutlineFlags.onCurve) != 0
+                }
+            )
+        }
+        return shape
+    }
+
+    // `count` point flags at `at`, run-length expanded, and where the x
+    // coordinates start.
+    function pointFlags(at: Int, count: Int) -> ([Int], Int) {
+        var flags: [Int] = []
+        var cursor = at
+        while flags.count < count {
+            let flag = data.u8(cursor)
+            cursor += 1
+            flags.append(flag)
+            if (flag & OutlineFlags.repeats) != 0 {
+                for _ in 0..data.u8(cursor) { flags.append(flag) }
+                cursor += 1
+            }
+        }
+        return (flags, cursor)
+    }
+
+    // One axis's coordinates, each stored as a change from the last: a byte
+    // whose sign a flag gives, the same as the last, or a signed word.
+    function coordinateRun(at: Int, flags: borrow [Int], short: Int, positive: Int) -> (
+        [Float],
+        Int
+    ) {
+        var values: [Float] = []
+        var cursor = at
+        var value: Int = 0
+        for flag in flags {
+            if (flag & short) != 0 {
+                let step = data.u8(cursor)
+                value += (flag & positive) != 0 ? step : -step
+                cursor += 1
+            } else if (flag & positive) == 0 {
+                value += data.i16(cursor)
+                cursor += 2
+            }
+            values.append(Float(value))
+        }
+        return (values, cursor)
+    }
+}
+
+extend FontFile {
+    function compositeOutline(
+        glyph: GlyphId,
+        start: Int,
+        origin: Float,
+        advance: Float,
+        coordinates: borrow [Float],
+        depth: Int
+    ) -> GlyphOutline {
+        var parts = components(start)
+        var outline = GlyphOutline { origin: origin, advance: advance }
+        if variations.glyphs.isSome() && !isDefault(coordinates) {
+            let count = parts.count
+            let deltas = glyphDeltas(
+                glyph,
+                count + OutlineLayout.phantomPoints,
+                coordinates,
+                GlyphPoints {}
+            )
+            for index in 0..count {
+                parts[index].dx += deltas[index].x
+                parts[index].dy += deltas[index].y
+            }
+            outline.origin += deltas[count].x
+            outline.advance += deltas[count + 1].x - deltas[count].x
+        }
+        for part in parts {
+            let child = rawOutline(part.glyph, coordinates, depth + 1)
+            outline.shape.place(child.shape, part)
+        }
+        return outline
+    }
+
+    // A composite glyph's components, in drawing order.
+    function components(start: Int) -> [GlyphComponent] {
+        var parts: [GlyphComponent] = []
+        var at = start + OutlineLayout.header
+        while true {
+            let flags = data.u16(at)
+            let (part, after) = component(at, flags)
+            parts.append(part)
+            at = after
+            if (flags & OutlineFlags.moreComponents) == 0 { return parts }
+        }
+    }
+
+    // The component at `at`, and where the next one starts. A component
+    // placed by matching points rather than by an offset is drawn where it
+    // stands.
+    function component(at: Int, flags: Int) -> (GlyphComponent, Int) {
+        let glyph = GlyphId(data.u16(at + 2))
+        var cursor = at + 4
+        let words = (flags & OutlineFlags.wordArguments) != 0
+        let first = words ? data.i16(cursor) : data.i8(cursor)
+        let second = words ? data.i16(cursor + 2) : data.i8(cursor + 1)
+        cursor += words ? 4 : 2
+        let placed = (flags & OutlineFlags.offsetArguments) != 0
+        var xx: Float = 1.0
+        var xy: Float = 0.0
+        var yx: Float = 0.0
+        var yy: Float = 1.0
+        if (flags & OutlineFlags.scale) != 0 {
+            xx = data.f2dot14(cursor)
+            yy = xx
+            cursor += 2
+        } else if (flags & OutlineFlags.axisScales) != 0 {
+            xx = data.f2dot14(cursor)
+            yy = data.f2dot14(cursor + 2)
+            cursor += 4
+        } else if (flags & OutlineFlags.twoByTwo) != 0 {
+            xx = data.f2dot14(cursor)
+            xy = data.f2dot14(cursor + 2)
+            yx = data.f2dot14(cursor + 4)
+            yy = data.f2dot14(cursor + 6)
+            cursor += 8
+        }
+        let part = GlyphComponent {
+            glyph: glyph,
+            placed: placed,
+            dx: placed ? Float(first) : 0.0,
+            dy: placed ? Float(second) : 0.0,
+            xx: xx,
+            xy: xy,
+            yx: yx,
+            yy: yy
+        }
+        return (part, cursor)
+    }
+}
+
+// Whether every axis stands at its default, where no glyph moves.
+function isDefault(coordinates: borrow [Float]) -> Bool {
+    for coordinate in coordinates {
+        if coordinate != 0.0 { return false }
+    }
+    return true
+}
+
+extend GlyphPoints {
+    // `child`'s points transformed by `part` and added as contours of these.
+    function place(borrow mut self, child: borrow GlyphPoints, part: borrow GlyphComponent) {
+        let base = points.count
+        for point in child.points {
+            points.append(
+                OutlinePoint {
+                    x: part.xx * point.x + part.yx * point.y + part.dx,
+                    y: part.xy * point.x + part.yy * point.y + part.dy,
+                    onCurve: point.onCurve
+                }
+            )
+        }
+        for end in child.ends { ends.append(base + end) }
+    }
+
+    // A tuple's deltas for the `listed` points spread over `count`: a listed
+    // point moves by its own delta, an unlisted point of a contour with any
+    // listed point moves by interpolating its two listed neighbours, and the
+    // rest, the phantom points among them, stay where they are (`gvar`,
+    // "Inferred deltas for un-referenced point numbers").
+    function interpolated(
+        listed: borrow [Int],
+        xs: borrow [Float],
+        ys: borrow [Float],
+        count: Int
+    ) -> [OutlineVector] {
+        var given: [OutlineVector?] = filled(count, .None)
+        for (index, point) in listed.enumerated() {
+            if point < count { given[point] = .Some(OutlineVector { x: xs[index], y: ys[index] }) }
+        }
+        var moved: [OutlineVector] = []
+        for delta in given {
+            moved.append(
+                match delta {
+                    Some(vector) -> vector
+                    None -> OutlineVector { x: 0.0, y: 0.0 }
+                }
+            )
+        }
+        var first: Int = 0
+        for end in ends {
+            if end < count { inferContour(first, end, given, moved) }
+            first = end + 1
+        }
+        return moved
+    }
+
+    function inferContour(
+        first: Int,
+        end: Int,
+        given: borrow [OutlineVector?],
+        moved: borrow mut [OutlineVector]
+    ) {
+        var anchors: [Int] = []
+        for index in first..(end + 1) {
+            if given[index].isSome() { anchors.append(index) }
+        }
+        if anchors.count == 0 { return }
+        for (index, from) in anchors.enumerated() {
+            let to = anchors[(index + 1) % anchors.count]
+            var point = from == end ? first : from + 1
+            while point != to {
+                moved[point] = inferred(point, from, to, moved)
+                point = point == end ? first : point + 1
+            }
+        }
+    }
+
+    function inferred(
+        point: Int,
+        from: Int,
+        to: Int,
+        moved: borrow [OutlineVector]
+    ) -> OutlineVector {
+        let here = points[point]
+        let low = points[from]
+        let high = points[to]
+        return OutlineVector {
+            x: inferredDelta(here.x, low.x, high.x, moved[from].x, moved[to].x),
+            y: inferredDelta(here.y, low.y, high.y, moved[from].y, moved[to].y)
+        }
+    }
+}
+
+// One axis of an inferred delta: the nearer anchor's outside the two
+// anchors' span, linear inside it.
+function inferredDelta(
+    value: Float,
+    first: Float,
+    second: Float,
+    firstDelta: Float,
+    secondDelta: Float
+) -> Float {
+    if first == second { return firstDelta == secondDelta ? firstDelta : 0.0 }
+    let (low, lowDelta, high, highDelta) = first < second ? (
+        first,
+        firstDelta,
+        second,
+        secondDelta
+    ) : (second, secondDelta, first, firstDelta)
+    if value <= low { return lowDelta }
+    if value >= high { return highDelta }
+    return lowDelta + (value - low) * (highDelta - lowDelta) / (high - low)
+}

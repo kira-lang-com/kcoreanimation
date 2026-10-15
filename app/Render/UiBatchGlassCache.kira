@@ -10,7 +10,9 @@
 // Cached-interior surface slots; surfaces past the cap render live.
 import Foundation
 
-public function glassCacheMaxSurfaces() -> Int { return 32 }
+public namespace GlassCache {
+    let maxSurfaces: Number = 32
+}
 
 // Compare (and store) this surface's cache key at the current push-order
 // slot. True means every input matches the interior already in the cache;
@@ -28,41 +30,41 @@ public struct GlassSurfaceKey: Copyable {
     // CHANGES THE INTERIOR PIXELS: without it a lit surface matches last frame's
     // unlit cache entry, the interior is presented from that copy, and the light
     // never reaches the screen however faithfully everything below carries it.
-    var glowX: Float = 0.0
-    var glowY: Float = 0.0
-    var glowStrength: Float = 0.0
-    var centerX: Float = 0.0
-    var centerY: Float = 0.0
-    var halfWidth: Float = 0.0
-    var halfHeight: Float = 0.0
-    var radius: Float = 0.0
-    var tintR: Float = 0.0
-    var tintG: Float = 0.0
-    var tintB: Float = 0.0
-    var tintAlpha: Float = 0.0
-    var blur: Float = 0.0
-    var edgeRefraction: Float = 0.0
-    var clipMinX: Float = 0.0
-    var clipMinY: Float = 0.0
-    var clipMaxX: Float = 0.0
-    var clipMaxY: Float = 0.0
-    var rimWidth: Float = 0.0
-    var washBlend: Float = 0.0
-    var washUpperR: Float = 0.0
-    var washUpperG: Float = 0.0
-    var washUpperB: Float = 0.0
-    var washUpperAlpha: Float = 0.0
-    var washUpperBlend: Float = 0.0
-    var blurNearSplit: Float = 0.0
-    var edgeLightDodge: Float = 0.0
-    var edgeLightBurn: Float = 0.0
-    var lensMaxBend: Float = 0.0
-    var refractionReach: Float = 0.0
-    var viewportWidth: Float = 0.0
-    var viewportHeight: Float = 0.0
+    var glowX: Number = 0.0
+    var glowY: Number = 0.0
+    var glowStrength: Number = 0.0
+    var centerX: Number = 0.0
+    var centerY: Number = 0.0
+    var halfWidth: Number = 0.0
+    var halfHeight: Number = 0.0
+    var radius: Number = 0.0
+    var tintR: Number = 0.0
+    var tintG: Number = 0.0
+    var tintB: Number = 0.0
+    var tintAlpha: Number = 0.0
+    var blur: Number = 0.0
+    var edgeRefraction: Number = 0.0
+    var clipMinX: Number = 0.0
+    var clipMinY: Number = 0.0
+    var clipMaxX: Number = 0.0
+    var clipMaxY: Number = 0.0
+    var rimWidth: Number = 0.0
+    var washBlend: Number = 0.0
+    var washUpperR: Number = 0.0
+    var washUpperG: Number = 0.0
+    var washUpperB: Number = 0.0
+    var washUpperAlpha: Number = 0.0
+    var washUpperBlend: Number = 0.0
+    var blurNearSplit: Number = 0.0
+    var edgeLightDodge: Number = 0.0
+    var edgeLightBurn: Number = 0.0
+    var lensMaxBend: Number = 0.0
+    var refractionReach: Number = 0.0
+    var viewportWidth: Number = 0.0
+    var viewportHeight: Number = 0.0
     // The backdrop this surface refracted, folded together with the cache epoch
     // so a new backdrop or a cache flush reads as a different surface.
-    var backdrop: Float = 0.0
+    var backdrop: Number = 0.0
 }
 
 // Whether this surface's interior can be re-presented from the cache.
@@ -87,67 +89,62 @@ public struct GlassSurfaceKey: Copyable {
 // the surface is, how big, its tint, its wash, its light. Two surfaces with the
 // same key have the same interior by definition, so content IS identity here and
 // the scan needs nothing the key does not already carry.
-public function glassCacheKeyMatch(state: borrow mut UiBatchState, fresh: borrow GlassSurfaceKey) -> Bool {
-    var slot = 0
-    var hit = -1
-    var free = -1
-    while slot < glassCacheMaxSurfaces() && slot < state.glassCacheKeySet.count {
-        if state.glassCacheClaimed[slot] == 0 {
-            if state.glassCacheKeySet[slot] != 0 && state.glassCacheKeys[slot] == fresh {
-                hit = slot
-                slot = glassCacheMaxSurfaces()
-            } else if free < 0 {
-                free = slot
-            }
+public function glassCacheKeyMatch(
+    state: borrow mut UiBatchState,
+    fresh: borrow GlassSurfaceKey
+) -> Bool {
+    var free: Number? = .None
+    for slot in 0..min(GlassCache.maxSurfaces, state.glassCacheSlots.count) {
+        if state.glassCacheSlots[slot].claimed { continue }
+        let cached = match state.glassCacheSlots[slot].key {
+            Some(key) -> key == fresh
+            None -> false
         }
-        slot += 1
-    }
-    if hit >= 0 {
-        state.glassCacheClaimed[hit] = 1
-        if state.probeGlassLayers {
-            print(686868)
-            print(hit)
-            print(1)
+        if cached {
+            state.glassCacheSlots[slot].claimed = true
+            log debug("glass cache hit", slot)
+            return true
         }
-        return true
+        if free.isNone() { free = .Some(slot) }
     }
     // Not cached. Take an unclaimed slot and record what is about to be drawn
     // into it; with none left the surface simply renders every frame, which is
     // correct and merely slower.
-    if free < 0 {
-        return false
-    }
-    state.glassCacheKeys[free] = copy fresh
-    state.glassCacheKeySet[free] = 1
-    state.glassCacheClaimed[free] = 1
-    if state.probeGlassLayers {
-        print(686868)
-        print(free)
-        print(0)
+    match free {
+        Some(slot) -> {
+            state.glassCacheSlots[slot] = GlassCacheSlot { key: .Some(copy fresh), claimed: true }
+            log debug("glass cache miss", slot)
+        }
+        None -> {}
     }
     return false
 }
 
 // Remember a dirty surface's interior quads so the cache pass re-renders them.
-public function glassCacheRecordRange(state: borrow mut UiBatchState, stream: DrawStreamId, start: Int, bandCount: Int, lensCount: Int, coreCount: Int) {
+public function glassCacheRecordRange(
+    state: borrow mut UiBatchState,
+    stream: DrawStreamId,
+    start: Number,
+    bandCount: Number,
+    lensCount: Number,
+    coreCount: Number
+) {
     if bandCount + lensCount + coreCount <= 0 {
         return
     }
-    if state.glassCacheRangeCount < state.glassCacheRangeStream.count {
-        state.glassCacheRangeStream[state.glassCacheRangeCount] = stream
-        state.glassCacheRangeStart[state.glassCacheRangeCount] = start
-        state.glassCacheRangeBand[state.glassCacheRangeCount] = bandCount
-        state.glassCacheRangeLens[state.glassCacheRangeCount] = lensCount
-        state.glassCacheRangeCore[state.glassCacheRangeCount] = coreCount
+    let range = GlassCacheRange {
+        stream: stream,
+        start: start,
+        band: bandCount,
+        lens: lensCount,
+        core: coreCount
+    }
+    if state.glassCacheRangeCount < state.glassCacheRanges.count {
+        state.glassCacheRanges[state.glassCacheRangeCount] = range
     } else {
-        state.glassCacheRangeStream.append(stream)
-        state.glassCacheRangeStart.append(start)
-        state.glassCacheRangeBand.append(bandCount)
-        state.glassCacheRangeLens.append(lensCount)
-        state.glassCacheRangeCore.append(coreCount)
+        state.glassCacheRanges.append(range)
     }
     state.glassCacheRangeCount += 1
-    return
 }
 
 // Emit one region patch of a liquid-glass surface: the sub-rectangle

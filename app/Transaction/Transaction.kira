@@ -4,7 +4,7 @@ import Foundation
 // and what a property set reads when it fires.
 //
 // With no transaction open a set still animates — the DEFAULT ACTION, a 0.25s
-// ease-out (`caDefaultTiming`). That is what makes a plain `setOpacity` glide
+// ease-out (`defaultTiming`). That is what makes a plain `setOpacity` glide
 // rather than snap, the way a Core Animation property does. A transaction
 // overrides that action for everything set inside it; nested transactions each
 // carry their own, and the innermost open one wins.
@@ -13,7 +13,7 @@ public struct CATiming {
     // disable-actions transaction use.
     var disableActions: Bool = false
     var mode: CAAnimMode = .Ease
-    var duration: Float = 0.25
+    var duration: Number = 0.25
     var easing: MotionEasing = .EaseOut
     // Used when `mode` is `.Spring`: the named platform curve, resolved to a
     // response/damping against the property's own target when the set fires.
@@ -21,34 +21,46 @@ public struct CATiming {
     // A spring of the caller's own in place of the named curve, when its
     // response is above zero: what a motion measured off the platform -- a
     // navigation push -- is stated in, rather than whichever name is nearest.
-    var response: Float = 0.0
-    var damping: Float = 1.0
+    var response: Number = 0.0
+    var damping: Number = 1.0
     // The speed the motion already has, as a fraction of the way to go per
     // second: each property starts moving at that fraction of its own
     // distance, so a page a finger threw keeps the finger's speed.
-    var velocity: Float = 0.0
+    var velocity: Number = 0.0
     var reducedMotion: Bool = false
 }
 
 // The implicit action: 0.25s ease-out.
-public function caDefaultTiming() -> CATiming {
+public function defaultTiming() -> CATiming {
     return CATiming { disableActions: false, mode: .Ease, duration: 0.25, easing: .EaseOut }
 }
 
-public function caImmediateTiming() -> CATiming {
+public function immediateTiming() -> CATiming {
     return CATiming { disableActions: true }
 }
 
-public function caEaseTiming(duration: Float, easing: MotionEasing) -> CATiming {
+public function easeTiming(duration: Number, easing: MotionEasing) -> CATiming {
     return CATiming { disableActions: false, mode: .Ease, duration: duration, easing: move easing }
 }
 
-public function caSpringTiming(curve: MotionCurveName, reducedMotion: Bool) -> CATiming {
-    return CATiming { disableActions: false, mode: .Spring, curve: move curve, reducedMotion: reducedMotion }
+extend MotionCurveName {
+    function springTiming(reducedMotion: Bool) -> CATiming {
+        return CATiming {
+            disableActions: false,
+            mode: .Spring,
+            curve: self,
+            reducedMotion: reducedMotion
+        }
+    }
 }
 
 // A spring by its own response and damping, already moving at `velocity`.
-public function caMeasuredSpringTiming(response: Float, damping: Float, velocity: Float, reducedMotion: Bool) -> CATiming {
+public function measuredSpringTiming(
+    response: Number,
+    damping: Number,
+    velocity: Number,
+    reducedMotion: Bool
+) -> CATiming {
     return CATiming {
         disableActions: false,
         mode: .Spring,
@@ -59,78 +71,104 @@ public function caMeasuredSpringTiming(response: Float, damping: Float, velocity
     }
 }
 
-// The spring a timing in `.Spring` mode moves a property to `target` on.
-public function caTimingSpring(timing: borrow CATiming, target: Float) -> MotionSpring {
-    if timing.response <= 0.0 {
-        return motionCurveFor(timing.curve, target, timing.reducedMotion)
-    }
-    let spring = MotionSpring { response: timing.response, damping: timing.damping, target: target }
-    if timing.reducedMotion {
-        return motionCurveReduced(spring)
-    }
-    return spring
-}
-
-// A fieldless-enum value is not assumed Copy, so a stored easing is reconstructed
-// rather than aliased when a timing hands it to a channel.
-public function caEaseCopy(e: borrow MotionEasing) -> MotionEasing {
-    match e {
-        Linear -> return .Linear
-        EaseIn -> return .EaseIn
-        EaseOut -> return .EaseOut
-        EaseInOut -> return .EaseInOut
-    }
-}
-
-// Drive one scalar channel to `target` under `timing`, at absolute time `now`.
-// The one place the model/presentation split, the transaction, and the two
-// animation forms meet.
-public function caApplyTiming(ch: borrow mut CAChannel, timing: borrow CATiming, target: Float, now: Float) -> Bool {
-    let immediate = timing.disableActions || timing.mode == .Immediate
-    if immediate {
-        let changed = ch.model != target || ch.presentation != target || ch.animating
-        if changed {
-            caChannelSetImmediate(ch, target)
+extend CATiming {
+    // The spring a timing in `.Spring` mode moves a property to `target` on.
+    function spring(target: Number) -> MotionSpring {
+        if self.response <= 0.0 {
+            return motionCurveFor(self.curve, target, self.reducedMotion)
         }
-        return changed
+        let spring = MotionSpring { response: self.response, damping: self.damping, target: target }
+        if self.reducedMotion {
+            return motionCurveReduced(spring)
+        }
+        return spring
     }
-    if ch.model == target {
-        return false
+}
+
+extend MotionEasing {
+    // A fieldless-enum value is not assumed Copy, so a stored easing is reconstructed
+    // rather than aliased when a timing hands it to a channel.
+    function easeCopy() -> MotionEasing {
+        match self {
+            Linear -> return .Linear
+            EaseIn -> return .EaseIn
+            EaseOut -> return .EaseOut
+            EaseInOut -> return .EaseInOut
+        }
     }
-    match timing.mode {
-        Immediate -> {}
-        Spring -> caChannelStartSpring(ch, caTimingSpring(timing, target), now, timing.velocity * (target - ch.presentation))
-        Ease -> {
-            // Reduced motion keeps the arrival but strips the length: a shorter,
-            // plainer settle rather than an abrupt jump.
-            var duration = timing.duration
-            if timing.reducedMotion && duration > 0.2 {
-                duration = 0.2
+}
+
+extend CAChannel {
+    // Drive one scalar channel to `target` under `timing`, at absolute time `now`.
+    // The one place the model/presentation split, the transaction, and the two
+    // animation forms meet.
+    function applyTiming(
+        borrow mut self,
+        timing: borrow CATiming,
+        target: Number,
+        now: Number
+    ) -> Bool {
+        let immediate = timing.disableActions || timing.mode == .Immediate
+        if immediate {
+            let changed = self.model != target || self.presentation != target || self.animating
+            if changed {
+                self.setImmediate(target)
             }
-            caChannelStartEase(ch, target, duration, caEaseCopy(timing.easing), now)
+            return changed
         }
+        if self.model == target {
+            return false
+        }
+        match timing.mode {
+            Immediate -> {}
+            Spring -> self.startSpring(
+                timing.spring(target),
+                now,
+                timing.velocity * (target - self.presentation)
+            )
+            Ease -> {
+                // Reduced motion keeps the arrival but strips the length: a shorter,
+                // plainer settle rather than an abrupt jump.
+                var duration = timing.duration
+                if timing.reducedMotion && duration > 0.2 {
+                    duration = 0.2
+                }
+                self.startEase(target, duration, timing.easing.easeCopy(), now)
+            }
+        }
+        return true
     }
-    return true
 }
 
-public function caColorSame(a: borrow CAColor, b: borrow CAColor) -> Bool {
-    return a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a
+extend CAColor {
+    function same(b: borrow CAColor) -> Bool {
+        return self.r == b.r && self.g == b.g && self.b == b.b && self.a == b.a
+    }
 }
 
-// The same, for a perceptually-interpolated color channel.
-public function caColorApplyTiming(ch: borrow mut CAColorChannel, timing: borrow CATiming, target: borrow CAColor, now: Float) -> Bool {
-    let immediate = timing.disableActions || timing.mode == .Immediate
-    if immediate {
-        let presentation = caColorChannelPresentation(ch)
-        let changed = !caColorSame(ch.model, target) || !caColorSame(presentation, target) || ch.progress.animating
-        if changed {
-            caColorChannelSet(ch, target, true, timing, now)
+extend CAColorChannel {
+    // The same, for a perceptually-interpolated color channel.
+    function applyTiming(
+        borrow mut self,
+        timing: borrow CATiming,
+        target: borrow CAColor,
+        now: Number
+    ) -> Bool {
+        let immediate = timing.disableActions || timing.mode == .Immediate
+        if immediate {
+            let presentation = self.presentation()
+            let changed = !self.model.same(target) || !presentation.same(
+                target
+            ) || self.progress.animating
+            if changed {
+                self.set(target, true, timing, now)
+            }
+            return changed
         }
-        return changed
+        if self.model.same(target) {
+            return false
+        }
+        self.set(target, false, timing, now)
+        return true
     }
-    if caColorSame(ch.model, target) {
-        return false
-    }
-    caColorChannelSet(ch, target, false, timing, now)
-    return true
 }

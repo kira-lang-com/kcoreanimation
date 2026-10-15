@@ -14,56 +14,56 @@ extend UiBatch {
     // the final color attachment differs.
     function presentBatchIntoTexture(
         frame: borrow mut RenderFrame,
-        graphics: borrow EMGraphics,
-        target: borrow EMGraphicsTexture,
-        bgR: Float,
-        bgG: Float,
-        bgB: Float,
-        bgA: Float,
+        graphics: borrow Graphics,
+        target: borrow GraphicsTexture,
+        bgR: Number,
+        bgG: Number,
+        bgB: Number,
+        bgA: Number,
     ) {
         self.presentBatchTarget(frame, graphics, target, true, bgR, bgG, bgB, bgA)
-        return
     }
 
-    function presentBatch(frame: borrow mut RenderFrame, graphics: borrow EMGraphics, bgR: Float, bgG: Float, bgB: Float, bgA: Float) {
+    function presentBatch(
+        frame: borrow mut RenderFrame,
+        graphics: borrow Graphics,
+        bgR: Number,
+        bgG: Number,
+        bgB: Number,
+        bgA: Number
+    ) {
         let noTarget = emptyGraphicsTexture()
         self.presentBatchTarget(frame, graphics, noTarget, false, bgR, bgG, bgB, bgA)
-        return
     }
 
     function presentBatchTarget(
         frame: borrow mut RenderFrame,
-        graphics: borrow EMGraphics,
-        target: borrow EMGraphicsTexture,
+        graphics: borrow Graphics,
+        target: borrow GraphicsTexture,
         intoTexture: Bool,
-        bgR: Float,
-        bgG: Float,
-        bgB: Float,
-        bgA: Float,
+        bgR: Number,
+        bgG: Number,
+        bgB: Number,
+        bgA: Number,
     ) {
         // Rolling boundary between present phases (see UiBatchStats.kira). Read
         // before anything else this function does, and every path out of it
         // charges the time since the last boundary to exactly one phase, so the
         // four sum to the call.
-        var phaseMark = Int(frame.monotonicNanoseconds())
+        var phaseMark = Number(frame.monotonicNanoseconds())
         var state = nativeRecover<UiBatchState>(self.storage)
-        uiGlassStatsResetPresentation(state)
+        state.resetGlassPresentationStats()
         // Never let the endpoint-only direct source escape the present that proved
         // its preconditions. Crossfades and later frames must re-evaluate it.
         state.directBackdropLayer0 = false
         state.glassBackdropStatic = false
-        state.directBackdropSharpGroup = shareBindGroup(state.emptyGroup)
+        state.directBackdropSharpGroup = .None
         // The active stream's count only reaches its entry here: emitting keeps it in
         // the mirrored hot field.
         state.streams[state.streamIndex.raw].quadCount = state.quadCount
         let layers = state.streamIndex.raw
         state.glassStatLayers = layers
-        let bg = Color {
-            r: bgR,
-            g: bgG,
-            b: bgB,
-            a: bgA
-        }
+        let bg = RGBAColor { r: bgR, g: bgG, b: bgB, a: bgA }
         prepareBackground(state, graphics)
         // How far between the two backdrop photographs this frame stands, and
         // whether that is a place it can rest. `UiBackground.ksl` settles onto
@@ -78,8 +78,12 @@ extend UiBatch {
         if backdropBlend < 0.0 { backdropBlend = 0.0 }
         if backdropBlend > 1.0 { backdropBlend = 1.0 }
         let backdropSettled = backdropBlend <= 0.001 || backdropBlend >= 0.999
-        if state.backdropBlend.id != 0 {
-            graphics.updateUniform(state.backdropBlend, [F32(backdropBlend), F32(0.0), F32(0.0), F32(0.0)])
+        match state.backdropBlend {
+            Some(blend) -> graphics.updateUniform(
+                blend,
+                [F32(backdropBlend), F32(0.0), F32(0.0), F32(0.0)]
+            )
+            None -> {}
         }
         // Any glyph packed during this frame's walk reaches the atlas texture
         // here, before the first pass samples it.
@@ -90,7 +94,7 @@ extend UiBatch {
         for commitStream in 0..state.streams.count {
             self.commitStream(graphics, DrawStreamId(commitStream))
         }
-        let uploadsDone = Int(frame.monotonicNanoseconds())
+        let uploadsDone = Number(frame.monotonicNanoseconds())
         state.presentUploadNs = uploadsDone - phaseMark
         phaseMark = uploadsDone
         // The swapchain pass CLEARS rather than discarding, even though an opaque
@@ -110,7 +114,7 @@ extend UiBatch {
             self.drawHud(state, encoder)
             frame.endPass()
             announceVisibleContent(state)
-            state.presentCompositeNs = Int(frame.monotonicNanoseconds()) - phaseMark
+            state.presentCompositeNs = Number(frame.monotonicNanoseconds()) - phaseMark
             return
         }
 
@@ -140,7 +144,7 @@ extend UiBatch {
         while layer < layers && !skipBackdropPrep {
             var directSourceId = TextureHandle(0)
             var directSecondId = TextureHandle(0)
-            var directSharpGroup = shareBindGroup(state.emptyGroup)
+            var directSharpGroup: BindGroup? = .None
             // Liquid Glass commonly sits directly above one opaque fullscreen
             // photo — or, mid-scheme-change, above a crossfade between two.
             // Rendering that into an identical full-resolution intermediate
@@ -158,19 +162,19 @@ extend UiBatch {
                 if state.secondaryExternalBindReady {
                     directSourceId = state.externalTextureId
                     directSecondId = state.secondaryExternalTextureId
-                    directSharpGroup = shareBindGroup(state.backdropSharpGroup)
+                    directSharpGroup = copy state.backdropSharpGroup
                 } else if backdropBlend <= 0.001 {
                     // No second photo to fade to. The background pass then mixes
                     // the primary against the atlas fallback, which is only the
                     // primary while the transition is at rest, so that is the
                     // only place this may take it directly.
                     directSourceId = state.externalTextureId
-                    directSharpGroup = shareBindGroup(state.externalGroup)
+                    directSharpGroup = .Some(copy state.externalGroup)
                 }
             }
-            if directSourceId.raw != 0 && directSharpGroup.id != 0 {
+            if directSourceId.raw != 0 && directSharpGroup.isSome() {
                 state.directBackdropLayer0 = true
-                state.directBackdropSharpGroup = shareBindGroup(directSharpGroup)
+                state.directBackdropSharpGroup = copy directSharpGroup
                 // The interior cache may trust a backdrop that is standing
                 // still: a photo at rest has a blur at rest. A crossfade in
                 // flight moves every interior pixel every frame, so it keeps the
@@ -187,12 +191,20 @@ extend UiBatch {
             // cannot be sampled by the pass that writes it, which an accumulating
             // capture would need.
             if directSourceId.raw == 0 {
-                var sceneEncoder = frame.beginRenderPass(glassTexturePass("kira-ui-glass-scene-pass", state.glassLayers[layer].sceneTexture, bgR, bgG, bgB, bgA))
+                var sceneEncoder = frame.beginRenderPass(
+                    glassTexturePass(
+                        "kira-ui-glass-scene-pass",
+                        state.glassLayers[layer].sceneTexture,
+                        bgR,
+                        bgG,
+                        bgB,
+                        bgA
+                    )
+                )
                 let boundsStream = layer + 1
                 let boundCount = state.streams[boundsStream].glassBoundCount
                 if boundCount > 0 {
-                    var bound = 0
-                    while bound < boundCount {
+                    for bound in 0..boundCount {
                         let base = bound * 4
                         glassMergeCaptureBound(
                             state,
@@ -201,30 +213,37 @@ extend UiBatch {
                             state.streams[boundsStream].glassBounds[base + 2],
                             state.streams[boundsStream].glassBounds[base + 3]
                         )
-                        bound += 1
                     }
-                    bound = 0
-                    while bound < state.captureRectCount {
+                    for bound in 0..state.captureRectCount {
                         let base = bound * 4
-                        let sx = Float(state.glassTexW) / state.viewportW
-                        let sy = Float(state.glassTexH) / state.viewportH
-                        var x0 = Int(state.captureRects[base] * sx)
-                        var y0 = Int(state.captureRects[base + 1] * sy)
-                        var x1 = Int(state.captureRects[base + 2] * sx + 1.0)
-                        var y1 = Int(state.captureRects[base + 3] * sy + 1.0)
+                        let sx = Number(state.glassTexW) / state.viewportW
+                        let sy = Number(state.glassTexH) / state.viewportH
+                        var x0 = trunc(state.captureRects[base] * sx)
+                        var y0 = trunc(state.captureRects[base + 1] * sy)
+                        var x1 = trunc(state.captureRects[base + 2] * sx + 1.0)
+                        var y1 = trunc(state.captureRects[base + 3] * sy + 1.0)
                         if x0 < 0 { x0 = 0 }
                         if y0 < 0 { y0 = 0 }
                         if x1 > state.glassTexW { x1 = state.glassTexW }
                         if y1 > state.glassTexH { y1 = state.glassTexH }
                         if x1 > x0 && y1 > y0 {
                             state.glassStatCaptureRegions += 1
-                            sceneEncoder.setScissorRect(x0, y0, x1 - x0, y1 - y0)
+                            sceneEncoder.setScissorRect(
+                                N32(x0),
+                                N32(y0),
+                                UN32(x1 - x0),
+                                UN32(y1 - y0)
+                            )
                             self.glassDrawCaptureContents(state, sceneEncoder, GlassLayerId(layer))
                         }
-                        bound += 1
                     }
                     state.captureRectCount = 0
-                    sceneEncoder.setScissorRect(0, 0, state.glassTexW, state.glassTexH)
+                    sceneEncoder.setScissorRect(
+                        N32(0),
+                        N32(0),
+                        UN32(state.glassTexW),
+                        UN32(state.glassTexH)
+                    )
                 } else {
                     // Defensive fallback for a custom backend that opens a glass stream but
                     // emits no bounds metadata.
@@ -232,7 +251,7 @@ extend UiBatch {
                 }
                 frame.endPass()
             }
-            let captureDone = Int(frame.monotonicNanoseconds())
+            let captureDone = Number(frame.monotonicNanoseconds())
             state.presentCaptureNs += captureDone - phaseMark
             phaseMark = captureDone
 
@@ -247,36 +266,38 @@ extend UiBatch {
             // crossfade the horizontal half filters through.
             var computeSource = state.glassLayers[layer].sceneTexture
             var computeSecond = computeSource
-            var computeBlend: Float = 0.0
+            var computeBlend: Number = 0.0
             if directSourceId.raw != 0 {
-                computeSource = sampledTextureFromViewId(U32(directSourceId.raw))
+                computeSource = sampledTextureFromViewId(ViewId(U32(directSourceId.raw)))
                 computeSecond = computeSource
                 if directSecondId.raw != 0 {
-                    computeSecond = sampledTextureFromViewId(U32(directSecondId.raw))
+                    computeSecond = sampledTextureFromViewId(ViewId(U32(directSecondId.raw)))
                     computeBlend = backdropBlend
                 }
             }
             // Two dispatches, one per axis, for this layer.
             state.glassStatBlurDispatches += 2
             frame.dispatchTextureComputePair(
-                state.blurComputeHPipelineId.raw,
-                state.blurComputeVPipelineId.raw,
-                computeSource,
-                computeSecond,
-                computeBlend,
-                state.blurTextureA,
-                state.blurTextureB,
-                state.glassLayers[layer].nearTexture,
-                state.glassLayers[layer].blurTexture,
-                state.sampler,
-                state.glassBlurW,
-                state.glassBlurH,
+                TextureComputePair {
+                    horizontalPipeline: state.blurComputeHPipelineId,
+                    verticalPipeline: state.blurComputeVPipelineId,
+                    source: computeSource,
+                    secondSource: computeSecond,
+                    blend: Number(computeBlend),
+                    tempNear: state.blurTextureA,
+                    tempFar: state.blurTextureB,
+                    outputNear: state.glassLayers[layer].nearTexture,
+                    outputFar: state.glassLayers[layer].blurTexture,
+                    sampler: state.sampler,
+                    width: UN32(state.glassBlurW),
+                    height: UN32(state.glassBlurH)
+                }
             )
             // The compute writes leave both outputs in the uncompressed
             // shader-write layout, and every glass tap of the composite samples
             // them. Re-tile so those taps read the fast layout.
-            frame.optimizeTexture(Int(state.glassLayers[layer].nearTexture.id))
-            frame.optimizeTexture(Int(state.glassLayers[layer].blurTexture.id))
+            frame.optimizeTexture(state.glassLayers[layer].nearTexture.id.raw)
+            frame.optimizeTexture(state.glassLayers[layer].blurTexture.id.raw)
             // Which backdrop layer 0's blur was taken from. It is half of the
             // interior cache's key: a cached interior shaded against one photo is
             // not the interior of the same surface over another. Zero for the
@@ -284,7 +305,7 @@ extend UiBatch {
             if layer == 0 {
                 state.glassBlurSourceId = directSourceId
             }
-            let blurDone = Int(frame.monotonicNanoseconds())
+            let blurDone = Number(frame.monotonicNanoseconds())
             state.presentBlurNs += blurDone - phaseMark
             phaseMark = blurDone
             layer += 1
@@ -296,13 +317,17 @@ extend UiBatch {
         // cache texture before the composite reads them back as copies. The pass
         // preserves previously cached surfaces (load) once the texture has been
         // cleared a first time.
-        state.glassCacheKeyNow = Float(state.glassBlurSourceId.raw) + state.backgroundTransition * 0.5
+        state.glassCacheKeyNow = Number(
+            state.glassBlurSourceId.raw
+        ) + state.backgroundTransition * 0.5
         if state.probeGlassLayers {
-            print(696969)
-            print(state.glassCacheRangeCount)
-            if state.glassBackdropStatic { print(1) } else { print(0) }
-            if state.glassCacheCleared { print(1) } else { print(0) }
-            if state.glassCacheRenderedKey == state.glassCacheKeyNow { print(1) } else { print(0) }
+            log debug(
+                "glass cache frame",
+                state.glassCacheRangeCount,
+                state.glassBackdropStatic,
+                state.glassCacheCleared,
+                state.glassCacheRenderedKey == .Some(state.glassCacheKeyNow)
+            )
         }
         // Sized BEFORE anything asks whether the cache may be copied, and whether or
         // not this frame has dirty interiors to render into it. The drawable changes
@@ -324,7 +349,7 @@ extend UiBatch {
                 // Consumed: the retained stream replays every frame, but these
                 // interiors are in the cache now.
                 state.glassCacheRangeCount = 0
-                state.glassCacheRenderedKey = state.glassCacheKeyNow
+                state.glassCacheRenderedKey = .Some(state.glassCacheKeyNow)
             }
         }
         var mainEncoder = frame.beginRenderPass(presentationPass)
@@ -341,19 +366,16 @@ extend UiBatch {
                 streamId,
                 state.streams[stream].quadCount,
                 glassSharpStreamGroup(state, streamId),
-                glassSoftNearStreamGroup(state, streamId),
-                state.emptyGroup
+                glassSoftNearStreamGroup(state, streamId)
             )
             stream += 1
         }
         self.drawHud(state, mainEncoder)
         frame.endPass()
         announceVisibleContent(state)
-        state.presentCompositeNs = Int(frame.monotonicNanoseconds()) - phaseMark
-        return
+        state.presentCompositeNs = Number(frame.monotonicNanoseconds()) - phaseMark
     }
 }
-
 
 // Say, once per run, that a frame carried real application content.
 //
@@ -372,5 +394,4 @@ public function announceVisibleContent(state: borrow mut UiBatchState) {
             return
         }
     }
-    return
 }

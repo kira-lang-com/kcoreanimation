@@ -2,59 +2,64 @@ import Foundation
 import Ember
 import KiraLayout
 
-public function caPassTextureHandle(texture: borrow EMGraphicsTexture) -> TextureHandle {
-    return TextureHandle(Int(texture.viewId))
+public function passTextureHandle(texture: borrow GraphicsTexture) -> TextureHandle {
+    return TextureHandle(Number(texture.viewId))
 }
 
-public function caPassDeviceExtent(logical: Float, scale: Float) -> Int {
-    var extent = Int(ceil(max(logical, 1.0) * max(scale, 1.0)))
+public function passDeviceExtent(logical: Number, scale: Number) -> Number {
+    var extent = ceil(max(logical, 1.0) * max(scale, 1.0))
     if extent < 1 {
         extent = 1
     }
     return extent
 }
 
-public function caPassTargetScale(pass: borrow CAPass, texture: borrow EMGraphicsTexture) -> Float {
-    let width = max(pass.bounds.width, 1.0)
-    let height = max(pass.bounds.height, 1.0)
-    var textureWidth = texture.width
-    var textureHeight = texture.height
-    if textureWidth < 1 {
-        textureWidth = 1
+extend CAPass {
+    function targetScale(texture: borrow GraphicsTexture) -> Number {
+        let width = max(self.bounds.width, 1.0)
+        let height = max(self.bounds.height, 1.0)
+        var textureWidth = texture.width
+        var textureHeight = texture.height
+        if textureWidth < 1 {
+            textureWidth = 1
+        }
+        if textureHeight < 1 {
+            textureHeight = 1
+        }
+        let sx = Number(textureWidth) / width
+        let sy = Number(textureHeight) / height
+        return max(min(sx, sy), 1.0)
     }
-    if textureHeight < 1 {
-        textureHeight = 1
-    }
-    let sx = intAsFloat(value: textureWidth) / width
-    let sy = intAsFloat(value: textureHeight) / height
-    return max(min(sx, sy), 1.0)
 }
 
-public function caPlanContainsOwner(plan: borrow CARenderPlan, owner: LayerId) -> Bool {
-    for passIndex in 1..plan.passes.count {
-        if plan.passes[passIndex].owner == owner {
-            return true
+extend CARenderPlan {
+    function containsOwner(owner: LayerId) -> Bool {
+        for passIndex in 1..self.passes.count {
+            if self.passes[passIndex].owner == owner {
+                return true
+            }
         }
+        return false
     }
-    return false
 }
 
 extend Compositor {
     // A pass target is destroyed, and every batch that may have bound it
     // forgets it: the pass batches now, since a parent pass is encoded after
     // its children are re-made, and the root batch before it next draws.
-    function retireTexture(graphics: borrow EMGraphics, texture: borrow EMGraphicsTexture) {
-        let handle = caPassTextureHandle(texture)
+    function retireTexture(graphics: borrow Graphics, texture: borrow GraphicsTexture) {
+        let handle = passTextureHandle(texture)
         graphics.destroyTexture(texture)
         for index in 0..self.passBatches.count {
-            let passBatch = UiBatch { storage: nativeUserData(self.passBatches[index].batch.storage) }
+            let passBatch = UiBatch {
+                storage: nativeUserData(self.passBatches[index].batch.storage)
+            }
             passBatch.forgetTexture(graphics, handle)
         }
         self.retiredTextures.append(handle)
-        return
     }
 
-    function ensurePassBatch(passId: RenderPassId, graphics: borrow EMGraphics) -> Int {
+    function ensurePassBatch(passId: RenderPassId, graphics: borrow Graphics) -> Number {
         let slot = passId.raw - 1
         if slot < 0 {
             return -1
@@ -67,7 +72,11 @@ extend Compositor {
         return slot
     }
 
-    function ensurePassTarget(pass: borrow CAPass, graphics: borrow EMGraphics, renderScale: Float) -> Int {
+    function ensurePassTarget(
+        pass: borrow CAPass,
+        graphics: borrow Graphics,
+        renderScale: Number
+    ) -> Number {
         var index = self.cachedTargetIndex(pass.owner)
         if index < 0 {
             self.cachedTargets.append(CACachedPassTarget { owner: pass.owner })
@@ -124,8 +133,8 @@ extend Compositor {
             }
         }
 
-        let width = caPassDeviceExtent(pass.bounds.width, renderScale)
-        let height = caPassDeviceExtent(pass.bounds.height, renderScale)
+        let width = passDeviceExtent(pass.bounds.width, renderScale)
+        let height = passDeviceExtent(pass.bounds.height, renderScale)
         let mustAllocate = cached.external
             || cached.texture.id == 0
             || cached.deviceWidth != width
@@ -134,15 +143,20 @@ extend Compositor {
             if cached.texture.id != 0 && !cached.external {
                 self.retireTexture(graphics, cached.texture)
             }
-            let target = textureOrReport(graphics.createTexture(TextureDescriptor {
-                label: "kcoreanimation-pass-target",
-                width: width,
-                height: height,
-                format: .Swapchain,
-                usage: .RenderTargetSampled,
-                sampleCount: 1,
-                storage: .Transient
-            }), "KCoreAnimation pass target")
+            let target = textureOrReport(
+                graphics.createTexture(
+                    TextureDescriptor {
+                        label: "kcoreanimation-pass-target",
+                        width: UN32(width),
+                        height: UN32(height),
+                        format: .Swapchain,
+                        usage: .RenderTargetSampled,
+                        sampleCount: 1,
+                        storage: .Transient
+                    }
+                ),
+                "KCoreAnimation pass target"
+            )
             cached.targetId = RenderTargetId(0)
             cached.texture = target
             cached.deviceWidth = width
@@ -154,17 +168,16 @@ extend Compositor {
         return index
     }
 
-    function prunePassTargets(plan: borrow CARenderPlan, graphics: borrow EMGraphics) {
+    function prunePassTargets(plan: borrow CARenderPlan, graphics: borrow Graphics) {
         var kept: [CACachedPassTarget] = []
         for cached in self.cachedTargets {
-            if caPlanContainsOwner(plan, cached.owner) {
+            if plan.containsOwner(cached.owner) {
                 kept.append(cached)
             } else if cached.texture.id != 0 && !cached.external {
                 self.retireTexture(graphics, cached.texture)
             }
         }
         self.cachedTargets = move kept
-        return
     }
 
     // Execute every isolated pass in dependency order and return one sampled
@@ -174,8 +187,8 @@ extend Compositor {
     function renderIsolatedPasses(
         plan: borrow CARenderPlan,
         frame: borrow mut RenderFrame,
-        graphics: borrow EMGraphics,
-        renderScale: Float,
+        graphics: borrow Graphics,
+        renderScale: Number,
     ) -> [TextureHandle] {
         var textures: [TextureHandle] = []
         for passIndex in 0..plan.passes.count {
@@ -193,7 +206,7 @@ extend Compositor {
                 let cacheIndex = self.ensurePassTarget(pass, graphics, renderScale)
                 if cacheIndex >= 0 {
                     var cached = self.cachedTargets[cacheIndex]
-                    textures[passIndex] = caPassTextureHandle(cached.texture)
+                    textures[passIndex] = passTextureHandle(cached.texture)
                     let mustEncode = pass.dirty || !cached.valid || cached.signature != pass.signature
                     let mustPresent = mustEncode || pass.requiresRefresh
                     if mustPresent {
@@ -207,7 +220,7 @@ extend Compositor {
                                 batch: move passBatch
                             }
                             if mustEncode {
-                                let targetScale = caPassTargetScale(pass, cached.texture)
+                                let targetScale = pass.targetScale(cached.texture)
                                 backend.beginTargetFrame(
                                     max(pass.bounds.width, 1.0),
                                     max(pass.bounds.height, 1.0),
@@ -215,8 +228,7 @@ extend Compositor {
                                     cached.texture.width,
                                     cached.texture.height
                                 )
-                                let ignored = caSubmitPassAt(
-                                    plan,
+                                let ignored = plan.submitPassAt(
                                     pass.passId,
                                     textures,
                                     pass.bounds.x,
@@ -247,44 +259,46 @@ extend Compositor {
     }
 }
 
-// Rebuild the root batch from the retained presentation tree. Isolated passes
-// are refreshed first so every composite command samples this frame's texture.
-// Presentation is deliberately separate: the window may append its HUD stream
-// after this call without rebuilding the application draw streams.
-public function caCompositorEncode(
-    compositor: borrow mut Compositor,
-    frame: borrow mut RenderFrame,
-    graphics: borrow EMGraphics,
-    batch: borrow UiBatch,
-    viewportWidth: Float,
-    viewportHeight: Float,
-    renderScale: Float,
-    windowTransparent: Bool,
-) -> Int {
-    let plan = caPlan(compositor.tree)
-    let passTextures = compositor.renderIsolatedPasses(plan, frame, graphics, renderScale)
-    for retired in compositor.retiredTextures {
-        batch.forgetTexture(graphics, retired)
+extend Compositor {
+    // Rebuild the root batch from the retained presentation tree. Isolated passes
+    // are refreshed first so every composite command samples this frame's texture.
+    // Presentation is deliberately separate: the window may append its HUD stream
+    // after this call without rebuilding the application draw streams.
+    function encode(
+        borrow mut self,
+        frame: borrow mut RenderFrame,
+        graphics: borrow Graphics,
+        batch: borrow UiBatch,
+        viewportWidth: Number,
+        viewportHeight: Number,
+        renderScale: Number,
+        windowTransparent: Bool
+    ) -> Number {
+        let plan = self.tree.plan()
+        let passTextures = self.renderIsolatedPasses(plan, frame, graphics, renderScale)
+        for retired in self.retiredTextures {
+            batch.forgetTexture(graphics, retired)
+        }
+        self.retiredTextures = []
+        let rootBatch = UiBatch { storage: nativeUserData(batch.storage) }
+        var backend = EmberFoundationBackend {
+            graphics: graphics,
+            batch: move rootBatch,
+            windowTransparent: windowTransparent
+        }
+        var drawableWidth = frame.drawableWidth()
+        var drawableHeight = frame.drawableHeight()
+        if drawableWidth <= 0 { drawableWidth = trunc(viewportWidth * renderScale) }
+        if drawableHeight <= 0 { drawableHeight = trunc(viewportHeight * renderScale) }
+        backend.beginFrameExtent(
+            viewportWidth,
+            viewportHeight,
+            renderScale,
+            drawableWidth,
+            drawableHeight
+        )
+        let drawn = plan.submitPass(plan.rootPass, passTextures, backend)
+        self.tree.clearDamage()
+        return drawn
     }
-    compositor.retiredTextures = []
-    let rootBatch = UiBatch { storage: nativeUserData(batch.storage) }
-    var backend = EmberFoundationBackend {
-        graphics: graphics,
-        batch: move rootBatch,
-        windowTransparent: windowTransparent
-    }
-    var drawableWidth = frame.drawableWidth()
-    var drawableHeight = frame.drawableHeight()
-    if drawableWidth <= 0 { drawableWidth = Int(viewportWidth * renderScale) }
-    if drawableHeight <= 0 { drawableHeight = Int(viewportHeight * renderScale) }
-    backend.beginFrameExtent(
-        viewportWidth,
-        viewportHeight,
-        renderScale,
-        drawableWidth,
-        drawableHeight
-    )
-    let drawn = caSubmitPass(plan, plan.rootPass, passTextures, backend)
-    compositor.tree.clearDamage()
-    return drawn
 }

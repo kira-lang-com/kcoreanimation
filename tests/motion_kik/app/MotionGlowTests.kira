@@ -6,18 +6,15 @@ import KCoreAnimation
 // light that travels with the finger, and opens out over the surface when the
 // finger is dragged away.
 
-function mgStep() -> Float {
+function frameStep() -> Number {
     return 1.0 / 240.0
 }
 
 // Runs a light for `seconds` and answers its level at the end.
-function mgRun(state: borrow mut MotionGlowState, seconds: Float) -> Float {
-    var frames = 0
-    let total = Int(round(seconds / mgStep()))
-    var level = 0.0
-    while frames < total {
-        level = motionGlowAdvance(state, mgStep())
-        frames = frames + 1
+function run(state: borrow mut MotionGlowState, seconds: Number) -> Number {
+    var level: Number = 0.0
+    for _ in 0..Number(round(seconds / frameStep())) {
+        level = motionGlowAdvance(state, frameStep())
     }
     return level
 }
@@ -29,8 +26,8 @@ construct MgAPressReachesItsLevel() extends Test {
     test {
         var state = MotionGlowState {}
         motionGlowPress(state, 0.0, 0.0)
-        let level = mgRun(state, motionGlowFadeIn())
-        return mtScaled(level, 3)
+        let level = run(state, MotionGlow.fadeIn)
+        return scaled(level, 3)
     }
     expect { return .Ok(120) }
 }
@@ -41,8 +38,8 @@ construct MgTheFadeInIsFrontLoaded() extends Test {
     test {
         var state = MotionGlowState {}
         motionGlowPress(state, 0.0, 0.0)
-        let half = mgRun(state, motionGlowFadeIn() * 0.5)
-        if half > motionGlowLevel() * 0.6 {
+        let half = run(state, MotionGlow.fadeIn * 0.5)
+        if half > MotionGlow.level * 0.6 {
             return 1
         }
         return 0
@@ -55,7 +52,7 @@ construct MgTheFadeInIsFrontLoaded() extends Test {
 // switch off.
 construct MgTheFadeOutIsSlowerThanTheFadeIn() extends Test {
     test {
-        if motionGlowFadeOut() > motionGlowFadeIn() * 1.5 {
+        if MotionGlow.fadeOut > MotionGlow.fadeIn * 1.5 {
             return 1
         }
         return 0
@@ -68,17 +65,17 @@ construct MgAReleaseGoesDarkInItsOwnTime() extends Test {
     test {
         var state = MotionGlowState {}
         motionGlowPress(state, 0.0, 0.0)
-        let ignored = mgRun(state, motionGlowFadeIn())
+        let ignored = run(state, MotionGlow.fadeIn)
         motionGlowRelease(state)
-        let midway = mgRun(state, motionGlowFadeOut() * 0.5)
-        let ended = mgRun(state, motionGlowFadeOut() * 0.5)
+        let midway = run(state, MotionGlow.fadeOut * 0.5)
+        let ended = run(state, MotionGlow.fadeOut * 0.5)
         if midway <= 0.0 {
-            return 0 - 1
+            return -1
         }
         if motionGlowLit(state) {
-            return 0 - 2
+            return -2
         }
-        return mtScaled(ended, 3)
+        return scaled(ended, 3)
     }
     expect { return .Ok(0) }
 }
@@ -90,14 +87,14 @@ construct MgAQuickTapFadesFromWhereItReached() extends Test {
         var state = MotionGlowState {}
         motionGlowPress(state, 0.0, 0.0)
         // Released a quarter of the way into the fade-in.
-        let partial = mgRun(state, motionGlowFadeIn() * 0.25)
+        let partial = run(state, MotionGlow.fadeIn * 0.25)
         motionGlowRelease(state)
-        let afterOneFrame = motionGlowAdvance(state, mgStep())
+        let afterOneFrame = motionGlowAdvance(state, frameStep())
         if afterOneFrame > partial {
-            return 0 - 1
+            return -1
         }
-        if partial >= motionGlowLevel() {
-            return 0 - 2
+        if partial >= MotionGlow.level {
+            return -2
         }
         return 1
     }
@@ -106,32 +103,32 @@ construct MgAQuickTapFadesFromWhereItReached() extends Test {
 
 // --- the radial falloff ----------------------------------------------------
 
-function mgNear() -> Float {
-    return motionGlowDiameter() * 0.5
+function near() -> Number {
+    return MotionGlow.diameter * 0.5
 }
 
 // Bright at the touch: full under the finger, and the point half gone its
 // width out, so the light is where the finger is.
 construct MgTheTouchPointIsBright() extends Test {
     test {
-        let center = motionGlowFalloff(0.0, mgNear())
-        let edge = motionGlowFalloff(mgNear() * motionGlowPointWidth(), mgNear())
-        return mtScaled(center, 2) * 1000 + mtScaled(edge, 2)
+        let center = motionGlowFalloff(0.0, near())
+        let edge = motionGlowFalloff(near() * MotionGlow.pointWidth, near())
+        return scaled(center, 2) * 1000 + scaled(edge, 2)
     }
     expect { return .Ok(100067) }
 }
 
 // Halfway out the point is spent and the bell is what is left.
 construct MgTheFalloffIsTheBellHalfway() extends Test {
-    test { return mtScaled(motionGlowFalloff(mgNear() * 0.5, mgNear()), 3) }
+    test { return scaled(motionGlowFalloff(near() * 0.5, near()), 3) }
     expect { return .Ok(149) }
 }
 
 construct MgTheFalloffReachesNothingAtTheRim() extends Test {
     test {
-        let rim = motionGlowFalloff(mgNear(), mgNear())
-        let beyond = motionGlowFalloff(mgNear() * 2.0, mgNear())
-        return mtScaled(rim + beyond, 3)
+        let rim = motionGlowFalloff(near(), near())
+        let beyond = motionGlowFalloff(near() * 2.0, near())
+        return scaled(rim + beyond, 3)
     }
     expect { return .Ok(0) }
 }
@@ -139,15 +136,13 @@ construct MgTheFalloffReachesNothingAtTheRim() extends Test {
 // It never rises on the way out.
 construct MgTheFalloffOnlyFalls() extends Test {
     test {
-        var previous = 2.0
-        var step = 0
-        while step <= 20 {
-            let here = motionGlowFalloff(mgNear() * Float(step) / 20.0, mgNear())
+        var previous: Number = 2.0
+        for step in 0..21 {
+            let here = motionGlowFalloff(near() * Number(step) / 20.0, near())
             if here > previous {
                 return 0
             }
             previous = here
-            step = step + 1
         }
         return 1
     }
@@ -163,12 +158,12 @@ construct MgAStillPressStaysOnTheFinger() extends Test {
         motionGlowFit(state, 400.0, 300.0)
         motionGlowPress(state, 40.0, 30.0)
         motionGlowMove(state, 44.0, 30.0)
-        let ignored = mgRun(state, 0.5)
+        let ignored = run(state, 0.5)
         let light = motionGlowLight(state)
-        if light.radius == mgNear() && light.x == 44.0 {
-            return mtScaled(light.strength, 3)
+        if light.radius == near() && light.x == 44.0 {
+            return scaled(light.strength, 3)
         }
-        return 0 - 1
+        return -1
     }
     expect { return .Ok(120) }
 }
@@ -181,15 +176,15 @@ construct MgAReachSetsHowFarTheLightGoes() extends Test {
         var still = MotionGlowState {}
         motionGlowFit(still, 120.0, 40.0, 3000.0)
         motionGlowPress(still, 20.0, 20.0)
-        let ignored = mgRun(still, 0.5)
+        let ignored = run(still, 0.5)
         var dragged = MotionGlowState {}
         motionGlowFit(dragged, 120.0, 40.0, 3000.0)
         motionGlowPress(dragged, 20.0, 20.0)
         motionGlowMove(dragged, 110.0, 20.0)
-        let alsoIgnored = mgRun(dragged, 1.0)
+        let alsoIgnored = run(dragged, 1.0)
         var out = 0
         if motionGlowLight(still).radius == 1500.0 {
-            out = out + 1
+            out++
         }
         if motionGlowLight(dragged).radius == 1500.0 {
             out = out + 10
@@ -212,15 +207,15 @@ construct MgADragSpreadsTheLight() extends Test {
         motionGlowFit(state, 400.0, 300.0)
         motionGlowPress(state, 40.0, 30.0)
         motionGlowMove(state, 140.0, 30.0)
-        let ignored = mgRun(state, 1.0)
+        let ignored = run(state, 1.0)
         let light = motionGlowLight(state)
         if light.radius < 499.0 {
-            return 0 - 1
+            return -1
         }
         if abs(light.x - 200.0) > abs(140.0 - 200.0) * 0.3 {
-            return 0 - 2
+            return -2
         }
-        return mtScaled(light.strength, 3)
+        return scaled(light.strength, 3)
     }
     expect { return .Ok(60) }
 }
@@ -232,7 +227,7 @@ construct MgTheSpreadEasesIn() extends Test {
         motionGlowFit(state, 400.0, 300.0)
         motionGlowPress(state, 40.0, 30.0)
         motionGlowMove(state, 140.0, 30.0)
-        let ignored = motionGlowAdvance(state, mgStep())
+        let ignored = motionGlowAdvance(state, frameStep())
         if state.spread > 0.1 {
             return 0
         }
@@ -247,10 +242,10 @@ construct MgAReleaseOpensTheLightOut() extends Test {
         var state = MotionGlowState {}
         motionGlowFit(state, 400.0, 300.0)
         motionGlowPress(state, 40.0, 30.0)
-        let ignored = mgRun(state, 0.5)
+        let ignored = run(state, 0.5)
         let held = motionGlowLight(state)
         motionGlowRelease(state)
-        let fading = mgRun(state, motionGlowFadeOut() * 0.5)
+        let fading = run(state, MotionGlow.fadeOut * 0.5)
         let leaving = motionGlowLight(state)
         if leaving.radius > held.radius * 1.3 && leaving.x == held.x {
             return 1
@@ -269,13 +264,13 @@ construct MgTheLightIsCenteredOnTheTouch() extends Test {
     test {
         var state = MotionGlowState {}
         motionGlowPress(state, 40.0, 10.0)
-        let ignored = mgRun(state, motionGlowFadeIn())
+        let ignored = run(state, MotionGlow.fadeIn)
         let atTouch = motionGlowAt(state, 40.0, 10.0)
-        let awayFromIt = motionGlowAt(state, 40.0 + motionGlowDiameter() * 0.4, 10.0)
+        let awayFromIt = motionGlowAt(state, 40.0 + MotionGlow.diameter * 0.4, 10.0)
         if atTouch > awayFromIt && awayFromIt > 0.0 {
-            return mtScaled(atTouch, 3)
+            return scaled(atTouch, 3)
         }
-        return 0 - 1
+        return -1
     }
     expect { return .Ok(120) }
 }
@@ -284,11 +279,11 @@ construct MgTheLightTracksTheFinger() extends Test {
     test {
         var state = MotionGlowState {}
         motionGlowPress(state, 0.0, 0.0)
-        let ignored = mgRun(state, motionGlowFadeIn())
+        let ignored = run(state, MotionGlow.fadeIn)
         motionGlowMove(state, 90.0, 0.0)
         // Moved with no frame in between: the light is already there.
         let atNew = motionGlowAt(state, 90.0, 0.0)
-        return mtScaled(atNew, 3)
+        return scaled(atNew, 3)
     }
     expect { return .Ok(120) }
 }
@@ -303,11 +298,11 @@ construct MgOverlappingTouchesAddUp() extends Test {
     test {
         var first = MotionGlowState {}
         motionGlowPress(first, 0.0, 0.0)
-        let alone = mgRun(first, motionGlowFadeIn())
+        let alone = run(first, MotionGlow.fadeIn)
 
         var second = MotionGlowState {}
         motionGlowPress(second, 0.0, 0.0)
-        let ignored = mgRun(second, motionGlowFadeIn())
+        let ignored = run(second, MotionGlow.fadeIn)
         let together = motionGlowAt(first, 0.0, 0.0) + motionGlowAt(second, 0.0, 0.0)
         if together > alone * 1.9 {
             return 1
@@ -324,15 +319,15 @@ construct MgTwoFingersLightTwoPlaces() extends Test {
         var right = MotionGlowState {}
         motionGlowPress(left, 0.0, 0.0)
         motionGlowPress(right, 400.0, 0.0)
-        let ignoredL = mgRun(left, motionGlowFadeIn())
-        let ignoredR = mgRun(right, motionGlowFadeIn())
+        let ignoredL = run(left, MotionGlow.fadeIn)
+        let ignoredR = run(right, MotionGlow.fadeIn)
         // Each is lit at its own touch and dark at the other's.
         let leftAtRight = motionGlowAt(left, 400.0, 0.0)
         let rightAtLeft = motionGlowAt(right, 0.0, 0.0)
         if leftAtRight == 0.0 && rightAtLeft == 0.0 {
-            return mtScaled(motionGlowAt(left, 0.0, 0.0), 3)
+            return scaled(motionGlowAt(left, 0.0, 0.0), 3)
         }
-        return 0 - 1
+        return -1
     }
     expect { return .Ok(120) }
 }
@@ -369,14 +364,12 @@ construct MgTheReleaseSpringIsBouncierThanThePress() extends Test {
 construct MgTheReleaseSpringOvershoots() extends Test {
     test {
         var state = motionSpringStart(motionLiftOff(100.0), 0.0, 0.0)
-        var peak = 0.0
-        var frames = 0
-        while frames < 480 {
-            let sample = motionSpringAdvance(state, mgStep())
+        var peak: Number = 0.0
+        for _ in 0..480 {
+            let sample = motionSpringAdvance(state, frameStep())
             if sample.value > peak {
                 peak = sample.value
             }
-            frames = frames + 1
         }
         if peak > 100.0 {
             return 1
@@ -391,7 +384,7 @@ construct MgAPressLiftsRatherThanShrinks() extends Test {
     test {
         let lift = motionPressLiftScale(100.0)
         if lift > 1.0 {
-            return mtScaled(lift, 3)
+            return scaled(lift, 3)
         }
         return 0
     }

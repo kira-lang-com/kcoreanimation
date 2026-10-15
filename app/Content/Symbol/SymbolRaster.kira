@@ -1,0 +1,320 @@
+import Foundation
+
+// Drawing a symbol's shapes into coverage: one level per pixel, 0 paper and
+// 255 ink. Coverage only, so one drawing serves every color the symbol is
+// tinted with where it is drawn, as a glyph does.
+//
+// Fills are scanned row by row, several sub-rows to a pixel, with each span's
+// horizontal coverage measured exactly. Strokes are a distance field to their
+// segments, which rounds their caps and joins as icon sets draw them. The two
+// meet in one plane, the larger coverage winning.
+
+namespace SymbolRaster {
+    // Sub-rows a fill samples per pixel row: smooth along a shallow edge
+    // without sampling every pixel many times over.
+    let subRows: Number = 4
+    // How far past a stroke's half width its antialiasing ramp reaches.
+    let strokeReach: Float = 1.5
+    let opaque: Float = 255
+}
+
+public enum SymbolFailure {
+    // The `viewBox` or size the document states has no area.
+    EmptyCanvas
+    // Nothing the document draws covers a pixel.
+    NoInk
+    // A drawing was asked for with no pixels.
+    EmptySize
+}
+
+public struct SymbolCoverage {
+    let width: Number
+    let height: Number
+    // Row by row, `width` to a row.
+    let levels: [U8]
+}
+
+// The document's canvas fitted into a square of pixels, its aspect kept and
+// centered.
+struct SymbolTransform {
+    let scale: Float
+    let x: Float
+    let y: Float
+
+    function applied(borrow self, outlines: borrow [SymbolOutline]) -> [SymbolOutline] {
+        var placed: [SymbolOutline] = []
+        for outline in outlines {
+            var moved = SymbolOutline { closed: outline.closed }
+            for point in outline.points {
+                moved.points.append(SymbolPoint { x: point.x * scale + x, y: point.y * scale + y })
+            }
+            placed.append(moved)
+        }
+        return placed
+    }
+}
+
+function symbolTransform(canvas: borrow SymbolBox, size: Number) -> SymbolTransform {
+    let pixels = Float(size)
+    let scale = pixels / max(canvas.width, canvas.height)
+    return SymbolTransform {
+        scale: scale,
+        x: -canvas.x * scale + (pixels - canvas.width * scale) / 2.0,
+        y: -canvas.y * scale + (pixels - canvas.height * scale) / 2.0
+    }
+}
+
+// `source` drawn into a square `size` pixels across, grown `growth` pixels
+// heavier than drawn.
+function symbolCoverage(
+    source: borrow String,
+    size: Number,
+    growth: Float
+) -> Result<SymbolCoverage, SymbolFailure> {
+    if size <= 0 { return .Error(.EmptySize) }
+    let document = match symbolDocument(source) {
+        Ok(document) -> document
+        Error(failure) -> return .Error(failure)
+    }
+    let transform = symbolTransform(document.canvas, size)
+    let paper: Float = 0.0
+    var plane = CoveragePlane { size: size, coverage: filled(size * size, paper) }
+    for shape in document.shapes {
+        let outlines = transform.applied(shape.outlines)
+        plane.fill(outlines, shape.fill)
+        match shape.stroke {
+            Some(width) -> plane.stroke(outlines, width * transform.scale / 2.0)
+            None -> {}
+        }
+    }
+    plane.grow(growth)
+    return .Ok(SymbolCoverage { width: size, height: size, levels: plane.levels() })
+}
+
+// A crossing of a scanline with an edge, and which way the edge runs.
+struct EdgeCrossing {
+    let x: Float
+    let direction: Number
+}
+
+struct CoveragePlane {
+    let size: Number
+    var coverage: [Float]
+
+    function fill(borrow mut self, outlines: borrow [SymbolOutline], rule: borrow SymbolFill) {
+        match rule {
+            // An unfilled shape is only stroked.
+            Unfilled -> {}
+            NonZero -> scanFill(outlines, rule)
+            EvenOdd -> scanFill(outlines, rule)
+        }
+    }
+
+    function scanFill(borrow mut self, outlines: borrow [SymbolOutline], rule: borrow SymbolFill) {
+        let subRows = Float(SymbolRaster.subRows)
+        for row in 0..size {
+            for sub in 0..SymbolRaster.subRows {
+                let sampleY = Float(row) + (Float(sub) + 0.5) / subRows
+                let crossings = scanCrossings(outlines, sampleY)
+                addSpans(row, crossings, rule)
+            }
+        }
+    }
+
+    // Adds the spans the sorted `crossings` enclose to `row`, each a share of
+    // a pixel row as tall as one sub-row.
+    function addSpans(
+        borrow mut self,
+        row: Number,
+        crossings: borrow [EdgeCrossing],
+        rule: borrow SymbolFill
+    ) {
+        var winding: Number = 0
+        var opened: Float = 0.0
+        for crossing in crossings {
+            let wasInside = inside(winding, rule)
+            winding += match rule {
+                EvenOdd -> 1
+                NonZero -> crossing.direction
+                Unfilled -> 0
+            }
+            let isInside = inside(winding, rule)
+            if !wasInside && isInside { opened = crossing.x }
+            if wasInside && !isInside { addSpan(row, opened, crossing.x) }
+        }
+        // A span left open runs to the edge.
+        if inside(winding, rule) { addSpan(row, opened, Float(size)) }
+    }
+
+    function addSpan(borrow mut self, row: Number, from: Float, to: Float) {
+        let pixels = Float(size)
+        if to <= 0.0 || from >= pixels { return }
+        let left = max(from, 0.0)
+        let right = min(to, pixels)
+        let share = 1.0 / Float(SymbolRaster.subRows)
+        for column in Number(Int(floor(left)))..min(Number(Int(ceil(right))), size) {
+            let covered = min(right, Float(column) + 1.0) - max(left, Float(column))
+            if covered > 0.0 { coverage[row * size + column] += covered * share }
+        }
+    }
+
+    function stroke(borrow mut self, outlines: borrow [SymbolOutline], halfWidth: Float) {
+        for outline in outlines {
+            if outline.points.count > 0 { strokeOutline(outline, halfWidth) }
+        }
+    }
+
+    // Only pixels near the outline's bounds can be reached, so only those
+    // are measured.
+    function strokeOutline(borrow mut self, outline: borrow SymbolOutline, halfWidth: Float) {
+        let bounds = outlineBounds(outline)
+        let reach = halfWidth + SymbolRaster.strokeReach
+        let top = clampPixel(floor(bounds.y - reach))
+        let bottom = clampPixel(ceil(bounds.y + bounds.height + reach))
+        let left = clampPixel(floor(bounds.x - reach))
+        let right = clampPixel(ceil(bounds.x + bounds.width + reach))
+        for y in top..bottom {
+            for x in left..right {
+                let distance = sqrt(nearestSquared(outline, Float(x) + 0.5, Float(y) + 0.5))
+                // A one-pixel ramp centered on the stroke's edge.
+                let covered = min(0.5 + halfWidth - distance, 1.0)
+                let index = y * size + x
+                if covered > coverage[index] { coverage[index] = covered }
+            }
+        }
+    }
+
+    // Every edge grown outward by `radius` pixels: the weight of a symbol, as
+    // a heavier cut of a typeface has heavier stems. A symbol is drawn at one
+    // weight, so matching the words beside it means thickening what was
+    // drawn. A fraction of a pixel mixes the whole grows either side of it,
+    // so a symbol's weight follows the type's continuously rather than
+    // jumping between two sizes.
+    function grow(borrow mut self, radius: Float) {
+        if radius <= 0.0 { return }
+        let whole = floor(radius)
+        let fraction = radius - whole
+        let lighter = discMaxima(Number(Int(whole)))
+        let heavier = discMaxima(Number(Int(whole)) + 1)
+        for index in 0..coverage.count {
+            coverage[index] = lighter[index] + (heavier[index] - lighter[index]) * fraction
+        }
+    }
+
+    // Each pixel's largest coverage within `radius` of it: a disc, so grown
+    // corners come out round rather than square.
+    function discMaxima(borrow self, radius: Number) -> [Float] {
+        if radius <= 0 { return copy coverage }
+        let reach = radius * radius
+        var grown = copy coverage
+        for y in 0..size {
+            for x in 0..size {
+                grown[y * size + x] = discMaximum(x, y, radius, reach)
+            }
+        }
+        return grown
+    }
+
+    function discMaximum(
+        borrow self,
+        x: Number,
+        y: Number,
+        radius: Number,
+        reach: Number
+    ) -> Float {
+        var best = coverage[y * size + x]
+        for row in max(y - radius, 0)..min(y + radius + 1, size) {
+            for column in max(x - radius, 0)..min(x + radius + 1, size) {
+                let dx = column - x
+                let dy = row - y
+                if dx * dx + dy * dy <= reach { best = max(best, coverage[row * size + column]) }
+            }
+            if best >= 1.0 { return best }
+        }
+        return best
+    }
+
+    function clampPixel(borrow self, value: Float) -> Number {
+        return Number(Int(clamp(value, 0.0, Float(size))))
+    }
+
+    function levels(borrow self) -> [U8] {
+        var levels: [U8] = []
+        for covered in coverage {
+            levels.append(U8(Int(clamp(covered, 0.0, 1.0) * SymbolRaster.opaque + 0.5)))
+        }
+        return levels
+    }
+}
+
+function inside(winding: Number, rule: borrow SymbolFill) -> Bool {
+    return match rule {
+        EvenOdd -> winding % 2 != 0
+        NonZero -> winding != 0
+        Unfilled -> false
+    }
+}
+
+// Where the scanline at `y` crosses the outlines' edges, left to right. Every
+// outline of three points or more is filled as closed, as SVG fills an open
+// path.
+function scanCrossings(outlines: borrow [SymbolOutline], y: Float) -> [EdgeCrossing] {
+    var crossings: [EdgeCrossing] = []
+    for outline in outlines {
+        let count = outline.points.count
+        if count < 3 { continue }
+        for (index, from) in outline.points.enumerated() {
+            let to = outline.points[(index + 1) % count]
+            if from.y == to.y { continue }
+            let low = min(from.y, to.y)
+            let high = max(from.y, to.y)
+            if y < low || y >= high { continue }
+            let t = (y - from.y) / (to.y - from.y)
+            crossings.append(
+                EdgeCrossing { x: from.x + t * (to.x - from.x), direction: from.y < to.y ? 1 : -1 }
+            )
+        }
+    }
+    return crossings.sorted({ a, b in return a.x < b.x })
+}
+
+// The square of the distance from (`x`, `y`) to the outline's nearest
+// segment. A single point is a segment of no length, drawn as a dot.
+function nearestSquared(outline: borrow SymbolOutline, x: Float, y: Float) -> Float {
+    let count = outline.points.count
+    let segments = count == 1 ? 1 : (outline.closed ? count : count - 1)
+    var nearest: Float = Float(1000000000)
+    for index in 0..segments {
+        let from = outline.points[index]
+        let to = outline.points[(index + 1) % count]
+        let alongX = to.x - from.x
+        let alongY = to.y - from.y
+        let length = alongX * alongX + alongY * alongY
+        let offsetX = x - from.x
+        let offsetY = y - from.y
+        let t = length == 0.0 ? 0.0 : clamp(
+            (offsetX * alongX + offsetY * alongY) / length,
+            0.0,
+            1.0
+        )
+        let dx = offsetX - t * alongX
+        let dy = offsetY - t * alongY
+        nearest = min(nearest, dx * dx + dy * dy)
+    }
+    return nearest
+}
+
+function outlineBounds(outline: borrow SymbolOutline) -> SymbolBox {
+    let first = outline.points[0]
+    var left = first.x
+    var top = first.y
+    var right = first.x
+    var bottom = first.y
+    for point in outline.points {
+        left = min(left, point.x)
+        top = min(top, point.y)
+        right = max(right, point.x)
+        bottom = max(bottom, point.y)
+    }
+    return SymbolBox { x: left, y: top, width: right - left, height: bottom - top }
+}

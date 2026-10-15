@@ -17,32 +17,32 @@ public struct CADrawItem {
     var transform: CAAffineTransform = CAAffineTransform {}
     var quad: CAOrientedQuad = CAOrientedQuad {}
     var worldBounds: Rect = Rect {}
-    var localWidth: Float = 0.0
-    var localHeight: Float = 0.0
-    var opacity: Float = 1.0
+    var localWidth: Number = 0.0
+    var localHeight: Number = 0.0
+    var opacity: Number = 1.0
     var fill: CAColor = CAColor {}
     var border: CAColor = CAColor {}
-    var cornerRadius: Float = 0.0
-    var borderWidth: Float = 0.0
-    var lengthScale: Float = 1.0
-    var textScale: Float = 1.0
+    var cornerRadius: Number = 0.0
+    var borderWidth: Number = 0.0
+    var lengthScale: Number = 1.0
+    var textScale: Number = 1.0
     // The weight a run is drawn at, as its layer's weight channel has it now.
-    var textWeight: Float = 400.0
-    var glassWash: Float = 0.0
-    var glassWashLuma: Float = 1.0
+    var textWeight: Number = 400.0
+    var glassWash: Number = 0.0
+    var glassWashLuma: Number = 1.0
     var capturesBackdrop: Bool = false
-    var clipMinX: Float = 0.0
-    var clipMinY: Float = 0.0
-    var clipMaxX: Float = 1000000.0
-    var clipMaxY: Float = 1000000.0
-    var clipRadius: Float = 0.0
-    var clipShapeKind: Int = 0
+    var clipMinX: Number = 0.0
+    var clipMinY: Number = 0.0
+    var clipMaxX: Number = 1000000.0
+    var clipMaxY: Number = 1000000.0
+    var clipRadius: Number = 0.0
+    var clipShapeKind: Number = 0
     var clips: Bool = false
     var groupOpacity: Bool = false
     var hit: Bool = false
     var interactive: Bool = false
     var slidesPress: Bool = false
-    var hitKey: Int = 0
+    var hitKey: Number = 0
     var scrolls: Bool = false
 }
 
@@ -50,125 +50,165 @@ public @Derive(Copy)
 struct CAWalkFrame {
     var id: LayerId = LayerId(0)
     var world: CAAffineTransform = CAAffineTransform {}
-    var opacity: Float = 1.0
-    var clipMinX: Float = 0.0
-    var clipMinY: Float = 0.0
-    var clipMaxX: Float = 1000000.0
-    var clipMaxY: Float = 1000000.0
-    var clipRadius: Float = 0.0
-    var clipShapeKind: Int = 0
-    var glassWash: Float = 0.0
-    var glassWashLuma: Float = 1.0
+    var opacity: Number = 1.0
+    var clipMinX: Number = 0.0
+    var clipMinY: Number = 0.0
+    var clipMaxX: Number = 1000000.0
+    var clipMaxY: Number = 1000000.0
+    var clipRadius: Number = 0.0
+    var clipShapeKind: Number = 0
+    var glassWash: Number = 0.0
+    var glassWashLuma: Number = 1.0
 }
 
-public function caRootFrame(id: LayerId) -> CAWalkFrame {
+public function rootFrame(id: LayerId) -> CAWalkFrame {
     return CAWalkFrame { id: id }
 }
 
-// A layer's own transform, about its anchor, from its presentation values.
-public function caLocalTransform(node: borrow CALayerNode) -> CAAffineTransform {
-    let w = node.boundsW.presentation
-    let h = node.boundsH.presentation
-    let ax = node.anchorX * w
-    let ay = node.anchorY * h
-    let pos = caTranslation(node.posX.presentation, node.posY.presentation)
-    let rot = caRotation(node.rotation.presentation)
-    let scl = caScaleTransform(node.scaleX.presentation, node.scaleY.presentation)
-    let fromAnchor = caTranslation(-ax, -ay)
-    let aboutAnchor = caConcat(caTranslation(ax, ay), caConcat(rot, caConcat(scl, fromAnchor)))
-    return caConcat(pos, aboutAnchor)
-}
+extend CALayerNode {
+    // A layer's own transform, about its anchor, from its presentation values.
+    function localTransform() -> CAAffineTransform {
+        let w = self.boundsW.presentation
+        let h = self.boundsH.presentation
+        let ax = self.anchorX * w
+        let ay = self.anchorY * h
+        let pos = translation(self.posX.presentation, self.posY.presentation)
+        let rot = rotation(self.rotation.presentation)
+        let scl = scaleTransform(self.scaleX.presentation, self.scaleY.presentation)
+        let fromAnchor = translation(-ax, -ay)
+        let aboutAnchor = (translation(ax, ay)).concat(rot.concat(scl.concat(fromAnchor)))
+        return pos.concat(aboutAnchor)
+    }
 
-// A layer's deformation, about its center, in its own coordinates.
-public function caDeformTransform(node: borrow CALayerNode) -> CAAffineTransform {
-    let d = node.deformation
-    let cx = node.boundsW.presentation * 0.5
-    let cy = node.boundsH.presentation * 0.5
-    let stretch = caConcat(caScaleTransform(d.scaleX, d.scaleY), caTranslation(-cx, -cy))
-    return caConcat(caTranslation(cx + d.x, cy + d.y), stretch)
-}
-
-// Where a layer's deformation carries a point already placed at rest, in the
-// space `rest` places the layer in: the picture of what it holds, drawn at
-// rest, is deformed through this.
-public function caDeformAcross(rest: borrow CAAffineTransform, node: borrow CALayerNode) -> CAAffineTransform {
-    return caConcat(caConcat(rest, caDeformTransform(node)), caInvert(rest))
-}
-
-public function caDrawItemFor(node: borrow CALayerNode, frame: borrow CAWalkFrame, world: borrow CAAffineTransform, opacity: Float) -> CADrawItem {
-    let w = node.boundsW.presentation
-    let h = node.boundsH.presentation
-    let lengthScale = caLengthScale(world)
-    return CADrawItem {
-        layer: node.id,
-        content: node.content,
-        transform: world,
-        quad: caOrientedQuad(world, w, h),
-        worldBounds: caApplyRect(world, Rect { x: 0.0, y: 0.0, width: w, height: h }),
-        localWidth: w,
-        localHeight: h,
-        opacity: opacity,
-        fill: caColorChannelPresentation(node.fillColor),
-        border: caColorChannelPresentation(node.borderColor),
-        cornerRadius: node.cornerRadius.presentation * lengthScale,
-        borderWidth: node.borderWidth.presentation * lengthScale,
-        lengthScale: lengthScale,
-        textScale: caTextScale(world),
-        textWeight: node.textWeight.presentation,
-        glassWash: frame.glassWash,
-        glassWashLuma: frame.glassWashLuma,
-        capturesBackdrop: node.capturesBackdrop,
-        clipMinX: frame.clipMinX,
-        clipMinY: frame.clipMinY,
-        clipMaxX: frame.clipMaxX,
-        clipMaxY: frame.clipMaxY,
-        clipRadius: frame.clipRadius,
-        clipShapeKind: frame.clipShapeKind,
-        clips: node.clip,
-        groupOpacity: node.groupOpacity,
-        hit: node.hit,
-        interactive: node.interactive,
-        slidesPress: node.slidesPress,
-        hitKey: node.hitKey,
-        scrolls: node.scrolls
+    // A layer's deformation, about its center, in its own coordinates.
+    function deformTransform() -> CAAffineTransform {
+        let d = self.deformation
+        let cx = self.boundsW.presentation * 0.5
+        let cy = self.boundsH.presentation * 0.5
+        let stretch = (scaleTransform(d.scaleX, d.scaleY)).concat(translation(-cx, -cy))
+        return (translation(cx + d.x, cy + d.y)).concat(stretch)
     }
 }
 
-// The frame a node's children inherit: the node's world and effective opacity,
-// and its own world AABB intersected into the clip when it clips.
-public function caChildFrame(node: borrow CALayerNode, frame: borrow CAWalkFrame, world: borrow CAAffineTransform, opacity: Float) -> CAWalkFrame {
-    var out = frame
-    out.world = world
-    out.opacity = opacity
-    if node.clip {
-        let box = caApplyRect(world, Rect { x: 0.0, y: 0.0, width: node.boundsW.presentation, height: node.boundsH.presentation })
-        out.clipMinX = max(frame.clipMinX, box.x)
-        out.clipMinY = max(frame.clipMinY, box.y)
-        out.clipMaxX = min(frame.clipMaxX, box.x + box.width)
-        out.clipMaxY = min(frame.clipMaxY, box.y + box.height)
-        out.clipRadius = node.cornerRadius.presentation * caLengthScale(world)
-        out.clipShapeKind = caContentShapeKind(node.content)
+extend CAAffineTransform {
+    // Where a layer's deformation carries a point already placed at rest, in the
+    // space `rest` places the layer in: the picture of what it holds, drawn at
+    // rest, is deformed through this.
+    function deformAcross(node: borrow CALayerNode) -> CAAffineTransform {
+        return (self.concat(node.deformTransform())).concat(self.invert())
     }
-    match node.content {
-        Glass(glass) -> {
-            let wash = caGlassWash(caColorChannelPresentation(node.fillColor), glass.material)
-            out.glassWash = wash.alpha
-            out.glassWashLuma = wash.luma
+}
+
+extend CALayerNode {
+    function drawItemFor(
+        frame: borrow CAWalkFrame,
+        world: borrow CAAffineTransform,
+        opacity: Number
+    ) -> CADrawItem {
+        let w = self.boundsW.presentation
+        let h = self.boundsH.presentation
+        let lengthScale = world.lengthScale()
+        return CADrawItem {
+            layer: self.id,
+            content: self.content,
+            transform: world,
+            quad: world.orientedQuad(w, h),
+            worldBounds: world.applyRect(Rect { x: 0.0, y: 0.0, width: w, height: h }),
+            localWidth: w,
+            localHeight: h,
+            opacity: opacity,
+            fill: self.fillColor.presentation(),
+            border: self.borderColor.presentation(),
+            cornerRadius: self.cornerRadius.presentation * lengthScale,
+            borderWidth: self.borderWidth.presentation * lengthScale,
+            lengthScale: lengthScale,
+            textScale: world.textScale(),
+            textWeight: self.textWeight.presentation,
+            glassWash: frame.glassWash,
+            glassWashLuma: frame.glassWashLuma,
+            capturesBackdrop: self.capturesBackdrop,
+            clipMinX: frame.clipMinX,
+            clipMinY: frame.clipMinY,
+            clipMaxX: frame.clipMaxX,
+            clipMaxY: frame.clipMaxY,
+            clipRadius: frame.clipRadius,
+            clipShapeKind: frame.clipShapeKind,
+            clips: self.clip,
+            groupOpacity: self.groupOpacity,
+            hit: self.hit,
+            interactive: self.interactive,
+            slidesPress: self.slidesPress,
+            hitKey: self.hitKey,
+            scrolls: self.scrolls
         }
-        Empty -> {}
-        Solid(s) -> {}
-        Text(t) -> {}
-        Texture(t) -> {}
-        Icon(i) -> {}
-        Gradient(g) -> {}
     }
-    return out
+
+    // The frame a node's children inherit: the node's world and effective opacity,
+    // and its own world AABB intersected into the clip when it clips.
+    function childFrame(
+        frame: borrow CAWalkFrame,
+        world: borrow CAAffineTransform,
+        opacity: Number
+    ) -> CAWalkFrame {
+        var out = frame
+        out.world = world
+        out.opacity = opacity
+        if self.clip {
+            let box = world.applyRect(
+                Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: self.boundsW.presentation,
+                    height: self.boundsH.presentation
+                }
+            )
+            let clip = nestedClip(
+                CAClipShape {
+                    minX: frame.clipMinX,
+                    minY: frame.clipMinY,
+                    maxX: frame.clipMaxX,
+                    maxY: frame.clipMaxY,
+                    radius: frame.clipRadius,
+                    kind: frame.clipShapeKind
+                },
+                box,
+                self.cornerRadius.presentation * world.lengthScale(),
+                self.content.shapeKind()
+            )
+            out.clipMinX = clip.minX
+            out.clipMinY = clip.minY
+            out.clipMaxX = clip.maxX
+            out.clipMaxY = clip.maxY
+            out.clipRadius = clip.radius
+            out.clipShapeKind = clip.kind
+        }
+        match self.content {
+            Glass(glass) -> {
+                let (alpha, luma) = (self.fillColor.presentation()).glassWash(glass.material)
+                out.glassWash = alpha
+                out.glassWashLuma = luma
+            }
+            Empty -> {}
+            Solid(s) -> {}
+            Text(t) -> {}
+            Texture(t) -> {}
+            Icon(i) -> {}
+            Gradient(g) -> {}
+        }
+        return out
+    }
 }
 
 // One subtree, in paint order, appended to `out`. Recursion carries the
 // accumulator as `borrow mut`; a hoisted child is skipped here and drawn from
-// the canvas root by the overlay pass.
-public function caFlattenInto(tree: borrow CALayerTree, frame: borrow CAWalkFrame, out: borrow mut [CADrawItem]) {
+// the canvas root by the overlay pass. Free functions rather than methods: a
+// method of the public tree is a RIDL entry, and a `borrow mut [T]` crossing
+// RIDL cannot change length (KLF-RIDL.md section 21.4).
+function flattenSubtree(
+    tree: borrow CALayerTree,
+    frame: borrow CAWalkFrame,
+    out: borrow mut [CADrawItem]
+) {
     var idx = LayerSlot(0)
     match tree.nodeSlot(frame.id) {
         None -> { return }
@@ -177,16 +217,20 @@ public function caFlattenInto(tree: borrow CALayerTree, frame: borrow CAWalkFram
     if !tree.nodes[idx.raw].mounted {
         return
     }
-    caFlattenLayer(tree, tree.nodes[idx.raw], frame, out)
-    return
+    flattenLayer(tree, tree.nodes[idx.raw], frame, out)
 }
 
 // One mounted layer and what it holds, the node borrowed where it stands.
-public function caFlattenLayer(tree: borrow CALayerTree, node: borrow CALayerNode, frame: borrow CAWalkFrame, out: borrow mut [CADrawItem]) {
-    let world = caConcat(frame.world, caConcat(caLocalTransform(node), caDeformTransform(node)))
+function flattenLayer(
+    tree: borrow CALayerTree,
+    node: borrow CALayerNode,
+    frame: borrow CAWalkFrame,
+    out: borrow mut [CADrawItem]
+) {
+    let world = frame.world.concat((node.localTransform()).concat(node.deformTransform()))
     let opacity = frame.opacity * node.opacity.presentation
-    out.append(caDrawItemFor(node, frame, world, opacity))
-    let childFrame = caChildFrame(node, frame, world, opacity)
+    out.append(node.drawItemFor(frame, world, opacity))
+    let childFrame = node.childFrame(frame, world, opacity)
     for childId in node.childIds {
         var cidx = LayerSlot(0)
         match tree.nodeSlot(childId) {
@@ -196,49 +240,56 @@ public function caFlattenLayer(tree: borrow CALayerTree, node: borrow CALayerNod
         if tree.nodes[cidx.raw].mounted && !tree.nodes[cidx.raw].hoisted {
             var cf = childFrame
             cf.id = childId
-            caFlattenInto(tree, cf, out)
+            flattenSubtree(tree, cf, out)
         }
     }
-    return
 }
 
-// The overlays in draw order: by level (lower first), stable within a level.
-public function caOverlayLevel(tree: borrow CALayerTree, id: LayerId) -> Int {
-    var idx = LayerSlot(0)
-    match tree.nodeSlot(id) {
-        None -> { return 0 }
-        Some(slot) -> { idx = slot }
-    }
-    match tree.nodes[idx.raw].level {
-        Inline -> return 0
-        Overlay(z) -> return z
+extend CALayerTree {
+    // The overlays in draw order: by level (lower first), stable within a level.
+    function overlayLevel(id: LayerId) -> Number {
+        var idx = LayerSlot(0)
+        match self.nodeSlot(id) {
+            None -> { return 0 }
+            Some(slot) -> { idx = slot }
+        }
+        match self.nodes[idx.raw].level {
+            Inline -> return 0
+            Overlay(z) -> return z
+        }
     }
 }
 
 public struct CAOverlayOrder {
     let id: LayerId
-    let level: Int = 0
-    let ordinal: Int = 0
+    let level: Number = 0
+    let ordinal: Number = 0
 }
 
-public function caOverlayBefore(a: borrow CAOverlayOrder, b: borrow CAOverlayOrder) -> Bool {
-    return a.level < b.level || (a.level == b.level && a.ordinal < b.ordinal)
+extend CAOverlayOrder {
+    function before(b: borrow CAOverlayOrder) -> Bool {
+        return self.level < b.level || (self.level == b.level && self.ordinal < b.ordinal)
+    }
 }
 
-public function caMergeOverlayOrders(values: borrow [CAOverlayOrder], start: Int, end: Int) -> [CAOverlayOrder] {
+public function mergeOverlayOrders(
+    values: borrow [CAOverlayOrder],
+    start: Number,
+    end: Number
+) -> [CAOverlayOrder] {
     if end - start <= 1 {
         var one: [CAOverlayOrder] = []
         if start < end { one.append(values[start]) }
         return one
     }
-    let middle = start + (end - start) / 2
-    let left = caMergeOverlayOrders(values, start, middle)
-    let right = caMergeOverlayOrders(values, middle, end)
+    let middle = start + trunc((end - start) / 2)
+    let left = mergeOverlayOrders(values, start, middle)
+    let right = mergeOverlayOrders(values, middle, end)
     var merged: [CAOverlayOrder] = []
     var li = 0
     var ri = 0
     while li < left.count && ri < right.count {
-        if caOverlayBefore(right[ri], left[li]) {
+        if right[ri].before(left[li]) {
             merged.append(right[ri])
             ri += 1
         } else {
@@ -246,42 +297,44 @@ public function caMergeOverlayOrders(values: borrow [CAOverlayOrder], start: Int
             li += 1
         }
     }
-    while li < left.count {
-        merged.append(left[li])
-        li += 1
+    for rest in li..left.count {
+        merged.append(left[rest])
     }
-    while ri < right.count {
-        merged.append(right[ri])
-        ri += 1
+    for rest in ri..right.count {
+        merged.append(right[rest])
     }
     return merged
 }
 
-public function caOrderedOverlays(tree: borrow CALayerTree) -> [LayerId] {
-    var entries: [CAOverlayOrder] = []
-    for ordinal in 0..tree.overlays.count {
-        let id = tree.overlays[ordinal]
-        entries.append(CAOverlayOrder { id: id, level: caOverlayLevel(tree, id), ordinal: ordinal })
+extend CALayerTree {
+    function orderedOverlays() -> [LayerId] {
+        var entries: [CAOverlayOrder] = []
+        for ordinal in 0..self.overlays.count {
+            let id = self.overlays[ordinal]
+            entries.append(
+                CAOverlayOrder { id: id, level: self.overlayLevel(id), ordinal: ordinal }
+            )
+        }
+        let sorted = mergeOverlayOrders(entries, 0, entries.count)
+        var ordered: [LayerId] = []
+        for entry in sorted { ordered.append(entry.id) }
+        return ordered
     }
-    let sorted = caMergeOverlayOrders(entries, 0, entries.count)
-    var ordered: [LayerId] = []
-    for entry in sorted { ordered.append(entry.id) }
-    return ordered
-}
 
-// The whole frame's draw list: the in-place tree, then every hoisted overlay.
-public function caFlatten(tree: borrow CALayerTree) -> [CADrawItem] {
-    var out: [CADrawItem] = []
-    if tree.rootId == LayerId(0) {
+    // The whole frame's draw list: the in-place tree, then every hoisted overlay.
+    function flatten() -> [CADrawItem] {
+        var out: [CADrawItem] = []
+        if self.rootId == LayerId(0) {
+            return out
+        }
+        flattenSubtree(self, rootFrame(self.rootId), out)
+        for overlayId in self.orderedOverlays() {
+            flattenSubtree(self, rootFrame(overlayId), out)
+        }
         return out
     }
-    caFlattenInto(tree, caRootFrame(tree.rootId), out)
-    for overlayId in caOrderedOverlays(tree) {
-        caFlattenInto(tree, caRootFrame(overlayId), out)
-    }
-    return out
-}
 
-public function caFlattenCount(tree: borrow CALayerTree) -> Int {
-    return caFlatten(tree).count
+    function flattenCount() -> Number {
+        return self.flatten().count
+    }
 }

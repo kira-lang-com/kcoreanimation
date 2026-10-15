@@ -1,0 +1,296 @@
+import Foundation
+
+// The text engine a process keeps: its fonts, each read once, the instances
+// they are set at, and what measuring has already answered. It lives in the
+// ambient store, so layout and the compositor read one engine and measure
+// with the very instance the glyphs are drawn from.
+
+namespace TextSlot {
+    let engine: String = "kcoreanimation.text"
+}
+
+namespace TextCache {
+    // Entries a cache holds before it starts over. A screen shows far fewer
+    // instances, glyphs and runs than these.
+    let instances: Number = 128
+    let advances: Number = 65536
+    let runs: Number = 4096
+    let shapes: Number = 4096
+    let inks: Number = 4096
+    // Ink is measured at four times the size asked, and the weight at the
+    // nearest tenth of the axis, the step the glyph atlas rasterizes at.
+    let inkScale: Number = 4
+    let inkWeightStep: Number = 10
+    // An instance key's parts: half pixels below this, whole weights below
+    // the other.
+    let sizeSteps: Number = 1048576
+    let weightSteps: Number = 2048
+    let glyphSteps: Number = 65536
+}
+
+// Where a face is looked for: the host's own UI face first, on hosts whose
+// face reads better than the bundled one, and the face this framework ships
+// everywhere else.
+namespace SystemFonts {
+    let bundled: String = "Resources/Fonts/InterVariable.ttf"
+    let apple: [String] = [
+        "/System/Library/Fonts/SFNS.ttf",
+        "/System/Library/Fonts/SFNSDisplay.ttf",
+        "/System/Library/Fonts/SFNSText.ttf"
+    ]
+    let appleMonospaced: [String] = [
+        "/System/Library/Fonts/SFNSMono.ttf",
+        "/System/Library/Fonts/Menlo.ttc"
+    ]
+    let windowsMonospaced: [String] = [
+        "C:/Windows/Fonts/CascadiaMono.ttf",
+        "C:/Windows/Fonts/consola.ttf"
+    ]
+    let linuxMonospaced: [String] = [
+        "/usr/share/fonts/google-noto-vf/NotoSansMono[wght].ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+        "/usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono.ttf",
+        "/usr/share/fonts/adwaita-mono-fonts/AdwaitaMono-Regular.ttf",
+        "/usr/share/fonts/liberation-mono-fonts/LiberationMono-Regular.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf"
+    ]
+}
+
+distinct FontId = Int
+
+// A font set at one pixel size and weight: what every measurement and every
+// glyph drawn at that size reads. Metrics are in pixels.
+struct FaceInstance {
+    let font: FontId
+    let key: Number
+    // Whether its figures are set tabular, every one the same width.
+    let tabular: Bool
+    let scale: Float
+    let coordinates: [Float]
+    // Baseline to the top of the line box, and to its bottom, positive down.
+    let ascender: Number
+    let descender: Number
+    let lineHeight: Number
+}
+
+// The visible ink of a run: its left edge from the pen at its first inked
+// glyph, its right edge from the run's start, and its top and bottom from
+// the baseline, the bottom positive down.
+struct TextInk {
+    let left: Number
+    let right: Number
+    let top: Number
+    let bottom: Number
+}
+
+// How a face was found for a design, once asked.
+enum FontLookup {
+    Found(FontId)
+    Missing
+}
+
+struct TextEngine {
+    var fonts: [FontFile] = []
+    var lookups: [(CAFontDesign, FontLookup)] = []
+    var instances: Map<Number, FaceInstance> = Map()
+    var advances: Map<Number, Number> = Map()
+    var runs: Map<String, Number> = Map()
+    var shapes: Map<String, [ShapedGlyph]> = Map()
+    var inks: Map<String, TextInk?> = Map()
+    // Measured symbols by their source, kept with the text they sit in.
+    var symbolInks: Map<String, SymbolInk> = Map()
+}
+
+// The process's engine, made the first time text is measured or drawn.
+function textEngine() -> RawPtr {
+    if !ambientStateHas(TextSlot.engine) {
+        ambientStatePut(TextSlot.engine, nativeUserData(nativeState(TextEngine {})))
+    }
+    return ambientStateGet(TextSlot.engine)
+}
+
+extend TextEngine {
+    // The face a run in `design` is set in: the host's monospaced face for
+    // monospaced runs where it has one, the default face otherwise. Nothing
+    // only where not even the bundled face can be read.
+    function face(borrow mut self, design: borrow CAFontDesign) -> FontId? {
+        match design {
+            Monospaced -> {
+                match lookup(.Monospaced) {
+                    Found(font) -> return .Some(font)
+                    Missing -> return lookupFont(.Default)
+                }
+            }
+            Default, MonospacedDigits -> return lookupFont(.Default)
+        }
+    }
+
+    function lookupFont(borrow mut self, design: borrow CAFontDesign) -> FontId? {
+        return match lookup(design) {
+            Found(font) -> .Some(font)
+            Missing -> .None
+        }
+    }
+
+    function lookup(borrow mut self, design: borrow CAFontDesign) -> FontLookup {
+        for (known, found) in lookups {
+            if known == design { return found }
+        }
+        let found = load(fontPaths(design))
+        lookups.append((copy design, copy found))
+        return found
+    }
+
+    // The first of `paths` that reads as a TrueType face.
+    function load(borrow mut self, paths: borrow [String]) -> FontLookup {
+        for path in paths {
+            match fontAt(path) {
+                Ok(font) -> {
+                    fonts.append(move font)
+                    return .Found(FontId(fonts.count - 1))
+                }
+                Error(failure) -> log debug("font not used", path, failure)
+            }
+        }
+        return .Missing
+    }
+}
+
+// The paths a design's face is looked for at, in order, on this host.
+function fontPaths(design: borrow CAFontDesign) -> [String] {
+    var paths: [String] = []
+    match design {
+        Default, MonospacedDigits -> {
+            match targetPlatform!() {
+                MacOS -> paths = copy SystemFonts.apple
+                Ios -> paths = copy SystemFonts.apple
+                // Every other host's own faces read worse at a UI's sizes than
+                // the bundled one.
+                Windows -> {}
+                Linux -> {}
+                Tessera -> {}
+                Wasm -> {}
+                Unknown -> {}
+            }
+            paths.append(SystemFonts.bundled)
+        }
+        Monospaced -> {
+            match targetPlatform!() {
+                MacOS -> paths = copy SystemFonts.appleMonospaced
+                Ios -> paths = copy SystemFonts.appleMonospaced
+                Windows -> paths = copy SystemFonts.windowsMonospaced
+                Linux -> paths = copy SystemFonts.linuxMonospaced
+                // Tessera ships no monospaced face, and a browser has no files.
+                Tessera -> {}
+                Wasm -> {}
+                Unknown -> {}
+            }
+        }
+    }
+    return paths
+}
+
+function fontAt(path: borrow String) -> Result<FontFile, FontFailure> {
+    let size = match fileSize(path) {
+        Ok(size) -> size
+        Error(failure) -> return .Error(.Unreadable(traceText(failure)))
+    }
+    return match readFileRange(path, 0, size) {
+        Ok(bytes) -> fontFile(move bytes, 0)
+        Error(failure) -> .Error(.Unreadable(traceText(failure)))
+    }
+}
+
+extend TextEngine {
+    // `font` set at `size` pixels and `weight`, at the nearest half pixel
+    // and whole weight, so a size or weight in motion reuses instances.
+    function instance(
+        borrow mut self,
+        font: FontId,
+        size: Number,
+        weight: Number,
+        tabular: Bool
+    ) -> FaceInstance {
+        let halfPixels = max(round(size * 2), 1)
+        let wholeWeight = round(weight)
+        let key = (
+            (
+                Number(font.raw) * TextCache.sizeSteps + halfPixels
+            ) * TextCache.weightSteps + wholeWeight
+        ) * 2 + (tabular ? 1 : 0)
+        match instances.value(key) {
+            Some(known) -> return known
+            None -> {}
+        }
+        let made = fonts[font.raw].instance(font, key, halfPixels / 2, wholeWeight, tabular)
+        if instances.count() >= TextCache.instances { instances.removeAll() }
+        instances.set(key, copy made)
+        return made
+    }
+
+    // How far the pen moves past `glyph` in `instance`, in pixels.
+    function advance(borrow mut self, instance: borrow FaceInstance, glyph: GlyphId) -> Number {
+        let key = instance.key * TextCache.glyphSteps + Number(glyph.raw)
+        match advances.value(key) {
+            Some(known) -> return known
+            None -> {}
+        }
+        let font = fonts[instance.font.raw]
+        let advance = Number(font.glyphAdvance(glyph, instance.coordinates) * instance.scale)
+        if advances.count() >= TextCache.advances { advances.removeAll() }
+        advances.set(key, advance)
+        return advance
+    }
+
+    // `glyph` drawn in `instance`, shifted right `shift` pixels.
+    function glyphBitmap(
+        borrow self,
+        instance: borrow FaceInstance,
+        glyph: GlyphId,
+        shift: Number
+    ) -> GlyphBitmap {
+        let font = fonts[instance.font.raw]
+        return font.glyphBitmap(glyph, instance.coordinates, instance.scale, Float(shift))
+    }
+}
+
+extend FontFile {
+    // This font at `pixels` per em and `weight`. A font that asks for whole
+    // pixels per em is scaled at the nearest whole size, and line metrics are
+    // rounded to whole pixels, as FreeType sets a TrueType size.
+    function instance(
+        font: FontId,
+        key: Number,
+        pixels: Number,
+        weight: Number,
+        tabular: Bool
+    ) -> FaceInstance {
+        var perEm = round(pixels * 64) / 64
+        if integerPpem { perEm = max(round(perEm), 1) }
+        let scale = Float(perEm) / unitsPerEm
+        return FaceInstance {
+            font: font,
+            key: key,
+            tabular: tabular,
+            scale: scale,
+            coordinates: coordinates(Float(pixels), Float(weight)),
+            ascender: Number(round(ascender * scale)),
+            descender: Number(-round(descender * scale)),
+            lineHeight: Number(round((ascender - descender + lineGap) * scale))
+        }
+    }
+}
+
+// A run's Unicode scalars, in order.
+function textScalars(text: borrow String) -> [Number] {
+    var scalars: [Number] = []
+    var index: Int = 0
+    while index < text.count {
+        let width = scalarWidthAt(text, index)
+        if index + width > text.count { return scalars }
+        scalars.append(Number(scalarAt(text, index, width)))
+        index += width
+    }
+    return scalars
+}

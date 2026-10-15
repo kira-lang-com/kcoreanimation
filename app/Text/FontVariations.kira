@@ -1,0 +1,420 @@
+import Foundation
+
+// A variable font's design space, and how far each glyph's points move at a
+// place in it. `fvar` names the axes, `avar` bends each axis's normalized
+// scale, and `gvar` holds every glyph's point deltas as tuples, each scaled
+// by how near the instance stands to the tuple's peak (OpenType, "OpenType
+// Font Variations Overview" and the `gvar` chapter).
+
+struct FontAxis {
+    let tag: AxisTag
+    let minimum: Float
+    let standard: Float
+    let maximum: Float
+}
+
+// Where `gvar`'s parts are in the file.
+struct GlyphVariationTable {
+    let axisCount: Int
+    let sharedTuples: Int
+    let glyphCount: Int
+    let offsetFormat: LocaFormat
+    let offsets: Int
+    let data: Int
+}
+
+struct FontVariations {
+    let axes: [FontAxis] = []
+    // Each axis's `avar` segment map, from normalized to bent.
+    let axisMaps: [[(Float, Float)]] = []
+    let glyphs: GlyphVariationTable? = .None
+}
+
+// A point's movement, or a point, in font units.
+struct OutlineVector {
+    var x: Float
+    var y: Float
+}
+
+// The registered axes the engine sets, by their tags; any other axis stays
+// at its default.
+@Open enum AxisTag: U32 {
+    Weight = 0x77676874
+    OpticalSize = 0x6F70737A
+}
+
+// Byte positions and bits of the variation tables.
+namespace VariationLayout {
+    let fvarAxes: Int = 4
+    let fvarAxisCount: Int = 8
+    let fvarAxisSize: Int = 10
+    let avarAxisCount: Int = 6
+    let avarMaps: Int = 8
+    let gvarAxisCount: Int = 4
+    let gvarSharedCount: Int = 6
+    let gvarSharedTuples: Int = 8
+    let gvarGlyphCount: Int = 12
+    let gvarFlags: Int = 14
+    let gvarData: Int = 16
+    let gvarOffsets: Int = 20
+    let longOffsets: Int = 1
+    let sharedPoints: Int = 0x8000
+    let tupleCount: Int = 0x0FFF
+    let embeddedPeak: Int = 0x8000
+    let intermediate: Int = 0x4000
+    let privatePoints: Int = 0x2000
+    let tupleIndex: Int = 0x0FFF
+    let wordPoints: Int = 0x80
+    let pointRun: Int = 0x7F
+    let zeroDeltas: Int = 0x80
+    let wordDeltas: Int = 0x40
+    let deltaRun: Int = 0x3F
+}
+
+// Which points a tuple moves: all of them, or the ones listed.
+enum PointSet {
+    All
+    Listed([Int])
+}
+
+extend FontBytes {
+    function variations(fvar: FontTable?, avar: FontTable?, gvar: FontTable?) -> FontVariations {
+        let axes = match fvar {
+            Some(table) -> designAxes(table.offset)
+            None -> return FontVariations {}
+        }
+        let axisMaps = match avar {
+            Some(table) -> segmentMaps(table.offset, axes.count)
+            None -> []
+        }
+        let glyphs: GlyphVariationTable? = match gvar {
+            Some(table) -> .Some(glyphVariationTable(table.offset))
+            None -> .None
+        }
+        return FontVariations { axes: move axes, axisMaps: move axisMaps, glyphs: move glyphs }
+    }
+
+    function designAxes(fvar: Int) -> [FontAxis] {
+        var axes: [FontAxis] = []
+        let first = fvar + u16(fvar + VariationLayout.fvarAxes)
+        let size = u16(fvar + VariationLayout.fvarAxisSize)
+        for index in 0..u16(fvar + VariationLayout.fvarAxisCount) {
+            let record = first + index * size
+            axes.append(
+                FontAxis {
+                    tag: fromCode<AxisTag>(U32(u32(record))),
+                    minimum: fixed(record + 4),
+                    standard: fixed(record + 8),
+                    maximum: fixed(record + 12)
+                }
+            )
+        }
+        return axes
+    }
+
+    function segmentMaps(avar: Int, axisCount: Int) -> [[(Float, Float)]] {
+        if u16(avar + VariationLayout.avarAxisCount) != axisCount { return [] }
+        var maps: [[(Float, Float)]] = []
+        var at = avar + VariationLayout.avarMaps
+        for _ in 0..axisCount {
+            var map: [(Float, Float)] = []
+            let count = u16(at)
+            for pair in 0..count {
+                map.append((f2dot14(at + 2 + pair * 4), f2dot14(at + 4 + pair * 4)))
+            }
+            maps.append(map)
+            at += 2 + count * 4
+        }
+        return maps
+    }
+
+    function glyphVariationTable(gvar: Int) -> GlyphVariationTable {
+        let flags = u16(gvar + VariationLayout.gvarFlags)
+        return GlyphVariationTable {
+            axisCount: u16(gvar + VariationLayout.gvarAxisCount),
+            sharedTuples: gvar + u32(gvar + VariationLayout.gvarSharedTuples),
+            glyphCount: u16(gvar + VariationLayout.gvarGlyphCount),
+            offsetFormat: (flags & VariationLayout.longOffsets) != 0 ? .Long : .Short,
+            offsets: gvar + VariationLayout.gvarOffsets,
+            data: gvar + u32(gvar + VariationLayout.gvarData)
+        }
+    }
+
+    // A packed point list at `at`, and where the bytes after it start.
+    function pointSet(at: Int) -> (PointSet, Int) {
+        var cursor = at + 1
+        let first = u8(at)
+        if first == 0 { return (.All, cursor) }
+        var count = first
+        if first >= VariationLayout.wordPoints {
+            count = ((first & VariationLayout.pointRun) << 8) | u8(cursor)
+            cursor += 1
+        }
+        var points: [Int] = []
+        var point: Int = 0
+        while points.count < count {
+            let control = u8(cursor)
+            cursor += 1
+            let run = (control & VariationLayout.pointRun) + 1
+            let words = control >= VariationLayout.wordPoints
+            for _ in 0..run {
+                point += words ? u16(cursor) : u8(cursor)
+                cursor += words ? 2 : 1
+                points.append(point)
+            }
+        }
+        return (.Listed(move points), cursor)
+    }
+
+    // `count` packed deltas at `at`, and where the bytes after them start.
+    function packedDeltas(at: Int, count: Int) -> ([Float], Int) {
+        var deltas: [Float] = []
+        var cursor = at
+        while deltas.count < count {
+            let control = u8(cursor)
+            cursor += 1
+            let run = (control & VariationLayout.deltaRun) + 1
+            if (control & VariationLayout.zeroDeltas) != 0 {
+                for _ in 0..run { deltas.append(0.0) }
+            } else if (control & VariationLayout.wordDeltas) != 0 {
+                for _ in 0..run {
+                    deltas.append(Float(i16(cursor)))
+                    cursor += 2
+                }
+            } else {
+                for _ in 0..run {
+                    deltas.append(Float(i8(cursor)))
+                    cursor += 1
+                }
+            }
+        }
+        return (deltas, cursor)
+    }
+}
+
+extend FontFile {
+    // The normalized design coordinates of an instance: the optical size
+    // axis at the pixel size the face is set at, as the axis is stated in
+    // points and a pixel is a point at 1x, and the weight axis at `weight`.
+    // Every other axis stands at its default.
+    function coordinates(opticalSize: Float, weight: Float) -> [Float] {
+        var coordinates: [Float] = []
+        for (index, axis) in variations.axes.enumerated() {
+            let wanted = match axis.tag {
+                OpticalSize -> opticalSize
+                Weight -> weight
+                else -> axis.standard
+            }
+            var normal = normalized(axis, clamp(wanted, axis.minimum, axis.maximum))
+            if index < variations.axisMaps.count {
+                normal = bent(variations.axisMaps[index], normal)
+            }
+            coordinates.append(round(normal * FontFixed.f2dot14) / FontFixed.f2dot14)
+        }
+        return coordinates
+    }
+
+    // How far each of a glyph's `count` points moves at `coordinates`.
+    // `points` and `ends` are a simple glyph's own points and contours, which
+    // a tuple that moves only some of them interpolates the rest from; a
+    // composite passes none, and its unlisted components stay where they are.
+    function glyphDeltas(
+        glyph: GlyphId,
+        count: Int,
+        coordinates: borrow [Float],
+        outline: borrow GlyphPoints
+    ) -> [OutlineVector] {
+        let zero = OutlineVector { x: 0.0, y: 0.0 }
+        var deltas = filled(count, zero)
+        let table = match variations.glyphs {
+            Some(table) -> table
+            None -> return deltas
+        }
+        if glyph.raw >= table.glyphCount || coordinates.count != table.axisCount { return deltas }
+        let (start, end) = table.glyphData(data, glyph.raw)
+        if end <= start { return deltas }
+        let tuples = GlyphTuples { table: table, start: start }
+        tuples.addDeltas(data, coordinates, outline, deltas)
+        return deltas
+    }
+}
+
+extend GlyphVariationTable {
+    function glyphData(file: borrow FontBytes, glyph: Int) -> (Int, Int) {
+        return match offsetFormat {
+            Short -> (
+                data + file.u16(offsets + glyph * 2) * 2,
+                data + file.u16(offsets + glyph * 2 + 2) * 2
+            )
+            Long -> (data + file.u32(offsets + glyph * 4), data + file.u32(offsets + glyph * 4 + 4))
+        }
+    }
+}
+
+// One glyph's variation data in `gvar`.
+struct GlyphTuples {
+    let table: GlyphVariationTable
+    let start: Int
+
+    // Adds every tuple's deltas, scaled for `coordinates`, to `deltas`.
+    function addDeltas(
+        file: borrow FontBytes,
+        coordinates: borrow [Float],
+        outline: borrow GlyphPoints,
+        deltas: borrow mut [OutlineVector]
+    ) {
+        let header = file.u16(start)
+        var serialized = start + file.u16(start + 2)
+        var shared: PointSet = .All
+        if (header & VariationLayout.sharedPoints) != 0 {
+            let (points, after) = file.pointSet(serialized)
+            shared = points
+            serialized = after
+        }
+        var at = start + 4
+        for _ in 0..(header & VariationLayout.tupleCount) {
+            let size = file.u16(at)
+            let index = file.u16(at + 2)
+            let (scalar, after) = tupleScalar(file, at + 4, index, coordinates)
+            if scalar != 0.0 {
+                let tuple = TupleData { at: serialized, scalar: scalar, index: index }
+                tuple.addDeltas(file, shared, outline, deltas)
+            }
+            at = after
+            serialized += size
+        }
+    }
+
+    // How much of a tuple applies at `coordinates`, and where the next tuple
+    // header starts. `at` is just past the header's size and index.
+    function tupleScalar(
+        file: borrow FontBytes,
+        at: Int,
+        index: Int,
+        coordinates: borrow [Float]
+    ) -> (Float, Int) {
+        let axes = table.axisCount
+        var cursor = at
+        var peaks = table.sharedTuples + (index & VariationLayout.tupleIndex) * axes * 2
+        if (index & VariationLayout.embeddedPeak) != 0 {
+            peaks = cursor
+            cursor += axes * 2
+        }
+        var region: (Int, Int)? = .None
+        if (index & VariationLayout.intermediate) != 0 {
+            region = .Some((cursor, cursor + axes * 2))
+            cursor += axes * 4
+        }
+        var scalar: Float = 1.0
+        for axis in 0..axes {
+            let peak = file.f2dot14(peaks + axis * 2)
+            let coordinate = coordinates[axis]
+            scalar *= match region {
+                Some(bounds) -> regionScalar(file, bounds, axis, coordinate, peak)
+                None -> peakScalar(coordinate, peak)
+            }
+            if scalar == 0.0 { return (0.0, cursor) }
+        }
+        return (scalar, cursor)
+    }
+}
+
+// How much of an intermediate-region tuple applies on `axis`. `bounds` is
+// where the region's start and end coordinates are.
+function regionScalar(
+    file: borrow FontBytes,
+    bounds: borrow (Int, Int),
+    axis: Int,
+    coordinate: Float,
+    peak: Float
+) -> Float {
+    let (starts, ends) = bounds
+    return intermediateScalar(
+        coordinate,
+        file.f2dot14(starts + axis * 2),
+        peak,
+        file.f2dot14(ends + axis * 2)
+    )
+}
+
+// One tuple's serialized point numbers and deltas.
+struct TupleData {
+    let at: Int
+    let scalar: Float
+    let index: Int
+
+    function addDeltas(
+        file: borrow FontBytes,
+        shared: borrow PointSet,
+        outline: borrow GlyphPoints,
+        deltas: borrow mut [OutlineVector]
+    ) {
+        var cursor = at
+        var points = copy shared
+        if (index & VariationLayout.privatePoints) != 0 {
+            let (own, after) = file.pointSet(cursor)
+            points = own
+            cursor = after
+        }
+        match points {
+            All -> {
+                let (xs, afterX) = file.packedDeltas(cursor, deltas.count)
+                let (ys, _) = file.packedDeltas(afterX, deltas.count)
+                for index in 0..deltas.count {
+                    deltas[index].x += xs[index] * scalar
+                    deltas[index].y += ys[index] * scalar
+                }
+            }
+            Listed(listed) -> {
+                let (xs, afterX) = file.packedDeltas(cursor, listed.count)
+                let (ys, _) = file.packedDeltas(afterX, listed.count)
+                let moved = outline.interpolated(listed, xs, ys, deltas.count)
+                for index in 0..deltas.count {
+                    deltas[index].x += moved[index].x * scalar
+                    deltas[index].y += moved[index].y * scalar
+                }
+            }
+        }
+    }
+}
+
+function normalized(axis: borrow FontAxis, value: Float) -> Float {
+    if value < axis.standard && axis.standard > axis.minimum {
+        return (value - axis.standard) / (axis.standard - axis.minimum)
+    }
+    if value > axis.standard && axis.maximum > axis.standard {
+        return (value - axis.standard) / (axis.maximum - axis.standard)
+    }
+    return 0.0
+}
+
+// `value` through an `avar` segment map: linear between the map's pairs.
+function bent(map: borrow [(Float, Float)], value: Float) -> Float {
+    if map.count < 2 { return value }
+    for index in 1..map.count {
+        let (fromHigh, toHigh) = map[index]
+        if value <= fromHigh {
+            let (fromLow, toLow) = map[index - 1]
+            if fromHigh == fromLow { return toHigh }
+            return toLow + (value - fromLow) * (toHigh - toLow) / (fromHigh - fromLow)
+        }
+    }
+    return value
+}
+
+function peakScalar(coordinate: Float, peak: Float) -> Float {
+    if peak == 0.0 { return 1.0 }
+    if coordinate == 0.0 || (coordinate < 0.0) != (peak < 0.0) { return 0.0 }
+    if abs(coordinate) > abs(peak) { return 0.0 }
+    return coordinate / peak
+}
+
+function intermediateScalar(coordinate: Float, start: Float, peak: Float, end: Float) -> Float {
+    if peak == 0.0 { return 1.0 }
+    if coordinate < start || coordinate > end { return 0.0 }
+    if coordinate == peak { return 1.0 }
+    if coordinate < peak {
+        return peak == start ? 1.0 : (coordinate - start) / (peak - start)
+    }
+    return peak == end ? 1.0 : (end - coordinate) / (end - peak)
+}

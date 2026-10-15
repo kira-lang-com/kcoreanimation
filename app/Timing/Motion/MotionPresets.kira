@@ -38,7 +38,7 @@ public enum MotionCurveName {
 }
 
 // The response and damping one name stands for.
-public function motionCurve(name: borrow MotionCurveName, target: Float) -> MotionSpring {
+public function motionCurve(name: borrow MotionCurveName, target: Number) -> MotionSpring {
     return match name {
         Smooth -> MotionSpring { response: 0.5, damping: 1.0, target: target }
         Snappy -> MotionSpring { response: 0.5, damping: 0.85, target: target }
@@ -62,11 +62,11 @@ public function motionCurve(name: borrow MotionCurveName, target: Float) -> Moti
 // These are a shipping implementation's own mass/stiffness/damping, converted:
 // mass 1.36, stiffness 568, damping 39.7 for the press, and mass 2.0,
 // stiffness 460, damping 21.8 for the release.
-public function motionLiftOn(target: Float) -> MotionSpring {
+public function motionLiftOn(target: Number) -> MotionSpring {
     return MotionSpring { response: 0.3075, damping: 0.7142, target: target }
 }
 
-public function motionLiftOff(target: Float) -> MotionSpring {
+public function motionLiftOff(target: Number) -> MotionSpring {
     return MotionSpring { response: 0.4143, damping: 0.3594, target: target }
 }
 
@@ -85,28 +85,43 @@ public function motionLiftOff(target: Float) -> MotionSpring {
 // A pressed menu row's platter catching up with the finger sliding it to
 // another row: quick enough to sit under the finger, never trailing it, with
 // barely a trace of overshoot where it lands.
-public function motionPlatterFollow(target: Float) -> MotionSpring {
+public function motionPlatterFollow(target: Number) -> MotionSpring {
     return MotionSpring { response: 0.16, damping: 0.88, target: target }
 }
 
-public function motionPressLift() -> Float {
-    return 7.5
+public namespace MotionPreset {
+    let pressLift = 7.5
+
+    // How long a press takes to acknowledge itself.
+    //
+    // A hundred milliseconds is the platform's own figure for the feedback a
+    // pointer-down draws, and it is short for a reason: past about that, the
+    // acknowledgment stops reading as a response to the press and starts reading
+    // as an animation that happens to follow it.
+    let pressFeedbackDuration = 0.1
+
+    // How far a pointer may wander before a press is understood as a drag.
+    //
+    // Below this the finger is still pressing — hands are not steady, and a
+    // control that started dragging at the first pixel of jitter would be
+    // impossible to tap.
+    let dragSlop = 10.0
 }
 
 // The lift as a scale factor for an element whose shorter side is `extent`.
-public function motionPressLiftScale(extent: Float) -> Float {
-    return 1.0 + motionPressLift() / max(extent, 1.0)
+public function motionPressLiftScale(extent: Number) -> Number {
+    return 1.0 + MotionPreset.pressLift / max(extent, 1.0)
 }
 
 // A spring stated as a duration and a bounce, which is the other way the
 // platform spells one: `bounce: 0` is critically damped and `bounce: 0.3`
 // overshoots noticeably. Negative bounce is the overdamped side.
-public function motionSpringFromBounce(duration: Float, bounce: Float, target: Float) -> MotionSpring {
-    return MotionSpring {
-        response: duration,
-        damping: 1.0 - bounce,
-        target: target
-    }
+public function motionSpringFromBounce(
+    duration: Number,
+    bounce: Number,
+    target: Number
+) -> MotionSpring {
+    return MotionSpring { response: duration, damping: 1.0 - bounce, target: target }
 }
 
 // --- reduced motion --------------------------------------------------------
@@ -135,7 +150,11 @@ public function motionCurveReduced(spring: borrow MotionSpring) -> MotionSpring 
 // The spring a surface should actually animate with, given the viewer's
 // preference. Every animating surface in this package routes through here, so
 // honoring the preference is not something each one has to remember.
-public function motionCurveFor(name: borrow MotionCurveName, target: Float, reducedMotion: Bool) -> MotionSpring {
+public function motionCurveFor(
+    name: borrow MotionCurveName,
+    target: Number,
+    reducedMotion: Bool
+) -> MotionSpring {
     let spring = motionCurve(name, target)
     if reducedMotion {
         return motionCurveReduced(spring)
@@ -167,7 +186,7 @@ public enum MotionEasing {
 // at the midpoint — rather than a bezier solve, because these three are the
 // bezier the named curves resolve to and a solver would spend Newton
 // iterations arriving at the same numbers.
-public function motionEase(easing: borrow MotionEasing, t: Float) -> Float {
+public function motionEase(easing: borrow MotionEasing, t: Number) -> Number {
     let p = clamp(t, 0.0, 1.0)
     return match easing {
         Linear -> p
@@ -187,25 +206,11 @@ public function motionEase(easing: borrow MotionEasing, t: Float) -> Float {
 }
 
 // A value eased between two ends.
-public function motionEaseBetween(easing: borrow MotionEasing, from: Float, to: Float, t: Float) -> Float {
+public function motionEaseBetween(
+    easing: borrow MotionEasing,
+    from: Number,
+    to: Number,
+    t: Number
+) -> Number {
     return lerp(from, to, motionEase(easing, t))
-}
-
-// How long a press takes to acknowledge itself.
-//
-// A hundred milliseconds is the platform's own figure for the feedback a
-// pointer-down draws, and it is short for a reason: past about that, the
-// acknowledgment stops reading as a response to the press and starts reading
-// as an animation that happens to follow it.
-public function motionPressFeedbackDuration() -> Float {
-    return 0.1
-}
-
-// How far a pointer may wander before a press is understood as a drag.
-//
-// Below this the finger is still pressing — hands are not steady, and a
-// control that started dragging at the first pixel of jitter would be
-// impossible to tap.
-public function motionDragSlop() -> Float {
-    return 10.0
 }

@@ -10,46 +10,85 @@ import Ember
 // specialized pipelines are chosen here, and the generic one is what runs when a
 // range's modes do not all fit one of them.
 
-// Bind the batch pipeline + a vertex stream + the three texture slots and issue one
-// indexed draw. Slot assignments:
-//  - slot 0: always the glyph/icon atlas.
-//  - slot 1: `slot1GroupId`; 0 means the frame's external texture (TextureView) or
-//    the atlas fallback. Glass streams pass the sharp tap here.
-//  - slot 2: `slot2GroupId`; 0 means the atlas fallback, which keeps
-//    texture(2)/sampler(2) satisfied on streams that hold no glass.
-//  - slot 3: `slot3GroupId`, the near blur level, same fallback discipline.
-public function uiPipelineForQuad(
-    state: borrow UiBatchState,
-    modeCode: Int,
-    requiresGeneric: Bool,
-    fastRuns: Bool,
-    glassSplit: Bool,
-    copyLive: Bool,
-) -> RenderPipeline {
-    if requiresGeneric {
-        return state.pipeline
-    }
-    if modeCode == 110 && state.glyphBurnPipeline.id != 0 { return state.glyphBurnPipeline }
-    if modeCode == 210 && state.glyphDodgePipeline.id != 0 { return state.glyphDodgePipeline }
-    if fastRuns {
-        if modeCode == 0 { return state.rectPipeline }
-        if modeCode == 10 { return state.glyphPipeline }
-    }
-    if glassSplit {
-        if modeCode == 30 { return state.glassFullPipeline }
-        if modeCode == 31 {
-            if copyLive { return state.glassBandPipeline }
-            return state.glassCopyPipeline
+extend UiBatchState {
+    // Bind the batch pipeline + a vertex stream + the three texture slots and issue one
+    // indexed draw. Slot assignments:
+    //  - slot 0: always the glyph/icon atlas.
+    //  - slot 1: `slot1GroupId`; 0 means the frame's external texture (TextureView) or
+    //    the atlas fallback. Glass streams pass the sharp tap here.
+    //  - slot 2: `slot2GroupId`; 0 means the atlas fallback, which keeps
+    //    texture(2)/sampler(2) satisfied on streams that hold no glass.
+    //  - slot 3: `slot3GroupId`, the near blur level, same fallback discipline.
+    function pipelineForQuad(
+        modeCode: Number,
+        requiresGeneric: Bool,
+        fastRuns: Bool,
+        glassSplit: Bool,
+        copyLive: Bool
+    ) -> RenderPipeline {
+        // Recipe glass has no generic form to fall back to.
+        if modeCode == 35 && self.glassRecipePipeline.id != 0 { return self.glassRecipePipeline }
+        if requiresGeneric {
+            return self.pipeline
         }
-        if modeCode == 32 { return state.glassBandPipeline }
-        if modeCode == 33 { return state.glassLensPipeline }
-        if modeCode == 34 { return state.glassCorePipeline }
+        if modeCode == 110 && self.glyphBurnPipeline.id != 0 { return self.glyphBurnPipeline }
+        if modeCode == 210 && self.glyphDodgePipeline.id != 0 { return self.glyphDodgePipeline }
+        if modeCode >= 100 && modeCode < 200 && self.surfaceBurnPipeline.id != 0 {
+            return self.surfaceBurnPipeline
+        }
+        if modeCode >= 200 && modeCode < 300 && self.surfaceDodgePipeline.id != 0 {
+            return self.surfaceDodgePipeline
+        }
+        if fastRuns {
+            if modeCode == 0 { return self.rectPipeline }
+            if modeCode == 10 { return self.glyphPipeline }
+        }
+        if glassSplit {
+            if modeCode == 30 { return self.glassFullPipeline }
+            if modeCode == 31 {
+                if copyLive { return self.glassBandPipeline }
+                return self.glassCopyPipeline
+            }
+            if modeCode == 32 { return self.glassBandPipeline }
+            if modeCode == 33 { return self.glassLensPipeline }
+            if modeCode == 34 { return self.glassCorePipeline }
+        }
+        return self.pipeline
     }
-    return state.pipeline
+}
+
+// The group a stream's sharp tap reads: the stream's own, or the frame's
+// TextureView when one is bound, or the atlas fallback.
+function streamExternalGroup(state: borrow UiBatchState, slot: borrow BindGroup?) -> BindGroup {
+    return match slot {
+        Some(group) -> copy group
+        None -> match state.externalBindReady {
+            true -> copy state.externalGroup
+            false -> copy state.fallbackExternalGroup
+        }
+    }
+}
+
+// The two blurred levels arrive together, in the one group they share: the
+// stream's own, or the frame's crossfade target, or the atlas fallback.
+function streamSoftNearGroup(state: borrow UiBatchState, slot: borrow BindGroup?) -> BindGroup {
+    return match slot {
+        Some(group) -> copy group
+        None -> match state.secondaryExternalBindReady {
+            true -> copy state.secondaryExternalGroup
+            false -> copy state.fallbackBackdropGroup
+        }
+    }
 }
 
 extend UiBatch {
-    function drawStream(encoder: borrow mut RenderEncoder, modeStream: DrawStreamId, quadCount: Int, slot1Group: borrow BindGroup, slot2Group: borrow BindGroup, slot3Group: borrow BindGroup) {
+    function drawStream(
+        encoder: borrow mut RenderEncoder,
+        modeStream: DrawStreamId,
+        quadCount: Number,
+        sharpSlot: borrow BindGroup?,
+        softNearSlot: borrow BindGroup?
+    ) {
         var state = nativeRecover<UiBatchState>(self.storage)
         if quadCount <= 0 || modeStream.raw < 0 || modeStream.raw >= state.streams.count {
             return
@@ -57,42 +96,23 @@ extend UiBatch {
         // The stream's vertices are already in its buffer — written into shared
         // memory as they were emitted on Metal, handed over by
         // `commitDynamicBuffer` on sokol — so there is nothing to upload here.
-        let bindGroup = shareBindGroup(state.atlasGroup)
+        let bindGroup = copy state.atlasGroup
         // Caveat on the glass streams' external slot: a TextureView ABOVE a glass plane
         // samples the sharp capture instead of its own texture; below-glass
         // TextureViews (the common case) draw in stream 0 and are fine.
-        var externalGroup = shareBindGroup(slot1Group)
-        if externalGroup.id == 0 {
-            externalGroup = shareBindGroup(state.fallbackExternalGroup)
-            if state.externalBindReady {
-                externalGroup = shareBindGroup(state.externalGroup)
-            }
-        }
-        // The two blurred levels arrive together, so slot3Group is only consulted as
-        // the layer's combined group when the caller has one.
-        var softNearGroup = shareBindGroup(slot2Group)
-        if softNearGroup.id == 0 {
-            softNearGroup = shareBindGroup(slot3Group)
-        }
-        if softNearGroup.id == 0 {
-            if state.secondaryExternalBindReady {
-                softNearGroup = shareBindGroup(state.secondaryExternalGroup)
-            } else {
-                softNearGroup = shareBindGroup(state.fallbackBackdropGroup)
-            }
-        }
+        let externalGroup = streamExternalGroup(state, sharpSlot)
+        let softNearGroup = streamSoftNearGroup(state, softNearSlot)
         // The vertex data is a STORAGE resource in the shader, not an attribute
         // stream: it binds through a group like every other resource, and the vertex
         // stage reads it one slot above (vertex buffer 0 is the attribute stream that
         // this shader does not have).
-        let vertsGroup = shareBindGroup(state.streams[modeStream.raw].vertsGroup)
+        let vertsGroup = copy state.streams[modeStream.raw].vertsGroup
         encoder.setIndexBuffer(state.indexBuffer, .Uint32)
-        encoder.setBindGroup(vertexBindGroup(), vertsGroup)
-        encoder.setBindGroup(atlasBindGroup(), bindGroup)
-        encoder.setBindGroup(externalBindGroup(), externalGroup)
-        encoder.setBindGroup(softNearBindGroup(), softNearGroup)
-        let completeModes = state.streams[modeStream.raw].quadModes.count >= quadCount
-            && state.streams[modeStream.raw].quadRequiresGeneric.count >= quadCount
+        encoder.setBindGroup(EncoderGroup.vertex, vertsGroup)
+        encoder.setBindGroup(EncoderGroup.atlas, bindGroup)
+        encoder.setBindGroup(EncoderGroup.external, externalGroup)
+        encoder.setBindGroup(EncoderGroup.softNear, softNearGroup)
+        let completeModes = state.streams[modeStream.raw].quads.count >= quadCount
         // Run-splitting is on whenever any per-region pipeline exists; the rect and
         // glyph fast paths additionally require their own (env-gated) pipelines.
         let glassSplit = state.glassFullPipeline.id != 0 && state.glassBandPipeline.id != 0 && state.glassLensPipeline.id != 0 && state.glassCorePipeline.id != 0
@@ -119,43 +139,67 @@ extend UiBatch {
         }
         // A burned or dodged icon has its own blending, which the generic
         // pipeline's one draw cannot give it.
+        // So does glass drawn to a recipe, which only its own pipeline reads.
         var blendSplit = false
+        var recipeSplit = false
         var blendScan = 0
         while blendScan < quadCount && !blendSplit && completeModes {
-            let scannedMode = state.streams[modeStream.raw].quadModes[blendScan]
+            let scannedMode = state.streams[modeStream.raw].quads[blendScan].mode
             blendSplit = scannedMode >= 100
+            recipeSplit = recipeSplit || scannedMode == 35
             blendScan += 1
         }
-        let specialized = (glassSplit || fastRuns || externalSplit || blendSplit) && completeModes
+        let split = glassSplit || fastRuns || externalSplit || blendSplit || recipeSplit
+        let specialized = split && completeModes
         if state.probeModes {
-            print(676766)
-            print(modeStream.raw)
-            print(state.streams.count)
-            print(quadCount)
-            print(state.streams[modeStream.raw].quadModes.count)
-            if specialized { print(1) } else { print(0) }
+            log debug(
+                "mode split",
+                modeStream.raw,
+                state.streams.count,
+                quadCount,
+                state.streams[modeStream.raw].quads.count,
+                specialized
+            )
         }
         if specialized {
             var firstQuad = 0
             var runCount = 0
             while firstQuad < quadCount {
-                let modeCode = state.streams[modeStream.raw].quadModes[firstQuad]
-                let requiresGeneric = state.streams[modeStream.raw].quadRequiresGeneric[firstQuad]
-                let runUsesExternalTexture = modeCode == 20 && state.externalBindReady
+                let modeCode = state.streams[modeStream.raw].quads[firstQuad].mode
+                let requiresGeneric = state.streams[modeStream.raw].quads[firstQuad].requiresGeneric
+                let runUsesExternalTexture = (
+                    modeCode == 20 || modeCode == 21
+                ) && state.externalBindReady
                 let runExternalId = quadExternalAt(state, modeStream, firstQuad)
                 let runSecondaryId = quadSecondaryAt(state, modeStream, firstQuad)
                 // A copy quad presents cached interior pixels only while the cache
                 // still proves it contains this drawable's live backdrop.
                 let copySized = state.glassCacheW == state.drawableW && state.glassCacheH == state.drawableH
-                let copyLive = state.glassCacheDisabled || !state.glassBackdropStatic || state.glassCacheTexture.id == 0 || !state.glassCacheCleared || !copySized || state.glassCacheRenderedKey != state.glassCacheKeyNow
-                let runPipeline = uiPipelineForQuad(state, modeCode, requiresGeneric, fastRuns, glassSplit, copyLive)
+                let copyLive = state.glassCacheDisabled || !state.glassBackdropStatic || state.glassCacheTexture.id == 0 || !state.glassCacheCleared || !copySized || state.glassCacheRenderedKey != .Some(
+                    state.glassCacheKeyNow
+                )
+                let runPipeline = state.pipelineForQuad(
+                    modeCode,
+                    requiresGeneric,
+                    fastRuns,
+                    glassSplit,
+                    copyLive
+                )
                 var endQuad = firstQuad + 1
                 var samePipeline = true
                 while endQuad < quadCount && samePipeline {
-                    let nextMode = state.streams[modeStream.raw].quadModes[endQuad]
-                    let nextRequiresGeneric = state.streams[modeStream.raw].quadRequiresGeneric[endQuad]
-                    let nextPipeline = uiPipelineForQuad(state, nextMode, nextRequiresGeneric, fastRuns, glassSplit, copyLive)
-                    let nextUsesExternalTexture = nextMode == 20 && state.externalBindReady
+                    let nextMode = state.streams[modeStream.raw].quads[endQuad].mode
+                    let nextRequiresGeneric = state.streams[modeStream.raw].quads[endQuad].requiresGeneric
+                    let nextPipeline = state.pipelineForQuad(
+                        nextMode,
+                        nextRequiresGeneric,
+                        fastRuns,
+                        glassSplit,
+                        copyLive
+                    )
+                    let nextUsesExternalTexture = (
+                        nextMode == 20 || nextMode == 21
+                    ) && state.externalBindReady
                     let nextExternalId = quadExternalAt(state, modeStream, endQuad)
                     let nextSecondaryId = quadSecondaryAt(state, modeStream, endQuad)
                     if nextPipeline.id == runPipeline.id && nextUsesExternalTexture == runUsesExternalTexture && nextExternalId == runExternalId && nextSecondaryId == runSecondaryId {
@@ -170,60 +214,68 @@ extend UiBatch {
                 // mode 2 must read the host-published engine target instead.
                 // Bind at the run boundary rather than once per stream so
                 // the two resources can share the same ordered stream safely.
-                var runExternalGroup = shareBindGroup(externalGroup)
+                var runExternalGroup = copy externalGroup
                 if runUsesExternalTexture {
-                    runExternalGroup = shareBindGroup(state.externalGroup)
                     // This run's OWN texture, when the run is a TextureView's.
                     // The backdrop group is the fallback rather than the answer:
                     // it is whichever texture was registered last, which is the
                     // right one only when there is exactly one.
-                    let cached = externalCacheGroup(state, runExternalId)
-                    if cached.id != 0 {
-                        runExternalGroup = cached
+                    runExternalGroup = match externalCacheGroup(state, runExternalId) {
+                        Some(cached) -> cached
+                        None -> copy state.externalGroup
                     }
                 }
-                encoder.setBindGroup(externalBindGroup(), runExternalGroup)
+                encoder.setBindGroup(EncoderGroup.external, runExternalGroup)
                 // What this run is crossfading TOWARDS. Per-quad for the same
                 // reason the primary is: a second TextureView registering no
                 // secondary tore down the binding the first one had, so a
                 // sidebar mid-swipe crossfaded against the fallback -- the
                 // glyph atlas -- and stood still while the number moved.
-                var runNearGroup = shareBindGroup(softNearGroup)
+                var runNearGroup = copy softNearGroup
                 if runUsesExternalTexture && runSecondaryId > 0 {
-                    let cachedNear = secondaryCacheGroup(state, runSecondaryId)
-                    if cachedNear.id != 0 {
-                        runNearGroup = cachedNear
+                    runNearGroup = match secondaryCacheGroup(state, runSecondaryId) {
+                        Some(cachedNear) -> cachedNear
+                        None -> copy softNearGroup
                     }
                 }
-                encoder.setBindGroup(softNearBindGroup(), runNearGroup)
+                encoder.setBindGroup(EncoderGroup.softNear, runNearGroup)
                 // Copy runs read the cache through the atlas slot; swap the group
                 // in for the run and restore the stream's atlas after it.
-                let copyRun = runPipeline.id == state.glassCopyPipeline.id && state.glassCacheGroup.id != 0
-                if copyRun {
-                    encoder.setBindGroup(atlasBindGroup(), state.glassCacheGroup)
+                var copyRun = false
+                if runPipeline.id == state.glassCopyPipeline.id {
+                    match state.glassCacheGroup {
+                        Some(cacheGroup) -> {
+                            encoder.setBindGroup(EncoderGroup.atlas, cacheGroup)
+                            copyRun = true
+                        }
+                        None -> {}
+                    }
                 }
-                encoder.drawIndexedRange((endQuad - firstQuad) * 6, firstQuad * 6)
+                encoder.drawIndexedRange(
+                    UN32((endQuad - firstQuad) * QuadIndices.perQuad),
+                    UN32(firstQuad * QuadIndices.perQuad)
+                )
                 if copyRun {
-                    encoder.setBindGroup(atlasBindGroup(), bindGroup)
+                    encoder.setBindGroup(EncoderGroup.atlas, bindGroup)
                 }
                 firstQuad = endQuad
                 runCount += 1
             }
             if state.probeModes {
-                print(676767)
-                print(modeStream.raw)
-                print(quadCount)
-                print(state.streams[modeStream.raw].quadModes.count)
-                print(runCount)
+                log debug(
+                    "mode runs",
+                    modeStream.raw,
+                    quadCount,
+                    state.streams[modeStream.raw].quads.count,
+                    runCount
+                )
             }
         } else {
             encoder.setPipeline(state.pipeline)
-            encoder.drawIndexed(quadCount * 6)
+            encoder.drawIndexed(UN32(quadCount * QuadIndices.perQuad))
         }
-        return
     }
 }
-
 
 // Submit a glass-free frame as one indexed draw on the active render-pass encoder.
 // Glass frames are drawn stream by stream by presentBatch, which owns the
@@ -238,35 +290,41 @@ extend UiBatch {
     // somebody else's window has not got one -- so a tree that split its quads
     // across streams had every stream but the last silently dropped, and the
     // surface carried its clear color and nothing else.
-    function flushStreams(graphics: borrow EMGraphics, encoder: borrow mut RenderEncoder) {
+    function flushStreams(graphics: borrow Graphics, encoder: borrow mut RenderEncoder) {
         var state = nativeRecover<UiBatchState>(self.storage)
         var target = encoder
-        let none = shareBindGroup(state.emptyGroup)
         var index = 0
         while index <= state.streamIndex.raw && index < state.streams.count {
-            self.drawStream(target, DrawStreamId(index), state.streams[index].quadCount, none, none, none)
+            self.drawStream(
+                target,
+                DrawStreamId(index),
+                state.streams[index].quadCount,
+                .None,
+                .None
+            )
             index += 1
         }
-        return
     }
 
-    function flushBatch(graphics: borrow EMGraphics, encoder: borrow mut RenderEncoder) {
+    function flushBatch(graphics: borrow Graphics, encoder: borrow mut RenderEncoder) {
         var state = nativeRecover<UiBatchState>(self.storage)
         let quadCount = state.quadCount
         var target = encoder
-        let none = shareBindGroup(state.emptyGroup)
-        self.drawStream(target, state.streamIndex, quadCount, none, none, none)
-        return
+        self.drawStream(target, state.streamIndex, quadCount, .None, .None)
     }
 }
 
-
-public function prepareBackground(state: borrow mut UiBatchState, graphics: borrow EMGraphics) {
-    if !state.backgroundActive || state.backgroundParams.id == 0 {
+public function prepareBackground(state: borrow mut UiBatchState, graphics: borrow Graphics) {
+    if !state.backgroundActive {
         return
     }
-    graphics.updateUniform(state.backgroundParams, [F32(state.backgroundTransition), F32(0.0), F32(0.0), F32(0.0)])
-    return
+    match state.backgroundParams {
+        Some(params) -> graphics.updateUniform(
+            params,
+            [F32(state.backgroundTransition), F32(0.0), F32(0.0), F32(0.0)]
+        )
+        None -> {}
+    }
 }
 
 // Native: it mutates the encoder, and a struct receiver has no seam
@@ -281,18 +339,19 @@ public function drawBackground(state: borrow mut UiBatchState, encoder: borrow m
     if state.benchNoBackground {
         return
     }
-    let params = shareBindGroup(state.backgroundParamsGroup)
-    let primary = shareBindGroup(state.externalGroup)
-    var secondary = shareBindGroup(state.fallbackBackdropGroup)
-    if state.secondaryExternalBindReady {
-        secondary = shareBindGroup(state.secondaryExternalGroup)
+    match state.backgroundParamsGroup {
+        Some(params) -> {
+            encoder.setPipeline(state.backgroundPipeline)
+            encoder.setBindGroup(0, state.externalGroup)
+            match state.secondaryExternalBindReady {
+                true -> encoder.setBindGroup(1, state.secondaryExternalGroup)
+                false -> encoder.setBindGroup(1, state.fallbackBackdropGroup)
+            }
+            encoder.setBindGroup(2, params)
+            encoder.draw(3)
+        }
+        None -> {}
     }
-    encoder.setPipeline(state.backgroundPipeline)
-    encoder.setBindGroup(0, primary)
-    encoder.setBindGroup(1, secondary)
-    encoder.setBindGroup(2, params)
-    encoder.draw(3)
-    return
 }
 
 // Draw the retained HUD stream over everything the frame composed. It goes last for
@@ -303,7 +362,7 @@ public function drawBackground(state: borrow mut UiBatchState, encoder: borrow m
 // drawStream returns on a zero quad count.
 extend UiBatch {
     function drawHud(state: borrow mut UiBatchState, encoder: borrow mut RenderEncoder) {
-        let hud = hudStreamIndex()
+        let hud = DrawStreams.hud
         if state.streams[hud.raw].quadCount <= 0 {
             return
         }
@@ -313,9 +372,7 @@ extend UiBatch {
             hud,
             state.streams[hud.raw].quadCount,
             glassSharpStreamGroup(state, top),
-            glassSoftNearStreamGroup(state, top),
-            state.emptyGroup
+            glassSoftNearStreamGroup(state, top)
         )
-        return
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import Heap
 import Ember
 // Building the compositor: every pipeline the batch can draw with, created once.
 //
@@ -9,67 +10,163 @@ import Ember
 // back to the generic pipeline, so a backend that cannot build one degrades in
 // cost rather than in what it can show.
 
-
 // Keep each build-time KSL artifact in its own native function. KSL artifacts
 // carry the generated source for every backend; putting all of them in
 // `createBatch` made one 26 MiB LLVM function and sent register allocation into
 // pathological live-range work during Apple export. These helpers preserve the
 // exact pipeline state while giving LLVM normal-sized machine functions.
-function createBatchMainPipeline(graphics: borrow EMGraphics) -> RenderPipeline {
+function createBatchMainPipeline(graphics: borrow Graphics) -> RenderPipeline {
     let artifact = ksl!("Shaders/UiBatch.ksl")
     return createArtifactPipeline(graphics, "kira-ui-batch", "kira-ui-batch-pipeline", artifact)
 }
 
-function createGlassFullPipeline(graphics: borrow EMGraphics) -> RenderPipeline {
+function createBatchBlendPipeline(
+    graphics: borrow Graphics,
+    label: borrow String,
+    preset: BlendPreset
+) -> RenderPipeline {
+    let artifact = ksl!("Shaders/UiBatch.ksl")
+    return createSpecializedPipeline(graphics, label, artifact, move preset)
+}
+
+function createGlassFullPipeline(graphics: borrow Graphics) -> RenderPipeline {
     let artifact = ksl!("Shaders/UiGlassFull.ksl")
-    return createArtifactPipeline(graphics, "kira-ui-glass-full", "kira-ui-glass-full-pipeline", artifact)
+    return createArtifactPipeline(
+        graphics,
+        "kira-ui-glass-full",
+        "kira-ui-glass-full-pipeline",
+        artifact
+    )
 }
 
-function createGlassBandPipeline(graphics: borrow EMGraphics) -> RenderPipeline {
+function createGlassBandPipeline(graphics: borrow Graphics) -> RenderPipeline {
     let artifact = ksl!("Shaders/UiGlassBand.ksl")
-    return createArtifactPipeline(graphics, "kira-ui-glass-band", "kira-ui-glass-band-pipeline", artifact, false, .Replace)
+    return createArtifactPipeline(
+        graphics,
+        "kira-ui-glass-band",
+        "kira-ui-glass-band-pipeline",
+        artifact,
+        false,
+        .Replace
+    )
 }
 
-function createGlassCorePipeline(graphics: borrow EMGraphics) -> RenderPipeline {
+function createGlassCorePipeline(graphics: borrow Graphics) -> RenderPipeline {
     let artifact = ksl!("Shaders/UiGlassCore.ksl")
-    return createArtifactPipeline(graphics, "kira-ui-glass-core", "kira-ui-glass-core-pipeline", artifact, false, .Replace)
+    return createArtifactPipeline(
+        graphics,
+        "kira-ui-glass-core",
+        "kira-ui-glass-core-pipeline",
+        artifact,
+        false,
+        .Replace
+    )
 }
 
-function createGlassLensPipeline(graphics: borrow EMGraphics) -> RenderPipeline {
+function createGlassLensPipeline(graphics: borrow Graphics) -> RenderPipeline {
     let artifact = ksl!("Shaders/UiGlassLens.ksl")
-    return createArtifactPipeline(graphics, "kira-ui-glass-lens", "kira-ui-glass-lens-pipeline", artifact, false, .Replace)
+    return createArtifactPipeline(
+        graphics,
+        "kira-ui-glass-lens",
+        "kira-ui-glass-lens-pipeline",
+        artifact,
+        false,
+        .Replace
+    )
 }
 
-function createGlassCopyPipeline(graphics: borrow EMGraphics) -> RenderPipeline {
+function createGlassRecipePipeline(graphics: borrow Graphics) -> RenderPipeline {
+    let artifact = ksl!("Shaders/UiGlassRecipe.ksl")
+    return createArtifactPipeline(
+        graphics,
+        "kira-ui-glass-recipe",
+        "kira-ui-glass-recipe-pipeline",
+        artifact
+    )
+}
+
+// The table `Shaders/UiGlassRecipe.ksl` reads its recipes from.
+function createGlassRecipeTable(
+    graphics: borrow Graphics,
+    values: borrow [Number]
+) -> GraphicsBuffer {
+    let created = graphics.createBuffer(
+        BufferDescriptor { label: "kira-ui-glass-recipes", usage: .Storage, data: copy values }
+    )
+    return match created {
+        Ok(buffer) -> buffer
+        Error(failure) -> {
+            log fault("the glass recipe table was not created", failure: traceText(failure))
+            emptyGraphicsBuffer()
+        }
+    }
+}
+
+// The group a stream's quads are bound through, with the recipe table beside
+// them.
+function streamVertsGroup(
+    state: borrow UiBatchState,
+    graphics: borrow Graphics,
+    buffer: borrow GraphicsBuffer
+) -> BindGroup {
+    let group = bindGroupOrReport(
+        graphics.createStorageBufferBindGroup("kira-ui-verts", ShaderSlot.vertexBuffer, buffer.id),
+        "verts group"
+    )
+    if state.glassRecipes.id != 0 {
+        graphics.bindGroupAddStorageBuffer(group, ShaderSlot.recipeTable, state.glassRecipes)
+    }
+    return group
+}
+
+function createGlassCopyPipeline(graphics: borrow Graphics) -> RenderPipeline {
     let artifact = ksl!("Shaders/UiGlassCopy.ksl")
-    return createArtifactPipeline(graphics, "kira-ui-glass-copy", "kira-ui-glass-copy-pipeline", artifact, false, .Replace)
+    return createArtifactPipeline(
+        graphics,
+        "kira-ui-glass-copy",
+        "kira-ui-glass-copy-pipeline",
+        artifact,
+        false,
+        .Replace
+    )
 }
 
-function createGlyphVariantPipeline(graphics: borrow EMGraphics, label: borrow String, preset: BlendPreset = .PremultipliedAlpha) -> RenderPipeline {
+function createGlyphVariantPipeline(
+    graphics: borrow Graphics,
+    label: borrow String,
+    preset: BlendPreset = .PremultipliedAlpha
+) -> RenderPipeline {
     let artifact = ksl!("Shaders/UiGlyph.ksl")
     return createSpecializedPipeline(graphics, label, artifact, move preset)
 }
 
-function createRectFastPipeline(graphics: borrow EMGraphics) -> RenderPipeline {
+function createRectFastPipeline(graphics: borrow Graphics) -> RenderPipeline {
     let artifact = ksl!("Shaders/UiRect.ksl")
     return createSpecializedPipeline(graphics, "kira-ui-rect-fast", artifact)
 }
 
-function createBackgroundPipeline(graphics: borrow EMGraphics) -> RenderPipeline {
+function createBackgroundPipeline(graphics: borrow Graphics) -> RenderPipeline {
     let artifact = ksl!("Shaders/UiBackground.ksl")
-    return createArtifactPipeline(graphics, "kira-ui-opaque-background", "kira-ui-opaque-background-pipeline", artifact, false, .Replace)
+    return createArtifactPipeline(
+        graphics,
+        "kira-ui-opaque-background",
+        "kira-ui-opaque-background-pipeline",
+        artifact,
+        false,
+        .Replace
+    )
+}
+
+// A batch for `graphics` to encode into, with the compositor's persistent GPU
+// resources and font made for it.
+public function makeUiBatch(graphics: borrow Graphics) -> UiBatch {
+    return UiBatch { storage: createBatch(graphics) }
 }
 
 // Create the compositor's persistent GPU resources and font, store the state behind a
 // nativeState handle, and return that handle.
-public function createBatch(graphics: borrow EMGraphics) -> NativeState<UiBatchState> {
-    var state = UiBatchState {
-        engine: nullPointer(),
-        face: nullPointer(),
-        monoFace: nullPointer(),
-        contentsPtr: nullPointer(),
-        atlasPixels: nullPointer()
-    }
+function createBatch(graphics: borrow Graphics) -> NativeState<UiBatchState> {
+    var state = UiBatchState { contentsPtr: nullPointer(), atlasPixels: nullPointer() }
 
     state.pipeline = createBatchMainPipeline(graphics)
     state.glassFullPipeline = createGlassFullPipeline(graphics)
@@ -77,12 +174,33 @@ public function createBatch(graphics: borrow EMGraphics) -> NativeState<UiBatchS
     state.glassCorePipeline = createGlassCorePipeline(graphics)
     state.glassLensPipeline = createGlassLensPipeline(graphics)
     state.glassCopyPipeline = createGlassCopyPipeline(graphics)
+    state.glassRecipePipeline = createGlassRecipePipeline(graphics)
+    state.glassRecipeValues = glassRecipeTable()
+    state.glassRecipes = createGlassRecipeTable(graphics, state.glassRecipeValues)
 
     // Not behind the switch below: the generic pipeline blends everything
     // over what is under it, so a burned or dodged icon has nowhere else to
     // draw correctly.
-    state.glyphBurnPipeline = createGlyphVariantPipeline(graphics, "kira-ui-glyph-burn", .PremultipliedSubtractive)
-    state.glyphDodgePipeline = createGlyphVariantPipeline(graphics, "kira-ui-glyph-dodge", .PremultipliedAdditive)
+    state.glyphBurnPipeline = createGlyphVariantPipeline(
+        graphics,
+        "kira-ui-glyph-burn",
+        .PremultipliedSubtractive
+    )
+    state.glyphDodgePipeline = createGlyphVariantPipeline(
+        graphics,
+        "kira-ui-glyph-dodge",
+        .PremultipliedAdditive
+    )
+    state.surfaceBurnPipeline = createBatchBlendPipeline(
+        graphics,
+        "kira-ui-surface-burn",
+        .PremultipliedSubtractive
+    )
+    state.surfaceDodgePipeline = createBatchBlendPipeline(
+        graphics,
+        "kira-ui-surface-dodge",
+        .PremultipliedAdditive
+    )
 
     if environmentIsSet("KIRA_UI_SPECIALIZED_RUNS") {
         state.rectPipeline = createRectFastPipeline(graphics)
@@ -102,68 +220,99 @@ public function createBatch(graphics: borrow EMGraphics) -> NativeState<UiBatchS
     // declares `uniform params`, and a backend that pushes uniforms through its
     // own call rather than reading them out of memory has no way to see a buffer
     // a caller bound instead.
-    state.backgroundParams = uniformOrReport(graphics.createUniform(UniformDescriptor {
-        label: "kira-ui-opaque-background-params",
-        expectedFloatCount: 4,
-        data: [F32(0.0), F32(0.0), F32(0.0), F32(0.0)]
-    }), "background params")
-    state.backgroundParamsGroup = bindGroupOrReport(graphics.createUniformBindGroup("kira-ui-opaque-background-params", backgroundParamsSlot(), state.backgroundParams), "background params group")
+    state.backgroundParams = optionalUniform(
+        graphics.createUniform(
+            UniformDescriptor {
+                label: "kira-ui-opaque-background-params",
+                expectedFloatCount: 4,
+                data: [F32(0.0), F32(0.0), F32(0.0), F32(0.0)]
+            }
+        ),
+        "background params"
+    )
+    match state.backgroundParams {
+        Some(params) -> {
+            state.backgroundParamsGroup = optionalBindGroup(
+                graphics.createUniformBindGroup(
+                    "kira-ui-opaque-background-params",
+                    BackgroundSlot.params,
+                    params
+                ),
+                "background params group"
+            )
+        }
+        None -> state.backgroundParamsGroup = .None
+    }
 
     let floatCapacity = streamFloatCapacity()
-    let vbuf = dynamicBufferOrReport(graphics.createDynamicBuffer("kira-ui-verts", floatCapacity), "stream buffer")
+    let vbuf = dynamicBufferOrReport(
+        graphics.createDynamicBuffer("kira-ui-verts", floatCapacity),
+        "stream buffer"
+    )
     state.contentsPtr = vbuf.contents
-    state.streams.append(UiStream {
-        buffer: vbuf.buffer,
-        contentsPtr: vbuf.contents,
-        vertsGroup: bindGroupOrReport(graphics.createStorageBufferBindGroup("kira-ui-verts", vertexBufferSlot(), vbuf.buffer.id), "verts group"),
-        quadModes: zeroedInts(maxQuadsPerBatch()),
-        quadRequiresGeneric: zeroedBools(maxQuadsPerBatch()),
-        quadExternals: zeroedTextureHandles(maxQuadsPerBatch()),
-        quadSecondaries: zeroedTextureHandles(maxQuadsPerBatch())
-    })
+    state.streams.append(
+        UiStream {
+            buffer: vbuf.buffer,
+            contentsPtr: vbuf.contents,
+            vertsGroup: streamVertsGroup(state, graphics, vbuf.buffer),
+            quads: blankQuads(QuadLayout.maxPerBatch)
+        }
+    )
 
     // Second stream: the first glass layer. Allocated up front so the common
     // single-layer glass frame never allocates mid-frame; layers beyond this one
     // allocate on the first frame that stacks glass (openStream).
-    let vbuf2 = dynamicBufferOrReport(graphics.createDynamicBuffer("kira-ui-verts", floatCapacity), "stream buffer")
-    state.streams.append(UiStream {
-        buffer: vbuf2.buffer,
-        contentsPtr: vbuf2.contents,
-        vertsGroup: bindGroupOrReport(graphics.createStorageBufferBindGroup("kira-ui-verts", vertexBufferSlot(), vbuf2.buffer.id), "verts group"),
-        quadModes: zeroedInts(maxQuadsPerBatch()),
-        quadRequiresGeneric: zeroedBools(maxQuadsPerBatch()),
-        quadExternals: zeroedTextureHandles(maxQuadsPerBatch()),
-        quadSecondaries: zeroedTextureHandles(maxQuadsPerBatch())
-    })
+    let vbuf2 = dynamicBufferOrReport(
+        graphics.createDynamicBuffer("kira-ui-verts", floatCapacity),
+        "stream buffer"
+    )
+    state.streams.append(
+        UiStream {
+            buffer: vbuf2.buffer,
+            contentsPtr: vbuf2.contents,
+            vertsGroup: streamVertsGroup(state, graphics, vbuf2.buffer),
+            quads: blankQuads(QuadLayout.maxPerBatch)
+        }
+    )
 
     // The rest of the stream slots — the deeper glass layers and the HUD's own —
     // exist as placeholders from the start so every slot has a FIXED index. The HUD
-    // is at hudStreamIndex() whether or not glass ever stacks that deep, which is
+    // is at DrawStreams.hud whether or not glass ever stacks that deep, which is
     // what lets a HUD refresh address its stream without disturbing the layers.
-    while state.streams.count < streamSlotCount() {
+    while state.streams.count < DrawStreams.slotCount {
         state.streams.append(placeholderStream())
     }
 
-    state.glassGrid = zeroedInts(glassGridCells())
+    state.glassGrid = zeroedInts(GlassGrid.cells)
 
-    let ibuf = bufferOrReport(graphics.createIndexBuffer(IndexBufferDescriptor {
-        label: "kira-ui-batch-indices",
-        data: quadIndices(maxQuadsPerBatch())
-    }), "ibuf")
+    let ibuf = bufferOrReport(
+        graphics.createIndexBuffer(
+            IndexBufferDescriptor {
+                label: "kira-ui-batch-indices",
+                data: quadIndices(QuadLayout.maxPerBatch)
+            }
+        ),
+        "ibuf"
+    )
     state.indexBuffer = ibuf
 
-    let atlasSize = glyphAtlasSize()
-    let atlas = textureOrReport(graphics.createTexture(TextureDescriptor {
-        label: "kira-ui-glyph-atlas",
-        width: atlasSize,
-        height: atlasSize,
-        format: .Rgba8Unorm,
-        // Streaming, because the atlas is composited into and re-uploaded as
-        // glyphs are packed. An immutable image would refuse the upload.
-        usage: .SampledStreaming,
-        sampleCount: 1,
-        storage: .Persistent
-    }), "glyph atlas")
+    let atlasSize = GlyphAtlas.size
+    let atlas = textureOrReport(
+        graphics.createTexture(
+            TextureDescriptor {
+                label: "kira-ui-glyph-atlas",
+                width: UN32(atlasSize),
+                height: UN32(atlasSize),
+                format: .Rgba8Unorm,
+                // Streaming, because the atlas is composited into and re-uploaded as
+                // glyphs are packed. An immutable image would refuse the upload.
+                usage: .SampledStreaming,
+                sampleCount: 1,
+                storage: .Persistent
+            }
+        ),
+        "glyph atlas"
+    )
     state.atlasTexture = atlas
     state.atlasW = atlasSize
     state.atlasH = atlasSize
@@ -176,22 +325,27 @@ public function createBatch(graphics: borrow EMGraphics) -> NativeState<UiBatchS
     state.atlasDirty = true
     state.atlasDirtyTop = 0
     state.atlasDirtyBottom = atlasSize
-    state.cursorX = atlasGutter()
-    state.cursorY = atlasGutter()
+    state.cursorX = GlyphAtlas.gutter
+    state.cursorY = GlyphAtlas.gutter
     state.rowHeight = 0
 
-    let sampler = samplerOrReport(graphics.createSampler(SamplerDescriptor {
-        label: "kira-ui-glyph-sampler",
-        minFilter: .Linear,
-        magFilter: .Linear,
-        addressModeU: .ClampToEdge,
-        addressModeV: .ClampToEdge
-    }), "sampler")
+    let sampler = samplerOrReport(
+        graphics.createSampler(
+            SamplerDescriptor {
+                label: "kira-ui-glyph-sampler",
+                minFilter: .Linear,
+                magFilter: .Linear,
+                addressModeU: .ClampToEdge,
+                addressModeV: .ClampToEdge
+            }
+        ),
+        "sampler"
+    )
     state.sampler = sampler
 
     let bindGroup = bindGroupOrReport(graphics.beginBindGroup("kira-ui-batch-atlas"), "bind group")
-    graphics.bindGroupAddTexture(bindGroup, atlasTextureSlot(), atlas)
-    graphics.bindGroupAddSampler(bindGroup, atlasSamplerSlot(), sampler)
+    graphics.bindGroupAddTexture(bindGroup, ShaderSlot.atlasTexture, atlas)
+    graphics.bindGroupAddSampler(bindGroup, ShaderSlot.atlasSampler, sampler)
     state.atlasGroup = bindGroup
 
     // How far the frame stands between the two backdrop photographs. One number
@@ -200,37 +354,43 @@ public function createBatch(graphics: borrow EMGraphics) -> NativeState<UiBatchS
     // and it rides the sharp tap's own group, because it is what says which of
     // that group's two images to believe. Four floats: `std140` rounds the
     // block to 16 bytes and the upload has to be that size.
-    state.backdropBlend = uniformOrReport(graphics.createUniform(UniformDescriptor {
-        label: "kira-ui-batch-backdrop-blend",
-        expectedFloatCount: 4,
-        data: [F32(0.0), F32(0.0), F32(0.0), F32(0.0)]
-    }), "backdrop blend")
+    state.backdropBlend = optionalUniform(
+        graphics.createUniform(
+            UniformDescriptor {
+                label: "kira-ui-batch-backdrop-blend",
+                expectedFloatCount: 4,
+                data: [F32(0.0), F32(0.0), F32(0.0), F32(0.0)]
+            }
+        ),
+        "backdrop blend"
+    )
 
     // The external-texture fallback: the shader always declares that slot, and
     // until a TextureView registers a real texture the atlas satisfies it (mode-2
     // quads are only emitted once one has).
-    let fallbackExternal = bindGroupOrReport(graphics.beginBindGroup("kira-ui-batch-external-fallback"), "fallback external")
+    let fallbackExternal = bindGroupOrReport(
+        graphics.beginBindGroup("kira-ui-batch-external-fallback"),
+        "fallback external"
+    )
     glassAddSharpBackdrop(graphics, fallbackExternal, atlas, atlas, sampler, state.backdropBlend)
     state.fallbackExternalGroup = fallbackExternal
 
     // Same discipline for the two blurred levels, which share one group: a frame
     // with no glass keeps both satisfied by the atlas.
-    let fallbackSoftNear = bindGroupOrReport(graphics.beginBindGroup("kira-ui-batch-soft-near-fallback"), "fallback soft near")
-    graphics.bindGroupAddTexture(fallbackSoftNear, backdropTextureSlot(), atlas)
-    graphics.bindGroupAddSampler(fallbackSoftNear, backdropSamplerSlot(), sampler)
-    graphics.bindGroupAddTexture(fallbackSoftNear, nearTextureSlot(), atlas)
-    graphics.bindGroupAddSampler(fallbackSoftNear, nearSamplerSlot(), sampler)
+    let fallbackSoftNear = bindGroupOrReport(
+        graphics.beginBindGroup("kira-ui-batch-soft-near-fallback"),
+        "fallback soft near"
+    )
+    graphics.bindGroupAddTexture(fallbackSoftNear, ShaderSlot.backdropTexture, atlas)
+    graphics.bindGroupAddSampler(fallbackSoftNear, ShaderSlot.backdropSampler, sampler)
+    graphics.bindGroupAddTexture(fallbackSoftNear, ShaderSlot.nearTexture, atlas)
+    graphics.bindGroupAddSampler(fallbackSoftNear, ShaderSlot.nearSampler, sampler)
     state.fallbackBackdropGroup = fallbackSoftNear
 
-    var cacheKeySeed: [GlassSurfaceKey] = []
-    while cacheKeySeed.count < glassCacheMaxSurfaces() {
-        cacheKeySeed.append(GlassSurfaceKey())
-    }
-    state.glassCacheKeys = cacheKeySeed
-    state.glassCacheKeySet = zeroedInts(glassCacheMaxSurfaces())
-    state.glassCacheClaimed = zeroedInts(glassCacheMaxSurfaces())
-    state.glyphHashKeys = zeroedInts(glyphCacheCapacity())
-    state.glyphHashVals = zeroedInts(glyphCacheCapacity())
+    var cacheSlots: [GlassCacheSlot] = []
+    for _ in 0..GlassCache.maxSurfaces { cacheSlots.append(GlassCacheSlot {}) }
+    state.glassCacheSlots = move cacheSlots
+    state.glyphIndex = Map()
 
     state.probeQuads = environmentIsSet("KIRA_UI_QUAD_PROBE")
     state.probeCost = environmentIsSet("KIRA_UI_COST_PROBE")

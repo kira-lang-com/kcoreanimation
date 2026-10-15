@@ -24,14 +24,18 @@ import Foundation
 // is half its shorter side, and a capsule is one whose radius is half its
 // height.
 public struct MotionShape {
-    let x: Float = 0.0
-    let y: Float = 0.0
-    let width: Float = 0.0
-    let height: Float = 0.0
-    let radius: Float = 0.0
+    let x: Number = 0.0
+    let y: Number = 0.0
+    let width: Number = 0.0
+    let height: Number = 0.0
+    let radius: Number = 0.0
 }
 
-public function lerp(from: borrow MotionShape, to: borrow MotionShape, amount: Float) -> MotionShape {
+public function lerp(
+    from: borrow MotionShape,
+    to: borrow MotionShape,
+    amount: Number
+) -> MotionShape {
     return MotionShape {
         x: lerp(from.x, to.x, amount),
         y: lerp(from.y, to.y, amount),
@@ -45,7 +49,7 @@ public function lerp(from: borrow MotionShape, to: borrow MotionShape, amount: F
 public struct MotionMetaballState {
     // Where the morph is: 0 is entirely the source, 1 entirely the destination.
     var progress: MotionSpringState = MotionSpringState {}
-    var amount: Float = 0.0
+    var amount: Number = 0.0
     var from: MotionShape = MotionShape {}
     var to: MotionShape = MotionShape {}
 }
@@ -55,7 +59,7 @@ public struct MotionMetaballFrame {
     let source: MotionShape = MotionShape {}
     let target: MotionShape = MotionShape {}
     // The smooth minimum's reach, in points. Zero is a plain union.
-    let blend: Float = 0.0
+    let blend: Number = 0.0
 }
 
 // The smooth minimum of two distance fields.
@@ -67,7 +71,7 @@ public struct MotionMetaballFrame {
 //
 // This is the same arithmetic the renderer runs per pixel; it lives here too so
 // the shape of the merge can be asserted without a GPU.
-public function motionSmoothUnion(first: Float, second: Float, k: Float) -> Float {
+public function motionSmoothUnion(first: Number, second: Number, k: Number) -> Number {
     if k <= 0.0 {
         return min(first, second)
     }
@@ -77,7 +81,7 @@ public function motionSmoothUnion(first: Float, second: Float, k: Float) -> Floa
 
 // The signed distance from a point to a rounded rectangle: negative inside,
 // zero on the surface, positive outside.
-public function motionShapeDistance(shape: borrow MotionShape, x: Float, y: Float) -> Float {
+public function motionShapeDistance(shape: borrow MotionShape, x: Number, y: Number) -> Number {
     let halfW = shape.width * 0.5
     let halfH = shape.height * 0.5
     let radius = min(shape.radius, min(halfW, halfH))
@@ -89,20 +93,24 @@ public function motionShapeDistance(shape: borrow MotionShape, x: Float, y: Floa
 }
 
 // The merged surface at a point: negative inside the fused mass.
-public function motionMetaballDistance(frame: borrow MotionMetaballFrame, x: Float, y: Float) -> Float {
+public function motionMetaballDistance(
+    frame: borrow MotionMetaballFrame,
+    x: Number,
+    y: Number
+) -> Number {
     let a = motionShapeDistance(frame.source, x, y)
     let b = motionShapeDistance(frame.target, x, y)
     return motionSmoothUnion(a, b, frame.blend)
 }
 
-// How far the two shapes fuse at the peak of a morph.
-//
-// Twenty points is the reference implementation's own figure for shapes that
-// should read as one liquid body. Below about ten the join is visibly a crease;
-// far above it the two swell into each other before they are near enough to
-// touch, and the effect reads as inflation rather than flow.
-public function motionMetaballBlend() -> Float {
-    return 20.0
+public namespace MotionMetaball {
+    // How far the two shapes fuse at the peak of a morph.
+    //
+    // Twenty points is the reference implementation's own figure for shapes that
+    // should read as one liquid body. Below about ten the join is visibly a crease;
+    // far above it the two swell into each other before they are near enough to
+    // touch, and the effect reads as inflation rather than flow.
+    let blend = 20.0
 }
 
 // Starts a morph from one shape to another.
@@ -120,11 +128,13 @@ public function motionMetaballStart(
     state.from = move from
     state.to = move to
     state.amount = sample.value
-    return
 }
 
 // Advances the morph and answers what to draw.
-public function motionMetaballAdvance(state: borrow mut MotionMetaballState, delta: Float) -> MotionMetaballFrame {
+public function motionMetaballAdvance(
+    state: borrow mut MotionMetaballState,
+    delta: Number
+) -> MotionMetaballFrame {
     let sample = motionSpringAdvance(state.progress, delta)
     state.amount = clamp(sample.value, 0.0, 1.0)
     return motionMetaballFrameAt(state.from, state.to, state.amount)
@@ -136,7 +146,11 @@ public function motionMetaballAdvance(state: borrow mut MotionMetaballState, del
 // so at every instant there are two real shapes with a gap between them — which
 // is what the smooth minimum needs in order to have a neck to build. Morphing
 // one shape into the other directly would leave nothing to fuse.
-public function motionMetaballFrameAt(from: borrow MotionShape, to: borrow MotionShape, amount: Float) -> MotionMetaballFrame {
+public function motionMetaballFrameAt(
+    from: borrow MotionShape,
+    to: borrow MotionShape,
+    amount: Number
+) -> MotionMetaballFrame {
     let t = clamp(amount, 0.0, 1.0)
     return MotionMetaballFrame {
         // The source travels to the destination's center while collapsing to
@@ -150,7 +164,10 @@ public function motionMetaballFrameAt(from: borrow MotionShape, to: borrow Motio
 
 // A shape reduced to a point at another shape's center — what the destination
 // has grown from, and what the source collapses to.
-public function motionShapeCollapsed(at: borrow MotionShape, like: borrow MotionShape) -> MotionShape {
+public function motionShapeCollapsed(
+    at: borrow MotionShape,
+    like: borrow MotionShape
+) -> MotionShape {
     let cx = at.x + at.width * 0.5
     let cy = at.y + at.height * 0.5
     // Not literally zero: a shape with no extent has a degenerate distance
@@ -167,7 +184,11 @@ public function motionShapeCollapsed(at: borrow MotionShape, like: borrow Motion
     }
 }
 
-public function motionShapeBetween(from: borrow MotionShape, to: borrow MotionShape, t: Float) -> MotionShape {
+public function motionShapeBetween(
+    from: borrow MotionShape,
+    to: borrow MotionShape,
+    t: Number
+) -> MotionShape {
     return lerp(from, to, t)
 }
 
@@ -177,12 +198,12 @@ public function motionShapeBetween(from: borrow MotionShape, to: borrow MotionSh
 // not appeared and at the end the source has gone, so a reach at either end
 // would fuse a shape to a speck and bulge it; the neck belongs to the middle,
 // where there are two real shapes to bridge.
-public function motionMetaballReach(amount: Float) -> Float {
+public function motionMetaballReach(amount: Number) -> Number {
     let t = clamp(amount, 0.0, 1.0)
-    return motionMetaballBlend() * motionEase(.EaseInOut, 1.0 - abs(t * 2.0 - 1.0))
+    return MotionMetaball.blend * motionEase(.EaseInOut, 1.0 - abs(t * 2.0 - 1.0))
 }
 
 public function motionMetaballSettled(state: borrow MotionMetaballState) -> Bool {
     let sample = motionSpringSample(state.progress, state.progress.elapsed)
-    return motionSpringSettled(state.progress, sample, motionSpringEpsilon())
+    return motionSpringSettled(state.progress, sample, MotionSpringLimit.epsilon)
 }

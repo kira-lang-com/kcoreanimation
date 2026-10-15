@@ -4,19 +4,19 @@ import KiraLayout
 
 // The compositor's draw backend: the thin translation layer between the render
 // plan the executor walks and the batched-UI primitives that actually put
-// vertices on the GPU. It owns nothing but the frame's EMGraphics handle and the
+// vertices on the GPU. It owns nothing but the frame's Graphics handle and the
 // UiBatch it emits into; every surface, glyph, texture and glass quad is one
 // call through to `batch`, which holds the geometry, the atlas and the liquid-
 // glass pipeline.
 //
 // The executor drives it per pass: `beginFrameExtent` for the root swapchain
 // frame, `beginTargetFrame` for an isolated pass rendering into an offscreen
-// texture, then `caSubmitPass`/`caSubmit` push the plan's commands through
-// `drawRetainedGlass`, `drawTextureFields` and the free `caDrawSurfaceQuad`.
+// texture, then `CARenderPlan.submitPass`/`submit` push the plan's commands through
+// `drawRetainedGlass`, `drawTextureFields` and the free `CAOrientedQuad.drawSurface`.
 // `drewVisibleUi` records whether the pass emitted anything the swapchain must
 // present.
 public class EmberFoundationBackend {
-    let graphics: EMGraphics
+    let graphics: Graphics
     let batch: UiBatch
     // Whether the host window is composited with holes in it. Carried for the
     // surface-fill path; the page itself is cleared by the runner.
@@ -27,26 +27,35 @@ public class EmberFoundationBackend {
 
     // Begin the root swapchain frame: rewind the batch's streams to this frame's
     // viewport and drawable extent, then claim each stream's ring slot.
-    function beginFrameExtent(viewportW: Float, viewportH: Float, scale: Float, drawableW: Int, drawableH: Int) {
+    function beginFrameExtent(
+        viewportW: Number,
+        viewportH: Number,
+        scale: Number,
+        drawableW: Number,
+        drawableH: Number
+    ) {
         self.batch.beginBatch(viewportW, viewportH, scale, drawableW, drawableH)
         self.batch.beginFrameSlots(self.graphics)
-        return
     }
 
     // Begin an isolated pass rendering into an offscreen target of the given
     // physical extent. Identical batch setup to the root frame — the executor
     // binds the target texture at encode time; the backend only sizes the frame.
-    function beginTargetFrame(width: Float, height: Float, scale: Float, targetW: Int, targetH: Int) {
+    function beginTargetFrame(
+        width: Number,
+        height: Number,
+        scale: Number,
+        targetW: Number,
+        targetH: Number
+    ) {
         self.batch.beginBatch(width, height, scale, targetW, targetH)
         self.batch.beginFrameSlots(self.graphics)
-        return
     }
 
     // Open a backdrop capture for the glass surface about to be drawn: park the
     // active stream so the glass layer refracts everything emitted before it.
     function beginRetainedBackdrop(bounds: borrow Rect) {
         self.batch.beginGlassCapture(self.graphics, bounds.x, bounds.y, bounds.width, bounds.height)
-        return
     }
 
     // The glass layer closes itself when the next capture opens or the frame
@@ -54,7 +63,6 @@ public class EmberFoundationBackend {
     // boundary — so nothing is bracketed shut here.
     function endBackdrop(bounds: borrow Rect) {
         let ignored = bounds.width
-        return
     }
 
     // Emit one liquid-glass quad. `fill` is the already-resolved wash color;
@@ -62,17 +70,20 @@ public class EmberFoundationBackend {
     // refraction dials and touch/morph state from the glass content.
     function drawRetainedGlass(
         quad: borrow CAOrientedQuad,
-        localWidth: Float,
-        localHeight: Float,
-        cornerRadius: Float,
-        fill: borrow Color,
+        localWidth: Number,
+        localHeight: Number,
+        cornerRadius: Number,
+        fill: borrow RGBAColor,
         glass: borrow CAGlass,
-        clipMinX: Float,
-        clipMinY: Float,
-        clipMaxX: Float,
-        clipMaxY: Float,
+        clipMinX: Number,
+        clipMinY: Number,
+        clipMaxX: Number,
+        clipMaxY: Number,
         // How much of the finished glass shows over what is behind it.
-        opacity: Float = 1.0,
+        opacity: Number = 1.0,
+        // The corner of the rounded box the clip is, and its kind.
+        clipRadius: Number = 0.0,
+        clipShapeKind: Number = 0.0,
     ) {
         self.drewVisibleUi = true
         // The surface is drawn at the size it takes on screen, so a layer that
@@ -82,8 +93,8 @@ public class EmberFoundationBackend {
         // starts, as the batch takes them.
         let width = quad.halfW * 2.0
         let height = quad.halfH * 2.0
-        var unitX: Float = 1.0
-        var unitY: Float = 1.0
+        var unitX: Number = 1.0
+        var unitY: Number = 1.0
         if localWidth > 0.0 {
             unitX = width / localWidth
         }
@@ -92,6 +103,45 @@ public class EmberFoundationBackend {
         }
         let originX = quad.centerX - width * 0.5
         let originY = quad.centerY - height * 0.5
+        match glass.style {
+            Some(style) -> {
+                self.batch.pushRecipeGlass(
+                    originX,
+                    originY,
+                    width,
+                    height,
+                    GlassRecipeSurface {
+                        style: style,
+                        radius: cornerRadius,
+                        shapeKind: Number(glass.shapeKind),
+                        tint: copy fill,
+                        opacity: opacity,
+                        glowX: originX + glass.glowX * unitX,
+                        glowY: originY + glass.glowY * unitY,
+                        glowStrength: packedGlow(
+                            glass.glowStrength,
+                            glass.glowRadius * (unitX + unitY) * 0.5
+                        ),
+                        morphX: originX + glass.morphX * unitX,
+                        morphY: originY + glass.morphY * unitY,
+                        morphW: glass.morphWidth * unitX,
+                        morphH: glass.morphHeight * unitY,
+                        morphRadius: glass.morphRadius * unitY,
+                        morphBlend: glass.morphBlend
+                    },
+                    GlassRecipeClip {
+                        minX: clipMinX,
+                        minY: clipMinY,
+                        maxX: clipMaxX,
+                        maxY: clipMaxY,
+                        radius: clipRadius,
+                        shapeKind: clipShapeKind
+                    }
+                )
+                return
+            }
+            None -> {}
+        }
         self.batch.pushGlass(
             originX,
             originY,
@@ -99,25 +149,29 @@ public class EmberFoundationBackend {
             height,
             cornerRadius,
             fill,
-            caGlassBlurAt(glass, width, height),
+            glass.blurAt(width, height),
             glass.edgeRefraction,
-            clipMinX, clipMinY, clipMaxX, clipMaxY,
-            caGlassMaterialAt(glass, width, height),
+            clipMinX,
+            clipMinY,
+            clipMaxX,
+            clipMaxY,
+            glass.materialAt(width, height),
             originX + glass.glowX * unitX,
             originY + glass.glowY * unitY,
-            caPackedGlow(glass.glowStrength, glass.glowRadius * (unitX + unitY) * 0.5),
+            packedGlow(glass.glowStrength, glass.glowRadius * (unitX + unitY) * 0.5),
             originX + glass.morphX * unitX,
             originY + glass.morphY * unitY,
             glass.morphWidth * unitX,
             glass.morphHeight * unitY,
             glass.morphRadius * unitY,
             glass.morphBlend,
-            Float(glass.shapeKind),
+            Number(glass.shapeKind),
             quad.rotCos,
             quad.rotSin,
-            opacity
+            opacity,
+            clipRadius,
+            clipShapeKind
         )
-        return
     }
 
     // Composite an isolated pass's texture (or any external texture) over its
@@ -127,15 +181,16 @@ public class EmberFoundationBackend {
         bounds: borrow Rect,
         texture: TextureHandle,
         secondaryTexture: TextureHandle,
-        transition: Float,
-        opacity: Float,
-        radius: Float,
-        blur: Float = 0.0,
-        clip: Rect = Rect { x: 0.0 - 1000000.0, y: 0.0 - 1000000.0, width: 2000000.0, height: 2000000.0 },
-        clipRadius: Float = 0.0,
-        clipShapeKind: Float = 0.0,
+        transition: Number,
+        opacity: Number,
+        radius: Number,
+        blur: Number = 0.0,
+        clip: Rect = Rect { x: -1000000.0, y: -1000000.0, width: 2000000.0, height: 2000000.0 },
+        clipRadius: Number = 0.0,
+        clipShapeKind: Number = 0.0,
     ) {
-        if opacity <= 0.0 || bounds.width <= 0.0 || bounds.height <= 0.0 || clip.width <= 0.0 || clip.height <= 0.0 {
+        let empty = bounds.width <= 0.0 || bounds.height <= 0.0
+        if opacity <= 0.0 || empty || clip.width <= 0.0 || clip.height <= 0.0 {
             return
         }
         self.drewVisibleUi = true
@@ -160,7 +215,6 @@ public class EmberFoundationBackend {
             clipRadius,
             clipShapeKind
         )
-        return
     }
 }
 
@@ -169,7 +223,7 @@ public class EmberFoundationBackend {
 // always under one, in what is left. The glass pipelines have no slot to spare
 // for a fourth number, and a light has never needed a fraction of a point of
 // reach. No light, or one with no reach, is zero.
-public function caPackedGlow(strength: Float, radius: Float) -> Float {
+public function packedGlow(strength: Number, radius: Number) -> Number {
     if strength <= 0.0 || radius < 1.0 {
         return 0.0
     }

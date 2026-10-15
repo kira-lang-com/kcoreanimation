@@ -23,6 +23,11 @@ import Foundation
 // (FoundationBlur) driving a fixed pyramid, so the radius is recorded rather than
 // consumed — a surface that wants the document's blur asks for the step nearest it.
 
+public namespace FoundationGray {
+    let white: RGBAColor = foundationGray(255.0)
+    let black: RGBAColor = foundationGray(0.0)
+}
+
 // Which of the document's two color schemes a surface is shading against.
 // "IC - Light" and "IC - Dark" are also in the set; they are byte-identical to
 // Light and Dark, so they are not separate cases here.
@@ -53,15 +58,14 @@ public enum FoundationBlendMode {
     Lighten
     Darken
     Multiply
-    // Only the DARK liquid-glass element uses this, and the shader does not shade
-    // it yet: it is an HSL-space blend, not a per-channel one. Recorded so the
-    // table stays a faithful copy of the document rather than a subset of it.
+    // An HSL-space blend rather than a per-channel one: the backdrop's hue and
+    // saturation at the layer's luminance.
     Luminosity
 }
 
 // The id the vertex carries for a blend mode. The shader switches on this number,
 // so the mapping is part of the compositor's contract — append, never renumber.
-public function foundationBlendId(mode: borrow FoundationBlendMode) -> Float {
+public function foundationBlendId(mode: borrow FoundationBlendMode) -> Number {
     match mode {
         Normal -> return 0.0
         LinearDodge -> return 1.0
@@ -79,7 +83,7 @@ public function foundationBlendId(mode: borrow FoundationBlendMode) -> Float {
 // fields and has to be read back — the compositor hands the wash to the batch as
 // numbers, and anything downstream that needs to REASON about the material (rather
 // than shade it) has only those numbers to go on. Exact inverse of foundationBlendId.
-public function foundationBlendModeFromId(id: Float) -> FoundationBlendMode {
+public function foundationBlendModeFromId(id: Number) -> FoundationBlendMode {
     if id < 0.5 { return .Normal }
     if id < 1.5 { return .LinearDodge }
     if id < 2.5 { return .ColorDodge }
@@ -94,13 +98,8 @@ public function foundationBlendModeFromId(id: Float) -> FoundationBlendMode {
 
 // One fill in a material's stack: what color, how opaque, blended how.
 public struct FoundationTintLayer {
-    let color: Color = Color {
-        r: 1.0,
-        g: 1.0,
-        b: 1.0,
-        a: 1.0
-    }
-    let alpha: Float = 0.0
+    let color: RGBAColor = RGBAColor { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }
+    let alpha: Number = 0.0
     let blend: FoundationBlendMode = .Normal
 }
 
@@ -109,26 +108,13 @@ public struct FoundationTintStack {
     let lower: FoundationTintLayer = FoundationTintLayer {}
     let upper: FoundationTintLayer = FoundationTintLayer {}
     // The document's own background-blur radius for this material, in points.
-    let backgroundBlurRadius: Float = 0.0
+    let backgroundBlurRadius: Number = 0.0
 }
 
 // A neutral gray, written the way the document writes it: one 0-255 channel value.
-public function foundationGray(level: Float) -> Color {
+public function foundationGray(level: Number) -> RGBAColor {
     let channel = level / 255.0
-    return Color {
-        r: channel,
-        g: channel,
-        b: channel,
-        a: 1.0
-    }
-}
-
-public function foundationWhite() -> Color {
-    return foundationGray(255.0)
-}
-
-public function foundationBlack() -> Color {
-    return foundationGray(0.0)
+    return RGBAColor { r: channel, g: channel, b: channel, a: 1.0 }
 }
 
 // The other one. A scheme change is a move between two tables, and the move needs
@@ -161,7 +147,7 @@ public function foundationSchemeOther(scheme: borrow FoundationScheme) -> Founda
 
 // One channel through one blend mode. Mirrors blendChannel in Shaders/UiBatch.ksl —
 // the ids come from foundationBlendId above, and the two must agree.
-public function foundationBlendChannel(base: Float, layer: Float, mode: Float) -> Float {
+public function foundationBlendChannel(base: Number, layer: Number, mode: Number) -> Number {
     if mode < 0.5 {
         return layer
     }
@@ -213,23 +199,30 @@ public function foundationBlendChannel(base: Float, layer: Float, mode: Float) -
 }
 
 // What one layer does to a backdrop channel, at its own opacity.
-public function foundationApplyLayer(base: Float, layer: borrow FoundationTintLayer, channel: Int) -> Float {
+public function foundationApplyLayer(
+    base: Number,
+    layer: borrow FoundationTintLayer,
+    channel: Number
+) -> Number {
     if layer.alpha <= 0.0 {
         return base
     }
     var c = layer.color.r
-    if channel == 1 {
-        c = layer.color.g
-    }
-    if channel == 2 {
-        c = layer.color.b
+    match channel {
+        1 -> c = layer.color.g
+        2 -> c = layer.color.b
+        else -> {}
     }
     let blended = foundationBlendChannel(base, c, foundationBlendId(layer.blend))
     return lerp(base, blended, layer.alpha)
 }
 
 // The whole stack applied to one backdrop channel.
-public function foundationApplyStack(base: Float, stack: borrow FoundationTintStack, channel: Int) -> Float {
+public function foundationApplyStack(
+    base: Number,
+    stack: borrow FoundationTintStack,
+    channel: Number
+) -> Number {
     let lower = foundationApplyLayer(base, stack.lower, channel)
     return foundationApplyLayer(lower, stack.upper, channel)
 }
@@ -237,7 +230,9 @@ public function foundationApplyStack(base: Float, stack: borrow FoundationTintSt
 // The single normal-blend layer that best reproduces a stack, found by probing it
 // against black and against white. A normal layer satisfies out = base(1-a) + c*a,
 // so the two probes give a = 1 - (white - black) and c = black / a directly.
-public function foundationTintStackEquivalent(stack: borrow FoundationTintStack) -> FoundationTintLayer {
+public function foundationTintStackEquivalent(
+    stack: borrow FoundationTintStack
+) -> FoundationTintLayer {
     let atBlackR = foundationApplyStack(0.0, stack, 0)
     let atBlackG = foundationApplyStack(0.0, stack, 1)
     let atBlackB = foundationApplyStack(0.0, stack, 2)
@@ -252,10 +247,10 @@ public function foundationTintStackEquivalent(stack: borrow FoundationTintStack)
         alpha = 1.0
     }
     if alpha <= 0.0001 {
-        return FoundationTintLayer { color: foundationWhite(), alpha: 0.0, blend: .Normal }
+        return FoundationTintLayer { color: FoundationGray.white, alpha: 0.0, blend: .Normal }
     }
     return FoundationTintLayer {
-        color: Color {
+        color: RGBAColor {
             r: clamp01(atBlackR / alpha),
             g: clamp01(atBlackG / alpha),
             b: clamp01(atBlackB / alpha),
@@ -266,7 +261,7 @@ public function foundationTintStackEquivalent(stack: borrow FoundationTintStack)
     }
 }
 
-public function clamp01(value: Float) -> Float {
+public function clamp01(value: Number) -> Number {
     if value < 0.0 {
         return 0.0
     }
@@ -282,7 +277,7 @@ public function clamp01(value: Float) -> Float {
 public function foundationTintStackCrossfade(
     from: borrow FoundationTintStack,
     to: borrow FoundationTintStack,
-    progress: Float,
+    progress: Number,
 ) -> FoundationTintStack {
     if progress >= 1.0 {
         return FoundationTintStack {
@@ -303,7 +298,7 @@ public function foundationTintStackCrossfade(
     let t = progress
     return FoundationTintStack {
         lower: FoundationTintLayer {
-            color: Color {
+            color: RGBAColor {
                 r: lerp(a.color.r, b.color.r, t),
                 g: lerp(a.color.g, b.color.g, t),
                 b: lerp(a.color.b, b.color.b, t),
@@ -321,7 +316,7 @@ public function foundationTintStackCrossfade(
 // only how much of each layer is there.
 public function foundationTintStackFaded(
     stack: borrow FoundationTintStack,
-    amount: Float,
+    amount: Number,
 ) -> FoundationTintStack {
     return FoundationTintStack {
         lower: FoundationTintLayer {
@@ -343,11 +338,11 @@ public function foundationTintStackFaded(
 // surface that names no tint gets the platform's table untouched.
 public function foundationTintStackShaded(
     stack: borrow FoundationTintStack,
-    tint: borrow Color,
+    tint: borrow RGBAColor,
 ) -> FoundationTintStack {
     return FoundationTintStack {
         lower: FoundationTintLayer {
-            color: Color {
+            color: RGBAColor {
                 r: stack.lower.color.r * tint.r,
                 g: stack.lower.color.g * tint.g,
                 b: stack.lower.color.b * tint.b,
@@ -357,7 +352,7 @@ public function foundationTintStackShaded(
             blend: stack.lower.blend
         },
         upper: FoundationTintLayer {
-            color: Color {
+            color: RGBAColor {
                 r: stack.upper.color.r * tint.r,
                 g: stack.upper.color.g * tint.g,
                 b: stack.upper.color.b * tint.b,
@@ -374,36 +369,66 @@ public function foundationTintStackShaded(
 // _Materials/Mode Options, Mode=Light. Each row is the variant's fill list read
 // bottom to top.
 
-public function foundationMaterialTintLight(style: borrow FoundationMaterialStyle) -> FoundationTintStack {
+public function foundationMaterialTintLight(
+    style: borrow FoundationMaterialStyle
+) -> FoundationTintStack {
     match style {
         // #FFFFFF 7% normal, then #FFFFFF 3% color dodge.
         Ultrathin -> return FoundationTintStack {
-            lower: FoundationTintLayer { color: foundationWhite(), alpha: 0.07, blend: .Normal },
-            upper: FoundationTintLayer { color: foundationWhite(), alpha: 0.03, blend: .ColorDodge },
+            lower: FoundationTintLayer { color: FoundationGray.white, alpha: 0.07, blend: .Normal },
+            upper: FoundationTintLayer {
+                color: FoundationGray.white,
+                alpha: 0.03,
+                blend: .ColorDodge
+            },
             backgroundBlurRadius: 100.0
         }
         // #FFFFFF 5% normal, then #FFFFFF 40% color dodge.
         Thin -> return FoundationTintStack {
-            lower: FoundationTintLayer { color: foundationWhite(), alpha: 0.05, blend: .Normal },
-            upper: FoundationTintLayer { color: foundationWhite(), alpha: 0.40, blend: .ColorDodge },
+            lower: FoundationTintLayer { color: FoundationGray.white, alpha: 0.05, blend: .Normal },
+            upper: FoundationTintLayer {
+                color: FoundationGray.white,
+                alpha: 0.40,
+                blend: .ColorDodge
+            },
             backgroundBlurRadius: 100.0
         }
         // #FFFFFF 25% linear dodge, then #FFFFFF 60% color dodge.
         Regular -> return FoundationTintStack {
-            lower: FoundationTintLayer { color: foundationWhite(), alpha: 0.25, blend: .LinearDodge },
-            upper: FoundationTintLayer { color: foundationWhite(), alpha: 0.60, blend: .ColorDodge },
+            lower: FoundationTintLayer {
+                color: FoundationGray.white,
+                alpha: 0.25,
+                blend: .LinearDodge
+            },
+            upper: FoundationTintLayer {
+                color: FoundationGray.white,
+                alpha: 0.60,
+                blend: .ColorDodge
+            },
             backgroundBlurRadius: 100.0
         }
         // #FFFFFF 34% linear dodge, then #FFFFFF 84% color dodge.
         Thick -> return FoundationTintStack {
-            lower: FoundationTintLayer { color: foundationWhite(), alpha: 0.34, blend: .LinearDodge },
-            upper: FoundationTintLayer { color: foundationWhite(), alpha: 0.84, blend: .ColorDodge },
+            lower: FoundationTintLayer {
+                color: FoundationGray.white,
+                alpha: 0.34,
+                blend: .LinearDodge
+            },
+            upper: FoundationTintLayer {
+                color: FoundationGray.white,
+                alpha: 0.84,
+                blend: .ColorDodge
+            },
             backgroundBlurRadius: 100.0
         }
         // #FFFFFF 75% hard light — one layer, and the only material whose blur
         // radius is not 100.
         Chrome -> return FoundationTintStack {
-            lower: FoundationTintLayer { color: foundationWhite(), alpha: 0.75, blend: .HardLight },
+            lower: FoundationTintLayer {
+                color: FoundationGray.white,
+                alpha: 0.75,
+                blend: .HardLight
+            },
             upper: FoundationTintLayer {},
             backgroundBlurRadius: 50.0
         }
@@ -412,36 +437,42 @@ public function foundationMaterialTintLight(style: borrow FoundationMaterialStyl
 
 // _Materials/Mode Options, Mode=Dark.
 
-public function foundationMaterialTintDark(style: borrow FoundationMaterialStyle) -> FoundationTintStack {
+public function foundationMaterialTintDark(
+    style: borrow FoundationMaterialStyle
+) -> FoundationTintStack {
     match style {
         // #000000 2% normal.
         Ultrathin -> return FoundationTintStack {
-            lower: FoundationTintLayer { color: foundationBlack(), alpha: 0.02, blend: .Normal },
+            lower: FoundationTintLayer { color: FoundationGray.black, alpha: 0.02, blend: .Normal },
             upper: FoundationTintLayer {},
             backgroundBlurRadius: 100.0
         }
         // #000000 26% normal.
         Thin -> return FoundationTintStack {
-            lower: FoundationTintLayer { color: foundationBlack(), alpha: 0.26, blend: .Normal },
+            lower: FoundationTintLayer { color: FoundationGray.black, alpha: 0.26, blend: .Normal },
             upper: FoundationTintLayer {},
             backgroundBlurRadius: 100.0
         }
         // #000000 41% normal.
         Regular -> return FoundationTintStack {
-            lower: FoundationTintLayer { color: foundationBlack(), alpha: 0.41, blend: .Normal },
+            lower: FoundationTintLayer { color: FoundationGray.black, alpha: 0.41, blend: .Normal },
             upper: FoundationTintLayer {},
             backgroundBlurRadius: 100.0
         }
         // #000000 60% normal.
         Thick -> return FoundationTintStack {
-            lower: FoundationTintLayer { color: foundationBlack(), alpha: 0.60, blend: .Normal },
+            lower: FoundationTintLayer { color: FoundationGray.black, alpha: 0.60, blend: .Normal },
             upper: FoundationTintLayer {},
             backgroundBlurRadius: 100.0
         }
         // #1C1C1C 90% normal, then #7C7C7C 100% overlay.
         Chrome -> return FoundationTintStack {
             lower: FoundationTintLayer { color: foundationGray(28.0), alpha: 0.90, blend: .Normal },
-            upper: FoundationTintLayer { color: foundationGray(124.0), alpha: 1.0, blend: .Overlay },
+            upper: FoundationTintLayer {
+                color: foundationGray(124.0),
+                alpha: 1.0,
+                blend: .Overlay
+            },
             backgroundBlurRadius: 100.0
         }
     }
@@ -473,8 +504,16 @@ public function foundationLiquidGlassTint(scheme: borrow FoundationScheme) -> Fo
     match scheme {
         // #FFFFFF 70% lighten, then #BFBFBF 10% darken.
         Light -> return FoundationTintStack {
-            lower: FoundationTintLayer { color: foundationWhite(), alpha: 0.70, blend: .Lighten },
-            upper: FoundationTintLayer { color: foundationGray(191.0), alpha: 0.10, blend: .Darken },
+            lower: FoundationTintLayer {
+                color: FoundationGray.white,
+                alpha: 0.70,
+                blend: .Lighten
+            },
+            upper: FoundationTintLayer {
+                color: foundationGray(191.0),
+                alpha: 0.10,
+                blend: .Darken
+            },
             backgroundBlurRadius: 16.0
         }
         // #1A1A1A luminosity, then #1A1A1A lighten: the backdrop's color pulled
@@ -484,10 +523,72 @@ public function foundationLiquidGlassTint(scheme: borrow FoundationScheme) -> Fo
         // draws: its dark menu over a light photo takes luminance 152 to 135
         // with the hue intact, which is this layer at 14%.
         Dark -> return FoundationTintStack {
-            lower: FoundationTintLayer { color: foundationGray(26.0), alpha: 0.14, blend: .Luminosity },
+            lower: FoundationTintLayer {
+                color: foundationGray(26.0),
+                alpha: 0.14,
+                blend: .Luminosity
+            },
             upper: FoundationTintLayer { color: foundationGray(26.0), alpha: 1.0, blend: .Lighten },
             backgroundBlurRadius: 16.0
         }
+    }
+}
+
+// "Liquid Glass - Regular - Small", the capsule every bar and glass button is
+// cut from: a wash of its own, lighter than the larger element's in the dark,
+// and a blur of 6 where that one's is 16.
+//
+// Light is four fills -- #000000 25% normal, #FFFFFF 25% normal, #444444 60%
+// linear dodge, #F8F8F8 20% luminosity -- and the first three reduce exactly:
+// the two normals leave 0.5625B + 0.25, and the dodge adds 0.6 x #444444 to
+// that without ever reaching white, so together they are one layer of 0.9371
+// gray at alpha 0.4375. The luminosity stays the upper layer.
+public function foundationLiquidGlassSmallTint(
+    scheme: borrow FoundationScheme
+) -> FoundationTintStack {
+    match scheme {
+        Light -> return FoundationTintStack {
+            lower: FoundationTintLayer {
+                color: foundationGray(238.96),
+                alpha: 0.4375,
+                blend: .Normal
+            },
+            upper: FoundationTintLayer {
+                color: foundationGray(248.0),
+                alpha: 0.20,
+                blend: .Luminosity
+            },
+            backgroundBlurRadius: 6.0
+        }
+        // #999999 17% luminosity, alone.
+        Dark -> return FoundationTintStack {
+            lower: FoundationTintLayer {
+                color: foundationGray(153.0),
+                alpha: 0.17,
+                blend: .Luminosity
+            },
+            upper: FoundationTintLayer {},
+            backgroundBlurRadius: 6.0
+        }
+    }
+}
+
+// The small element's edge: the ring and the two side lines in their own
+// grays in the light, both #A6A6A6 in the dark.
+//
+//   Light:  ring #E8E8E8, sides #D0D0D0, linear burn
+//   Dark:   ring #A6A6A6, sides #A6A6A6, linear burn
+public function foundationLiquidGlassSmallRingInk(scheme: borrow FoundationScheme) -> Number {
+    match scheme {
+        Light -> return 232.0 / 255.0
+        Dark -> return 166.0 / 255.0
+    }
+}
+
+public function foundationLiquidGlassSmallSideInk(scheme: borrow FoundationScheme) -> Number {
+    match scheme {
+        Light -> return 208.0 / 255.0
+        Dark -> return 166.0 / 255.0
     }
 }
 
@@ -496,17 +597,26 @@ public function foundationLiquidGlassTint(scheme: borrow FoundationScheme) -> Fo
 //
 //   Light:  #DBDBDB linear burn x3,  ambient  black 25%, Y 8, blur 48
 //   Dark:   #A6A6A6 linear burn x3,  ambient  black 45%, Y 8, blur 48
-public function foundationLiquidGlassBorderInk(scheme: borrow FoundationScheme) -> Float {
+public function foundationLiquidGlassBorderInk(scheme: borrow FoundationScheme) -> Number {
     match scheme {
         Light -> return 219.0 / 255.0
         Dark -> return 166.0 / 255.0
     }
 }
 
-public function foundationLiquidGlassAmbientAlpha(scheme: borrow FoundationScheme) -> Float {
+public function foundationLiquidGlassAmbientAlpha(scheme: borrow FoundationScheme) -> Number {
     match scheme {
         Light -> return 0.25
         Dark -> return 0.45
+    }
+}
+
+// The small glass's ambient shadow is the same Y 8 under a blur of 15, at a
+// sliver of the panel's opacity: black 2% light, 4% dark.
+public function foundationLiquidGlassSmallAmbientAlpha(scheme: borrow FoundationScheme) -> Number {
+    match scheme {
+        Light -> return 0.02
+        Dark -> return 0.04
     }
 }
 
@@ -515,7 +625,7 @@ public function foundationLiquidGlassAmbientAlpha(scheme: borrow FoundationSchem
 // collection bound to the "Ultrathin - Light" example frame (224:56301). Fills are
 // opaque grays; labels are what text on the material inks itself.
 
-public function foundationVibrantFill(level: Int, scheme: borrow FoundationScheme) -> Color {
+public function foundationVibrantFill(level: Number, scheme: borrow FoundationScheme) -> RGBAColor {
     match scheme {
         Light -> {
             // Primary #CCCCCC, secondary #E0E0E0, tertiary #EDEDED.
@@ -532,7 +642,7 @@ public function foundationVibrantFill(level: Int, scheme: borrow FoundationSchem
     }
 }
 
-public function foundationVibrantLabel(level: Int, scheme: borrow FoundationScheme) -> Color {
+public function foundationVibrantLabel(level: Number, scheme: borrow FoundationScheme) -> RGBAColor {
     match scheme {
         Light -> {
             // Primary #000000; secondary and tertiary are both #3D3D3D over a
@@ -548,9 +658,9 @@ public function foundationVibrantLabel(level: Int, scheme: borrow FoundationSche
 }
 
 // #0000001F — the non-opaque separator that rides on every material.
-public function foundationSeparator(scheme: borrow FoundationScheme) -> Color {
+public function foundationSeparator(scheme: borrow FoundationScheme) -> RGBAColor {
     match scheme {
-        Light -> return Color { r: 0.0, g: 0.0, b: 0.0, a: 31.0 / 255.0 }
-        Dark -> return Color { r: 1.0, g: 1.0, b: 1.0, a: 31.0 / 255.0 }
+        Light -> return RGBAColor { r: 0.0, g: 0.0, b: 0.0, a: 31.0 / 255.0 }
+        Dark -> return RGBAColor { r: 1.0, g: 1.0, b: 1.0, a: 31.0 / 255.0 }
     }
 }

@@ -18,27 +18,51 @@ import Ember
 // a name written here that does not match leaves the descriptor with a nil
 // vertex function, which Metal rejects at validation.
 public function createArtifactPipeline(
-    graphics: borrow EMGraphics,
+    graphics: borrow Graphics,
     shaderLabel: borrow String,
     pipelineLabel: borrow String,
     artifact: borrow KslArtifact,
     blendEnabled: Bool = true,
     preset: BlendPreset = .PremultipliedAlpha
 ) -> RenderPipeline {
-    let shader = shaderOrReport(graphics.createShaderFromKslArtifact(shaderLabel, artifact), "shader")
-    return pipelineOrReport(graphics.createRenderPipeline(RenderPipelineDescriptor {
-        label: copy pipelineLabel,
-        shader: shader,
-        vertexEntry: artifact.vertexEntry,
-        fragmentEntry: artifact.fragmentEntry,
-        vertexLayout: VertexLayout { stride: 0, attributes: [] },
-        colorTargets: [ColorTargetDescriptor { format: .Swapchain, blend: BlendState { enabled: blendEnabled, preset: move preset } }],
-        depthStencil: DepthStencilDescriptor { depthEnabled: false, depthWriteEnabled: false, depthCompare: .Always, format: .None },
-        rasterization: RasterizationDescriptor { cullMode: .None, frontFace: .CounterClockwise },
-        primitive: PrimitiveDescriptor { topology: .TriangleList }
-    }), "create render pipeline")
+    let shader = shaderOrReport(
+        graphics.createShaderFromKslArtifact(shaderLabel, artifact),
+        "shader"
+    )
+    return pipelineOrReport(
+        graphics.createRenderPipeline(
+            RenderPipelineDescriptor {
+                label: copy pipelineLabel,
+                shader: shader,
+                vertexEntry: artifact.vertexEntry,
+                fragmentEntry: artifact.fragmentEntry,
+                vertexLayout: VertexLayout { stride: 0, attributes: [] },
+                colorTargets: [ColorTargetDescriptor {
+                    format: .Swapchain,
+                    blend: BlendState { enabled: blendEnabled, preset: move preset }
+                }],
+                depthStencil: DepthStencilDescriptor {
+                    depthEnabled: false,
+                    depthWriteEnabled: false,
+                    depthCompare: .Always,
+                    format: .None
+                },
+                rasterization: RasterizationDescriptor {
+                    cullMode: .None,
+                    frontFace: .CounterClockwise
+                },
+                primitive: PrimitiveDescriptor { topology: .TriangleList }
+            }
+        ),
+        "create render pipeline"
+    )
 }
 
-public function createSpecializedPipeline(graphics: borrow EMGraphics, label: borrow String, artifact: borrow KslArtifact, preset: BlendPreset = .PremultipliedAlpha) -> RenderPipeline {
+public function createSpecializedPipeline(
+    graphics: borrow Graphics,
+    label: borrow String,
+    artifact: borrow KslArtifact,
+    preset: BlendPreset = .PremultipliedAlpha
+) -> RenderPipeline {
     return createArtifactPipeline(graphics, label, label, artifact, true, move preset)
 }

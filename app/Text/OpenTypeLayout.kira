@@ -1,0 +1,423 @@
+import Foundation
+
+// The parts of OpenType's layout tables that substitution (GSUB) and
+// positioning (GPOS) share: the script, feature and lookup lists, coverage and
+// class definition tables, the glyph classes `GDEF` gives, and its item
+// variation store, which moves kerning with a variable face's weight. Every
+// offset here is `Int` into the font's bytes, as in FontFile.kira.
+
+namespace LayoutTag {
+    let gsub: Int = 0x47535542
+    let gpos: Int = 0x47504F53
+    let gdef: Int = 0x47444546
+    // Scripts: Latin's own, and the default every face may carry.
+    let latin: Int = 0x6C61746E
+    let standard: Int = 0x44464C54
+}
+
+// The features a run is shaped with when nothing asks for more, as HarfBuzz
+// turns them on for a horizontal Latin run.
+namespace LayoutFeatures {
+    let substitutions: [Int] = [
+        // ccmp, locl, rlig, rclt, calt, liga, clig
+        0x63636D70,
+        0x6C6F636C,
+        0x726C6967,
+        0x72636C74,
+        0x63616C74,
+        0x6C696761,
+        0x636C6967
+    ]
+    // kern, mark, mkmk
+    let positionings: [Int] = [0x6B65726E, 0x6D61726B, 0x6D6B6D6B]
+    // tnum, which sets every figure the same width, for a run whose design
+    // asks for monospaced digits.
+    let tabularFigures: Int = 0x746E756D
+}
+
+// Byte positions in the layout tables, from the OpenType specification.
+namespace LayoutOffsets {
+    let scriptList: Int = 4
+    let featureList: Int = 6
+    let lookupList: Int = 8
+    let recordSize: Int = 6
+    let langSysRequired: Int = 2
+    let langSysCount: Int = 4
+    let langSysIndices: Int = 6
+    let featureLookupCount: Int = 2
+    let featureLookups: Int = 4
+    let lookupFlag: Int = 2
+    let lookupSubtableCount: Int = 4
+    let lookupSubtables: Int = 6
+    let extensionType: Int = 2
+    let extensionOffset: Int = 4
+    let gdefGlyphClasses: Int = 4
+    let gdefMarkClasses: Int = 10
+    let gdefMarkSets: Int = 12
+    let gdefVariations: Int = 14
+    let noRequiredFeature: Int = 0xFFFF
+}
+
+// What a lookup's flag asks to be skipped while it matches.
+namespace LookupFlag {
+    let ignoreBases: Int = 0x0002
+    let ignoreLigatures: Int = 0x0004
+    let ignoreMarks: Int = 0x0008
+    let useMarkSet: Int = 0x0010
+    let markClass: Int = 0xFF00
+}
+
+// The glyph classes `GDEF` gives.
+namespace GlyphClass {
+    let base: Int = 1
+    let ligature: Int = 2
+    let mark: Int = 3
+}
+
+// One lookup of a GSUB or GPOS table: its type and flag, the mark set its
+// flag names, and its subtables, an extension lookup's already followed to
+// the subtables it wraps.
+struct LayoutLookup {
+    let kind: Int
+    let flag: Int
+    let markSet: Int
+    let subtables: [Int]
+}
+
+// One table's lookup list and the lookups its default features turn on for
+// one script, in the order the list holds them, which is the order they
+// apply in.
+struct LayoutTable {
+    let lookupList: Int = 0
+    let active: [LayoutLookup] = []
+}
+
+// What a face's layout tables say: where its GSUB and GPOS tables are, the
+// substitutions and positionings run for Latin, read once since nearly every
+// run is Latin, with the substitutions again with tabular figures on, and
+// `GDEF`'s glyph classes, mark classes, mark sets and
+// variation store, each zero where the face has none.
+struct OpenTypeLayout {
+    let gsub: Int = 0
+    let gpos: Int = 0
+    let substitutions: LayoutTable = LayoutTable {}
+    let tabularSubstitutions: LayoutTable = LayoutTable {}
+    let positionings: LayoutTable = LayoutTable {}
+    let glyphClasses: Int = 0
+    let markClasses: Int = 0
+    let markSets: Int = 0
+    let variationStore: Int = 0
+}
+
+extend FontBytes {
+    // A face's layout, from its GSUB, GPOS and GDEF tables where it has them.
+    function openTypeLayout(
+        gsub: FontTable?,
+        gpos: FontTable?,
+        gdef: FontTable?
+    ) -> OpenTypeLayout {
+        var glyphClasses: Int = 0
+        var markClasses: Int = 0
+        var markSets: Int = 0
+        var variationStore: Int = 0
+        match gdef {
+            Some(table) -> {
+                let at = table.offset
+                let minor = u16(at + 2)
+                glyphClasses = subOffset16(at, at + LayoutOffsets.gdefGlyphClasses)
+                markClasses = subOffset16(at, at + LayoutOffsets.gdefMarkClasses)
+                if minor >= 2 { markSets = subOffset16(at, at + LayoutOffsets.gdefMarkSets) }
+                if minor >= 3 {
+                    let store = u32(at + LayoutOffsets.gdefVariations)
+                    variationStore = store == 0 ? 0 : at + store
+                }
+            }
+            None -> {}
+        }
+        let substitutions = match gsub {
+            Some(table) -> table.offset
+            None -> 0
+        }
+        let positionings = match gpos {
+            Some(table) -> table.offset
+            None -> 0
+        }
+        return OpenTypeLayout {
+            gsub: substitutions,
+            gpos: positionings,
+            substitutions: layoutTable(
+                substitutions,
+                LayoutTag.latin,
+                LayoutFeatures.substitutions,
+                7
+            ),
+            tabularSubstitutions: layoutTable(substitutions, LayoutTag.latin, tabularFeatures(), 7),
+            positionings: layoutTable(
+                positionings,
+                LayoutTag.latin,
+                LayoutFeatures.positionings,
+                9
+            ),
+            glyphClasses: glyphClasses,
+            markClasses: markClasses,
+            markSets: markSets,
+            variationStore: variationStore
+        }
+    }
+
+    // `base` plus the 16-bit offset at `at`, or zero where the offset is.
+    function subOffset16(base: Int, at: Int) -> Int {
+        let offset = u16(at)
+        return offset == 0 ? 0 : base + offset
+    }
+
+    // The lookups `wanted` features turn on under the default language
+    // system of `script`, or of the default script, or of Latin, in the table
+    // at `at`; none where `at` is zero. `extension` is the lookup type that
+    // wraps another: 7 in GSUB, 9 in GPOS.
+    function layoutTable(
+        at: Int,
+        script: Int,
+        wanted: borrow [Int],
+        extension: Int
+    ) -> LayoutTable {
+        if at == 0 { return LayoutTable {} }
+        let scripts = at + u16(at + LayoutOffsets.scriptList)
+        let features = at + u16(at + LayoutOffsets.featureList)
+        let lookups = at + u16(at + LayoutOffsets.lookupList)
+        var langSys = defaultLangSys(scripts, script)
+        if langSys == 0 { langSys = defaultLangSys(scripts, LayoutTag.standard) }
+        if langSys == 0 { langSys = defaultLangSys(scripts, LayoutTag.latin) }
+        if langSys == 0 { return LayoutTable { lookupList: lookups } }
+        var indices: [Int] = []
+        let required = u16(langSys + LayoutOffsets.langSysRequired)
+        if required != LayoutOffsets.noRequiredFeature {
+            addFeatureLookups(features, required, indices)
+        }
+        for index in 0..u16(langSys + LayoutOffsets.langSysCount) {
+            let feature = u16(langSys + LayoutOffsets.langSysIndices + index * 2)
+            let record = features + 2 + feature * LayoutOffsets.recordSize
+            if wanted.contains(u32(record)) { addFeatureLookups(features, feature, indices) }
+        }
+        let count = u16(lookups)
+        var active: [LayoutLookup] = []
+        for index in 0..count {
+            if indices.contains(index) { active.append(lookupAt(lookups, index, extension)) }
+        }
+        return LayoutTable { lookupList: lookups, active: move active }
+    }
+
+    // The default language system of the script tagged `tag`, or zero.
+    function defaultLangSys(scripts: Int, tag: Int) -> Int {
+        for index in 0..u16(scripts) {
+            let record = scripts + 2 + index * LayoutOffsets.recordSize
+            if u32(record) == tag {
+                let script = scripts + u16(record + 4)
+                return subOffset16(script, script)
+            }
+        }
+        return 0
+    }
+
+    // Adds the lookup indices of feature number `feature` to `indices`.
+    function addFeatureLookups(features: Int, feature: Int, indices: borrow mut [Int]) {
+        if feature >= u16(features) { return }
+        let record = features + 2 + feature * LayoutOffsets.recordSize
+        let table = features + u16(record + 4)
+        for index in 0..u16(table + LayoutOffsets.featureLookupCount) {
+            let lookup = u16(table + LayoutOffsets.featureLookups + index * 2)
+            if !indices.contains(lookup) { indices.append(lookup) }
+        }
+    }
+
+    // Lookup number `index` of the list at `lookups`.
+    function lookupAt(lookups: Int, index: Int, extension: Int) -> LayoutLookup {
+        let at = lookups + u16(lookups + 2 + index * 2)
+        var kind = u16(at)
+        let flag = u16(at + LayoutOffsets.lookupFlag)
+        let count = u16(at + LayoutOffsets.lookupSubtableCount)
+        let wraps = kind == extension
+        var subtables: [Int] = []
+        for subtable in 0..count {
+            var offset = at + u16(at + LayoutOffsets.lookupSubtables + subtable * 2)
+            if wraps {
+                kind = u16(offset + LayoutOffsets.extensionType)
+                offset = offset + u32(offset + LayoutOffsets.extensionOffset)
+            }
+            subtables.append(offset)
+        }
+        var markSet: Int = 0
+        if (flag & LookupFlag.useMarkSet) != 0 {
+            markSet = u16(at + LayoutOffsets.lookupSubtables + count * 2)
+        }
+        return LayoutLookup { kind: kind, flag: flag, markSet: markSet, subtables: move subtables }
+    }
+
+    // Where `glyph` is in the coverage table at `coverage`, or -1 where it is
+    // not covered.
+    function coverageIndex(coverage: Int, glyph: Int) -> Int {
+        let count = u16(coverage + 2)
+        var low: Int = 0
+        var high = count
+        match u16(coverage) {
+            1 -> while low < high {
+                let middle = (low + high) / 2
+                let found = u16(coverage + 4 + middle * 2)
+                if found == glyph { return middle }
+                if found < glyph { low = middle + 1 } else { high = middle }
+            }
+            2 -> while low < high {
+                let middle = (low + high) / 2
+                let range = coverage + 4 + middle * 6
+                if u16(range + 2) < glyph {
+                    low = middle + 1
+                } else if u16(range) > glyph {
+                    high = middle
+                } else {
+                    return u16(range + 4) + glyph - u16(range)
+                }
+            }
+            else -> {}
+        }
+        return -1
+    }
+
+    // The class the class definition table at `classes` gives `glyph`; zero
+    // for a glyph it leaves out, or where there is no table.
+    function glyphClassIn(classes: Int, glyph: Int) -> Int {
+        if classes == 0 { return 0 }
+        match u16(classes) {
+            1 -> {
+                let start = u16(classes + 2)
+                let count = u16(classes + 4)
+                if glyph < start || glyph >= start + count { return 0 }
+                return u16(classes + 6 + (glyph - start) * 2)
+            }
+            2 -> {
+                var low: Int = 0
+                var high = u16(classes + 2)
+                while low < high {
+                    let middle = (low + high) / 2
+                    let range = classes + 4 + middle * 6
+                    if u16(range + 2) < glyph {
+                        low = middle + 1
+                    } else if u16(range) > glyph {
+                        high = middle
+                    } else {
+                        return u16(range + 4)
+                    }
+                }
+                return 0
+            }
+            else -> return 0
+        }
+    }
+}
+
+extend FontFile {
+    // The substitutions run for a run in `script`, an OpenType script tag.
+    function substitutionsFor(script: Int, tabular: Bool) -> LayoutTable {
+        if script == LayoutTag.latin {
+            return tabular ? layout.tabularSubstitutions : layout.substitutions
+        }
+        let wanted = tabular ? tabularFeatures() : LayoutFeatures.substitutions
+        return data.layoutTable(layout.gsub, script, wanted, 7)
+    }
+
+    // The positionings run for a run in `script`.
+    function positioningsFor(script: Int) -> LayoutTable {
+        if script == LayoutTag.latin { return layout.positionings }
+        return data.layoutTable(layout.gpos, script, LayoutFeatures.positionings, 9)
+    }
+
+    // Whether `lookup`'s flag skips `glyph` while matching.
+    function skipped(glyph: Int, lookup: borrow LayoutLookup) -> Bool {
+        let flag = lookup.flag
+        if flag == 0 || layout.glyphClasses == 0 { return false }
+        let kind = data.glyphClassIn(layout.glyphClasses, glyph)
+        if kind == GlyphClass.base { return (flag & LookupFlag.ignoreBases) != 0 }
+        if kind == GlyphClass.ligature { return (flag & LookupFlag.ignoreLigatures) != 0 }
+        if kind != GlyphClass.mark { return false }
+        if (flag & LookupFlag.ignoreMarks) != 0 { return true }
+        if (flag & LookupFlag.useMarkSet) != 0 { return !inMarkSet(glyph, lookup.markSet) }
+        let wanted = (flag & LookupFlag.markClass) >> 8
+        if wanted != 0 { return data.glyphClassIn(layout.markClasses, glyph) != wanted }
+        return false
+    }
+
+    // Whether `glyph` is in `GDEF`'s mark set number `set`.
+    function inMarkSet(glyph: Int, set: Int) -> Bool {
+        let sets = layout.markSets
+        if sets == 0 || set >= data.u16(sets + 2) { return false }
+        let coverage = sets + data.u32(sets + 4 + set * 4)
+        return data.coverageIndex(coverage, glyph) >= 0
+    }
+
+    // How far the item variation store moves the value it numbers by `outer`
+    // and `inner`, at `coordinates`, in font units.
+    function variationDelta(outer: Int, inner: Int, coordinates: borrow [Float]) -> Float {
+        let store = layout.variationStore
+        if store == 0 || coordinates.count == 0 { return 0.0 }
+        if outer >= data.u16(store + 6) { return 0.0 }
+        let regions = store + data.u32(store + 2)
+        let item = store + data.u32(store + 8 + outer * 4)
+        let itemCount = data.u16(item)
+        if inner >= itemCount { return 0.0 }
+        let wordField = data.u16(item + 2)
+        let long = (wordField & 0x8000) != 0
+        let words = wordField & 0x7FFF
+        let regionCount = data.u16(item + 4)
+        let wide = long ? 4 : 2
+        let narrow = long ? 2 : 1
+        let rowSize = words * wide + (regionCount - words) * narrow
+        let row = item + 6 + regionCount * 2 + inner * rowSize
+        var delta: Float = 0.0
+        for column in 0..regionCount {
+            let region = data.u16(item + 6 + column * 2)
+            let scalar = regionScalarAt(regions, region, coordinates)
+            if scalar == 0.0 { continue }
+            var value: Int = 0
+            if column < words {
+                let at = row + column * wide
+                value = long ? signed32(data.u32(at)) : data.i16(at)
+            } else {
+                let at = row + words * wide + (column - words) * narrow
+                value = long ? data.i16(at) : data.i8(at)
+            }
+            delta += scalar * Float(value)
+        }
+        return delta
+    }
+
+    // How much region number `region` of the list at `regions` applies at
+    // `coordinates`.
+    function regionScalarAt(regions: Int, region: Int, coordinates: borrow [Float]) -> Float {
+        let axes = data.u16(regions)
+        if region >= data.u16(regions + 2) { return 0.0 }
+        let at = regions + 4 + region * axes * 6
+        var scalar: Float = 1.0
+        for axis in 0..axes {
+            let start = data.f2dot14(at + axis * 6)
+            let peak = data.f2dot14(at + axis * 6 + 2)
+            let end = data.f2dot14(at + axis * 6 + 4)
+            // A region that is not well formed on an axis does not depend on it.
+            if peak == 0.0 || start > peak || peak > end || (start < 0.0 && end > 0.0) { continue }
+            let coordinate = axis < coordinates.count ? coordinates[axis] : 0.0
+            scalar = scalar * intermediateScalar(coordinate, start, peak, end)
+            if scalar == 0.0 { return 0.0 }
+        }
+        return scalar
+    }
+}
+
+// A 32-bit value read unsigned, as two's complement.
+function signed32(value: Int) -> Int {
+    return value >= 0x80000000 ? value - 0x100000000 : value
+}
+
+// The substitution features, with tabular figures among them.
+function tabularFeatures() -> [Int] {
+    var wanted = copy LayoutFeatures.substitutions
+    wanted.append(LayoutFeatures.tabularFigures)
+    return wanted
+}

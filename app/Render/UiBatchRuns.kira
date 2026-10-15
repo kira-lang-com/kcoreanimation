@@ -1,4 +1,5 @@
 import Foundation
+import Heap
 import Ember
 // Emitting runs: one icon, and one line of text.
 //
@@ -14,25 +15,31 @@ import Ember
 // positive), so icons and glyphs share the atlas and the lookup table.
 extend UiBatch {
     function pushIcon(
-        graphics: borrow EMGraphics,
+        graphics: borrow Graphics,
         svg: borrow String,
-        x: Float, y: Float, w: Float, h: Float,
-        color: borrow Color,
-        clipMinX: Float, clipMinY: Float, clipMaxX: Float, clipMaxY: Float,
+        x: Number,
+        y: Number,
+        w: Number,
+        h: Number,
+        color: borrow RGBAColor,
+        clipMinX: Number,
+        clipMinY: Number,
+        clipMaxX: Number,
+        clipMaxY: Number,
         // How much heavier than the drawn artwork this glyph is, in POINTS of
         // outward growth. It is the symbol's weight, and it is part of the atlas
         // key: the same folder at two weights is two different pictures.
-        weightGrowth: Float = 0.0,
+        weightGrowth: Number = 0.0,
         // Turned about its own center, as cosine and sine.
-        rotCos: Float = 1.0,
-        rotSin: Float = 0.0,
+        rotCos: Number = 1.0,
+        rotSin: Number = 0.0,
         // How the ink meets what is under it. A burn draws through a pipeline
         // that takes its color AWAY from the target, so it carries the ink's
         // distance from white — `1 - color` — rather than the color.
         blend: CABlendMode = .Normal,
         // The ink's own width over its height, where the box it is drawn in has
         // been stretched away from it. Zero when the box is the ink's.
-        inkAspect: Float = 0.0,
+        inkAspect: Number = 0.0,
     ) {
         var state = nativeRecover<UiBatchState>(self.storage)
         var scale = state.scale
@@ -68,11 +75,11 @@ extend UiBatch {
         // It is a vector: reading it a little softer is a loss of sharpness, whereas the
         // size ceiling this replaces DROPPED the draw — an icon asked for above it left
         // nothing on screen at all.
-        let maxPx = glyphAtlasSize() - 2 * atlasGutter()
+        let maxPx = GlyphAtlas.size - 2 * GlyphAtlas.gutter
         let devPxLong = devPxW > devPxH ? devPxW : devPxH
-        var longPx = Int(devPxLong * textOversampleAt(scale) + 0.5)
+        var longPx = trunc(devPxLong * textOversampleAt(scale) + 0.5)
         if longPx > maxPx {
-            longPx = Int(devPxLong + 0.5)
+            longPx = trunc(devPxLong + 0.5)
         }
         if longPx > maxPx {
             longPx = maxPx
@@ -82,158 +89,152 @@ extend UiBatch {
         }
         // The oversample the entry ACTUALLY carries, which is what the quad and its uv
         // slack are measured in below.
-        let overs = Float(longPx) / devPxLong
-        let px = Int(devPxW * overs + 0.5)
-        let pxH = Int(devPxH * overs + 0.5)
+        let overs = Number(longPx) / devPxLong
+        let px = trunc(devPxW * overs + 0.5)
+        let pxH = trunc(devPxH * overs + 0.5)
         if px <= 0 || pxH <= 0 {
             return
         }
-        let hash64 = kira_icon_hash(svg)
-        let iconHash = Int(hash64)
         // The growth is applied to the RASTER, so it is measured in raster
         // pixels, and it belongs in the key beside the size.
         let growthPx = weightGrowth * scale * overs
-        let growthKey = Int(growthPx * 4.0 + 0.5)
-        let key = -((((iconHash % 4294967291) * 1024 + px) * 1024 + pxH) * 64 + growthKey)
-        let cap = state.glyphHashKeys.count
-        var slotIdx = -1
-        var homeSlot = -1
-        var probing = cap > 0
-        var hh = 0
-        if cap > 0 {
-            hh = (key % cap + cap) % cap
+        let growthKey = trunc(growthPx * 4.0 + 0.5)
+        let symbolKey = abs(Number(hash(svg))) % SymbolCacheKey.modulus
+        let key = -(((symbolKey * 1024 + px) * 1024 + pxH) * 64 + growthKey)
+        let slotIndex = match state.glyphIndex.value(key) {
+            Some(index) -> index
+            None -> cacheSymbol(state, svg, key, px, pxH, growthKey / 4.0)
         }
-        var probes = 0
-        while probing && probes < cap {
-            let slotKey = state.glyphHashKeys[hh]
-            if slotKey == key {
-                slotIdx = state.glyphHashVals[hh]
-                probing = false
-            } else {
-                if slotKey == 0 {
-                    homeSlot = hh
-                    probing = false
-                } else {
-                    hh = (hh + 1) % cap
-                    probes += 1
-                }
-            }
+        let slot = state.glyphs[slotIndex]
+        if !slot.valid {
+            return
         }
-        if slotIdx < 0 {
-            let bufBytes = px * pxH
-            let buf = allocateBytes(U64(bufBytes))
-            let rendered = kira_icon_rasterize_ink(svg, I32(px), I32(pxH), Float(growthKey) / 4.0, buf)
-            var newSlot = UiGlyphSlot {
-                key: key,
-                advance: 0.0,
-                bearingX: 0,
-                bearingY: 0,
-                w: px,
-                h: pxH,
-                valid: true
+        let atlasX = slot.atlasX
+        let atlasY = slot.atlasY
+        let wpx = slot.w
+        let hpx = slot.h
+        let atlasW = Number(GlyphAtlas.size)
+        // The ink fills the box it was given, so it is drawn AT that box —
+        // no centering, because there is no margin left to center. It is
+        // still landed on whole device pixels the way a glyph is, grown
+        // outward with the slack drawn from the atlas's transparent
+        // gutter: a coverage bitmap read at a fractional offset is
+        // resampled rather than displayed.
+        let leftDev = x * scale
+        let topDev = y * scale
+        let rightDev = leftDev + w * scale
+        let bottomDev = topDev + h * scale
+        let oversX = Number(wpx) / (w * scale)
+        let oversY = Number(hpx) / (h * scale)
+        let x0 = trunc(leftDev)
+        let y0 = trunc(topDev)
+        let x1 = trunc(rightDev) + 1
+        let y1 = trunc(bottomDev) + 1
+        let u0 = (Number(atlasX) - (leftDev - x0) * oversX) / atlasW
+        let v0 = (Number(atlasY) - (topDev - y0) * oversY) / atlasW
+        let u1 = (Number(atlasX + wpx) + (x1 - rightDev) * oversX) / atlasW
+        let v1 = (Number(atlasY + hpx) + (y1 - bottomDev) * oversY) / atlasW
+        let gx = x0 / scale
+        let gy = y0 / scale
+        let iconW = (x1 - x0) / scale
+        let iconH = (y1 - y0) / scale
+        let stride = QuadLayout.floatCount
+        if state.quadCount < QuadLayout.maxPerBatch && !isNull(state.contentsPtr) {
+            let base = state.frameBase + state.quadCount * stride
+            // Mode 1, recorded for the draw path — see the same note in the
+            // glyph emitter. An icon that inherits a stale glass code is drawn
+            // through a glass pipeline and disappears. A burned or dodged
+            // icon records 110 or 210, the codes its blending pipelines take.
+            let requiresGeneric = rotSin != 0.0 || rotCos != 1.0
+            let iconModeCode = 10 + blend.route()
+            var ink = RGBAColor { r: color.r, g: color.g, b: color.b, a: color.a }
+            if blend == .LinearBurn {
+                ink = RGBAColor { r: 1.0 - color.r, g: 1.0 - color.g, b: 1.0 - color.b, a: color.a }
             }
-            if rendered != 0 {
-                if state.cursorX + px + atlasGutter() > state.atlasW {
-                    state.cursorX = atlasGutter()
-                    state.cursorY += state.rowHeight + atlasGutter()
-                    state.rowHeight = 0
-                }
-                if state.cursorY + pxH + atlasGutter() <= state.atlasH {
-                    newSlot.atlasX = state.cursorX
-                    newSlot.atlasY = state.cursorY
-                    atlasBlitCoverage(state, buf, px, newSlot.atlasX, newSlot.atlasY, px, pxH)
-                    state.cursorX += px + atlasGutter()
-                    if pxH > state.rowHeight {
-                        state.rowHeight = pxH
-                    }
-                } else {
-                    newSlot.valid = false
-                    state.atlasExhausted = true
-                }
-            } else {
-                newSlot.valid = false
-            }
-            freeBytes(buf)
-            // An icon that does not rasterize never will, so that is cached; one that
-            // found no room waits for the atlas to start over.
-            let cached = (rendered == 0 || newSlot.valid) && glyphCacheHasRoom(state, homeSlot)
-            state.glyphs.append(move newSlot)
-            slotIdx = state.glyphs.count - 1
-            if cached {
-                state.glyphHashKeys[homeSlot] = key
-                state.glyphHashVals[homeSlot] = slotIdx
-            }
+            state.streams[state.streamIndex.raw].recordMode(
+                state.quadCount,
+                iconModeCode,
+                requiresGeneric
+            )
+            writeQuadRecord(
+                state.contentsPtr,
+                base,
+                gx,
+                gy,
+                gx + iconW,
+                gy + iconH,
+                u0,
+                v0,
+                u1,
+                v1,
+                state.viewportW,
+                state.viewportH,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                ink.r,
+                ink.g,
+                ink.b,
+                ink.a,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                rotCos,
+                rotSin
+            )
+            state.quadCount += 1
         }
-        if slotIdx >= 0 {
-            if state.glyphs[slotIdx].valid {
-                let atlasX = state.glyphs[slotIdx].atlasX
-                let atlasY = state.glyphs[slotIdx].atlasY
-                let wpx = state.glyphs[slotIdx].w
-                let hpx = state.glyphs[slotIdx].h
-                let atlasW = Float(glyphAtlasSize())
-                // The ink fills the box it was given, so it is drawn AT that box —
-                // no centering, because there is no margin left to center. It is
-                // still landed on whole device pixels the way a glyph is, grown
-                // outward with the slack drawn from the atlas's transparent
-                // gutter: a coverage bitmap read at a fractional offset is
-                // resampled rather than displayed.
-                let leftDev = x * scale
-                let topDev = y * scale
-                let rightDev = leftDev + w * scale
-                let bottomDev = topDev + h * scale
-                let oversX = Float(wpx) / (w * scale)
-                let oversY = Float(hpx) / (h * scale)
-                let x0 = Float(Int(leftDev))
-                let y0 = Float(Int(topDev))
-                let x1 = Float(Int(rightDev) + 1)
-                let y1 = Float(Int(bottomDev) + 1)
-                let u0 = (Float(atlasX) - (leftDev - x0) * oversX) / atlasW
-                let v0 = (Float(atlasY) - (topDev - y0) * oversY) / atlasW
-                let u1 = (Float(atlasX + wpx) + (x1 - rightDev) * oversX) / atlasW
-                let v1 = (Float(atlasY + hpx) + (y1 - bottomDev) * oversY) / atlasW
-                let gx = x0 / scale
-                let gy = y0 / scale
-                let iconW = (x1 - x0) / scale
-                let iconH = (y1 - y0) / scale
-                let stride = quadFloatCount()
-                if state.quadCount < maxQuadsPerBatch() && !pointerIsNull(state.contentsPtr) {
-                    let base = state.frameBase + state.quadCount * stride
-                    // Mode 1, recorded for the draw path — see the same note in the
-                    // glyph emitter. An icon that inherits a stale glass code is drawn
-                    // through a glass pipeline and disappears. A burned or dodged
-                    // icon records 110 or 210, the codes its blending pipelines take.
-                    let requiresGeneric = rotSin != 0.0 || rotCos != 1.0
-                    let iconModeCode = 10 + caBlendModeRoute(blend)
-                    var ink = Color { r: color.r, g: color.g, b: color.b, a: color.a }
-                    if blend == .LinearBurn {
-                        ink = Color { r: 1.0 - color.r, g: 1.0 - color.g, b: 1.0 - color.b, a: color.a }
-                    }
-                    if state.quadCount < state.streams[state.streamIndex.raw].quadModes.count {
-                        state.streams[state.streamIndex.raw].quadModes[state.quadCount] = iconModeCode
-                        state.streams[state.streamIndex.raw].quadRequiresGeneric[state.quadCount] = requiresGeneric
-                    } else {
-                        state.streams[state.streamIndex.raw].quadModes.append(iconModeCode)
-                        state.streams[state.streamIndex.raw].quadRequiresGeneric.append(requiresGeneric)
-                    }
-                    writeQuadRecord(
-                        state.contentsPtr, base,
-                        gx, gy, gx + iconW, gy + iconH,
-                        u0, v0, u1, v1,
-                        state.viewportW, state.viewportH,
-                        0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
-                        ink.r, ink.g, ink.b, ink.a,
-                        0.0, 0.0, 0.0, 0.0,
-                        clipMinX, clipMinY, clipMaxX, clipMaxY,
-                        rotCos, rotSin
-                    )
-                    state.quadCount += 1
-                }
-            }
-        }
-        return
     }
 }
 
+// Draw a symbol into the atlas and record its slot, answering the slot's index.
+// A symbol that does not draw never will, so its empty slot is cached; one that
+// found no room waits for the atlas to start over.
+function cacheSymbol(
+    state: borrow mut UiBatchState,
+    svg: borrow String,
+    key: Number,
+    width: Number,
+    height: Number,
+    growth: Number
+) -> Number {
+    var slot = UiGlyphSlot { key: key, w: width, h: height }
+    var settled = true
+    match symbolInkCoverage(svg, width, height, growth) {
+        Ok(coverage) -> {
+            match packGlyph(state, width, height) {
+                Some(place) -> {
+                    atlasBlitLevels(state, coverage.levels, place, width, height)
+                    slot.atlasX = place.x
+                    slot.atlasY = place.y
+                    slot.valid = true
+                }
+                None -> settled = false
+            }
+        }
+        Error(failure) -> log warn("symbol not drawn", traceText(failure))
+    }
+    state.glyphs.append(move slot)
+    let index = state.glyphs.count - 1
+    if settled && glyphCacheHasRoom(state) {
+        state.glyphIndex.set(key, index)
+    }
+    return index
+}
+
+// A symbol's hash folded below a prime, leaving room in its cache key for
+// its size and weight.
+namespace SymbolCacheKey {
+    let modulus: Number = 4294967291
+}
 
 // Lay out and append a UTF-8 string left-to-right, vertically centered in the
 // (x,y,w,h) box. Each glyph is a textured quad sampling its atlas coverage.
@@ -250,28 +251,41 @@ extend UiBatch {
 // heavy frost reads as dark and the text picks white on a near-white surface.
 extend UiBatch {
     function pushText(
-        graphics: borrow EMGraphics,
+        graphics: borrow Graphics,
         content: borrow String,
-        x: Float, y: Float, w: Float, h: Float,
-        color: borrow Color, sizePx: Float, weightAxis: Float,
-        clipMinX: Float, clipMinY: Float, clipMaxX: Float, clipMaxY: Float,
+        x: Number,
+        y: Number,
+        w: Number,
+        h: Number,
+        color: borrow RGBAColor,
+        sizePx: Number,
+        weightAxis: Number,
+        clipMinX: Number,
+        clipMinY: Number,
+        clipMaxX: Number,
+        clipMaxY: Number,
         adaptive: Bool = false,
-        wash: Float = 0.0,
-        washLuma: Float = 1.0,
-        inkLeft: Float = 0.0,
-        inkRight: Float = 0.0,
-        inkTop: Float = 0.0,
-        inkBottom: Float = 0.0,
-        rotCos: Float = 1.0,
-        rotSin: Float = 0.0,
+        wash: Number = 0.0,
+        washLuma: Number = 1.0,
+        inkLeft: Number = 0.0,
+        inkRight: Number = 0.0,
+        inkTop: Number = 0.0,
+        inkBottom: Number = 0.0,
+        rotCos: Number = 1.0,
+        rotSin: Number = 0.0,
         // The scale the run is shown at, from a transform over it. It is laid
         // out at its own size and its glyphs scaled down onto the screen.
-        displayScale: Float = 1.0,
+        displayScale: Number = 1.0,
         design: CAFontDesign = .Default,
         // Spans of the content in inks of their own, and the opacity their
         // colors are drawn at; bytes no span covers take `color`.
         spans: borrow [CATextSpan] = [],
-        spanOpacity: Float = 1.0,
+        spanOpacity: Number = 1.0,
+        // Draws the run's shadow instead of the run: each glyph's coverage in
+        // `color`, under a gaussian `shadowBlur` points across, as a design
+        // tool's blur is measured.
+        shadow: Bool = false,
+        shadowBlur: Number = 0.0,
     ) {
         // Recover the compositor state ONCE for the whole string. Every per-glyph step
         // (size, metrics, glyph lookup, atlas rasterization, and quad emission) runs
@@ -280,7 +294,7 @@ extend UiBatch {
         // (~3-7 per character) — the dominant resize render cost. The hot path stays
         // inline here to avoid per-glyph helper/recovery overhead.
         var state = nativeRecover<UiBatchState>(self.storage)
-        if !state.fontReady {
+        if !state.textFace.isSome() {
             return
         }
         // Rasterize glyphs at physical pixels (point size x backing scale) for crisp text
@@ -302,7 +316,7 @@ extend UiBatch {
         // through, its glyphs would snap to a different pixel size and its
         // baseline to a different pixel row frame by frame, and it would shake
         // against everything else moving with it.
-        var shown: Float = 1.0
+        var shown: Number = 1.0
         if displayScale > 0.0 && (displayScale > 1.0001 || displayScale < 0.9999) {
             shown = displayScale
         }
@@ -318,28 +332,20 @@ extend UiBatch {
         let bottomInk = inkBottom / shown
         let sizeKey = glyphSizeKey(sizePx / shown * rasterScale)
         let weightKey = glyphWeightKey(weightAxis)
-        let faceKey = uiBatchFaceKey(state, design)
-        let face = faceKey == 1 ? state.monoFace : state.face
+        let faceKey = state.faceKey(design)
         let metricKey = (sizeKey * 1000 + weightKey) * 2 + faceKey
-        var metric = -1
-        let metricKeys = state.metricKeys
-        for m in 0..metricKeys.count {
-            if metricKeys[m] == metricKey {
-                metric = m
-                break
+        let (faceAscender, faceDescender) = match state.metricsFor(metricKey) {
+            Some(metric) -> metric
+            None -> {
+                if !state.setFace(sizeKey, weightKey, faceKey) {
+                    return
+                }
+                state.metrics.append((metricKey, state.ascender, state.descender))
+                (state.ascender, state.descender)
             }
         }
-        if metric < 0 {
-            if !uiBatchSetFace(state, sizeKey, weightKey, faceKey) {
-                return
-            }
-            metric = state.metricKeys.count
-            state.metricKeys.append(metricKey)
-            state.metricAscenders.append(state.ascender)
-            state.metricDescenders.append(state.descender)
-        }
-        let ascender = state.metricAscenders[metric] / rasterScale
-        let descender = state.metricDescenders[metric] / rasterScale
+        let ascender = faceAscender / rasterScale
+        let descender = faceDescender / rasterScale
         // Where the BASELINE goes.
         //
         // A run given room for the font's line box sits on the baseline that box
@@ -375,16 +381,16 @@ extend UiBatch {
         // it fractional makes the sampler resample every glyph vertically — a uniform
         // softness across all text, which is exactly what a run of unhinted glyphs
         // must NOT have, or the whole thing reads as blurry rather than as smooth.
-        let baselineDevice = Float(Int(baseline * scale + 0.5))
+        let baselineDevice = trunc(baseline * scale + 0.5)
         // Adaptive only where a capture exists to read (from the first glass layer on).
         // The sample point is the RUN's center, carried on every glyph of the run, so a
         // string picks ONE ink and reads as one piece of text — sampling per glyph would
         // let a word straddling an edge in the backdrop come out half dark, half light.
         var glyphMode = 1.0
-        var glyphWash: Float = 0.0
-        var glyphWashLuma: Float = 1.0
-        var runCenterU: Float = 0.0
-        var runCenterV: Float = 0.0
+        var glyphWash: Number = 0.0
+        var glyphWashLuma: Number = 1.0
+        var runCenterU: Number = 0.0
+        var runCenterV: Number = 0.0
         if adaptive && state.streamIndex.raw > 0 && state.glassReady {
             glyphMode = 4.0
             glyphWash = wash
@@ -392,32 +398,37 @@ extend UiBatch {
             runCenterU = (x + w / 2.0) / state.viewportW
             runCenterV = (y + h / 2.0) / state.viewportH
         }
-        let atlasW = Float(glyphAtlasSize())
-        // The glyph hash, held directly rather than reached through the state on every
-        // probe step. A field of a recovered state is an address the runtime re-derives
-        // and type-checks per access, and the probe reads two arrays several times per
-        // character — a third of the cost of putting a string on screen went there. An
-        // array copy takes a SHARE of its block, so these cost a count, not a copy.
+        let atlasW = Number(GlyphAtlas.size)
+        // A shadow's glyphs are grown by its reach on every side, in whole
+        // device pixels, so the falloff is never cut at the glyph's box.
+        var shadowPad: Number = 0
+        var shadowReach: Number = 0.0
+        if shadow {
+            glyphMode = 1.5
+            shadowPad = ceil(max(shadowBlur, 0.0) * scale / shown)
+            shadowReach = max(shadowBlur, 0.0) * scale / shown * textOversampleAt(scale) / atlasW
+        }
+        // The glyph index, held directly rather than reached through the state for
+        // every character. A field of a recovered state is an address the runtime
+        // re-derives and type-checks per access, and a third of the cost of putting a
+        // string on screen once went there. A map or array copy takes a SHARE of its
+        // block, so these cost a count, not a copy.
         //
         // A miss writes the new entry back through `state`, which gives the state's
-        // arrays a block of their own and leaves these two looking at the old one, so
-        // they are re-taken there. Misses happen once per glyph per size and phase.
-        var hashKeys = state.glyphHashKeys
-        var hashVals = state.glyphHashVals
-        // The slot table the hash points into, held for the same reason and re-taken
-        // on the same event: rasterizing a new glyph appends to it.
+        // copies a block of their own and leaves these looking at the old one, so they
+        // are re-taken there. Misses happen once per glyph per size and phase.
+        var glyphIndex = state.glyphIndex
         var glyphSlots = state.glyphs
-        let cap = hashKeys.count
-        let stride = quadFloatCount()
+        let stride = QuadLayout.floatCount
         // What every glyph of the run writes the same, read off the state once.
         let overs = textOversampleAt(scale)
         let contents = state.contentsPtr
-        let contentsReady = !pointerIsNull(contents)
+        let contentsReady = !isNull(contents)
         let frameBase = state.frameBase
         let viewW = state.viewportW
         let viewH = state.viewportH
         let stream = state.streamIndex.raw
-        let glyphModeCode = Int(glyphMode * 10.0)
+        let glyphModeCode = trunc(glyphMode * 10.0)
         let requiresGeneric = rotSin != 0.0 || rotCos != 1.0
         var penX = runX
         if hasInk {
@@ -427,148 +438,108 @@ extend UiBatch {
             penX = runX - leftInk
         }
 
-        // The run decoded once. Asking for one scalar at a time handed the
-        // whole string across to C again for every character in it.
-        var capacity = content.count * 4 + 4
-        if capacity > 4096 {
-            capacity = 4096
+        // The run shaped in the instance its glyphs are drawn from, so
+        // ligatures and kerning land as measuring placed them.
+        if !state.setFace(sizeKey, weightKey, faceKey) {
+            return
         }
-        let decoded: int32_t_ptr = allocateBytes(U64(capacity * 4))
-        let decodedCount = Int(kira_text_decode_codepoints(content, decoded, I32(capacity)))
-        var guard = 0
-        var more = true
-        // Which byte of the content the pen is at, and the first span that
-        // does not end before it.
-        var byte = 0
+        let runInstance = match state.faceInstance {
+            Some(instance) -> instance
+            None -> return
+        }
+        var shaper = nativeRecover<TextEngine>(textEngine())
+        let shapedRun = shaper.shapedRun(runInstance, content)
+        // The first span that does not end before the glyph's byte.
         var span = 0
-        var ink = Color { r: color.r, g: color.g, b: color.b, a: color.a }
-        while more && guard < decodedCount {
-            let codepoint = Int(wordAt(decoded, U64(guard * 4)))
-            if codepoint == 0 {
-                more = false
-            } else {
-                if spans.count > 0 {
-                    while span < spans.count && spans[span].end <= byte {
-                        span += 1
-                    }
-                    if span < spans.count && spans[span].start <= byte {
-                        let c = spans[span].color
-                        ink = Color { r: c.r, g: c.g, b: c.b, a: c.a * spanOpacity }
-                    } else {
-                        ink = Color { r: color.r, g: color.g, b: color.b, a: color.a }
-                    }
-                    byte += utf8Length(codepoint)
+        var lastByte: Number = 0
+        var ink = RGBAColor { r: color.r, g: color.g, b: color.b, a: color.a }
+        for shaped in shapedRun {
+            let glyph = shaped.glyph
+            if spans.count > 0 {
+                let byte = shaped.cluster
+                // A run read right to left comes in falling bytes.
+                if byte < lastByte {
+                    span = 0
                 }
-                // --- inline glyph lookup (open-addressing hash) ---
-                // The pen in DEVICE pixels decides the subpixel phase: the glyph is
-                // rasterized for the fraction it actually sits at, then placed on a
-                // whole pixel. Rasterizing once and drawing at a fractional offset
-                // instead leaves the sampler to resample coverage, which is both
-                // softer and unevenly spaced — the thing this is here to avoid.
-                let devicePen = penX * scale
-                let phase = glyphPhaseOf(devicePen)
-                let key = glyphCacheKey(codepoint, sizeKey, weightKey, faceKey, phase)
-                var slotIdx = -1
-                var homeSlot = -1
-                var probing = cap > 0
-                var hh = 0
-                if cap > 0 {
-                    hh = (key % cap + cap) % cap
-                    // Most lookups end at the home slot; only a collision walks.
-                    let homeKey = hashKeys[hh]
-                    if homeKey == key {
-                        slotIdx = hashVals[hh]
-                        probing = false
-                    } else if homeKey == 0 {
-                        homeSlot = hh
-                        probing = false
-                    }
+                lastByte = byte
+                while span < spans.count && spans[span].end <= byte {
+                    span += 1
                 }
-                var probes = 0
-                while probing && probes < cap {
-                    let slotKey = hashKeys[hh]
-                    if slotKey == key {
-                        slotIdx = hashVals[hh]
-                        probing = false
-                    } else {
-                        if slotKey == 0 {
-                            homeSlot = hh
-                            probing = false
-                        } else {
-                            hh = (hh + 1) % cap
-                            probes += 1
+                if span < spans.count && spans[span].start <= byte {
+                    let c = spans[span].color
+                    ink = RGBAColor { r: c.r, g: c.g, b: c.b, a: c.a * spanOpacity }
+                } else {
+                    ink = RGBAColor { r: color.r, g: color.g, b: color.b, a: color.a }
+                }
+            }
+            // --- inline glyph lookup (open-addressing hash) ---
+            // The pen in DEVICE pixels decides the subpixel phase: the glyph is
+            // rasterized for the fraction it actually sits at, then placed on a
+            // whole pixel. Rasterizing once and drawing at a fractional offset
+            // instead leaves the sampler to resample coverage, which is both
+            // softer and unevenly spaced — the thing this is here to avoid.
+            let devicePen = (penX + shaped.offset / rasterScale) * scale
+            let phase = glyphPhaseOf(devicePen)
+            let key = glyphCacheKey(Number(glyph.raw), sizeKey, weightKey, faceKey, phase)
+            var slotIndex = glyphIndex.value(key)
+            // --- inline rasterization on miss ---
+            if slotIndex == .None && !state.setFace(sizeKey, weightKey, faceKey) {
+                break
+            }
+            if slotIndex == .None {
+                let instance = match state.faceInstance {
+                    Some(instance) -> instance
+                    None -> break
+                }
+                let engine = nativeRecover<TextEngine>(textEngine())
+                let shift = glyphPhaseOffset(phase, textOversampleAt(scale)) / 64
+                let bitmap = engine.glyphBitmap(instance, glyph, shift)
+                state.glyphsRasterised += 1
+                let gwp = bitmap.width
+                let ghp = bitmap.rows
+                var newSlot = UiGlyphSlot {
+                    key: key,
+                    advance: bitmap.advance,
+                    bearingX: bitmap.left,
+                    bearingY: bitmap.top,
+                    w: gwp,
+                    h: ghp,
+                    valid: true
+                }
+                if gwp > 0 && ghp > 0 {
+                    match packGlyph(state, gwp, ghp) {
+                        Some(place) -> {
+                            atlasBlitLevels(state, bitmap.levels, place, gwp, ghp)
+                            newSlot.atlasX = place.x
+                            newSlot.atlasY = place.y
                         }
+                        None -> newSlot.valid = false
                     }
                 }
-                // --- inline rasterization on miss ---
-                if slotIdx < 0 && !uiBatchSetFace(state, sizeKey, weightKey, faceKey) {
-                    more = false
-                    continue
+                // A glyph that found no room is still appended, for its
+                // advance, but left out of the index so the started-over
+                // atlas rasterizes it again.
+                let cached = newSlot.valid && glyphCacheHasRoom(state)
+                state.glyphs.append(move newSlot)
+                let index = state.glyphs.count - 1
+                slotIndex = .Some(index)
+                glyphSlots = state.glyphs
+                if cached {
+                    state.glyphIndex.set(key, index)
+                    // The write above gave the state's index a block of its
+                    // own; take the new one, or later lookups miss this entry.
+                    glyphIndex = state.glyphIndex
                 }
-                if slotIdx < 0 {
-                    let glyphIndex = kira_text_face_glyph_index(face, U32(codepoint))
-                    let bm: kira_text_glyph_bitmap_ptr = allocateBytes(glyphBitmapSize())
-                    let rendered = kira_text_face_render_glyph_offset(face, glyphIndex, I32(glyphPhaseOffset(phase, textOversampleAt(scale))), bm)
-                    if rendered != 0 {
-                        let gwp = Int(bm.width)
-                        let ghp = Int(bm.rows)
-                        var newSlot = UiGlyphSlot {
-                            key: key,
-                            advance: Float(bm.advance),
-                            bearingX: Int(bm.bearing_x),
-                            bearingY: Int(bm.bearing_y),
-                            w: gwp,
-                            h: ghp,
-                            valid: true
-                        }
-                        let pitch = Int(bm.pitch)
-                        let buffer = bm.buffer
-                        if gwp > 0 && ghp > 0 && buffer != RawPtr.null {
-                            if state.cursorX + gwp + atlasGutter() > state.atlasW {
-                                state.cursorX = atlasGutter()
-                                state.cursorY += state.rowHeight + atlasGutter()
-                                state.rowHeight = 0
-                            }
-                            if state.cursorY + ghp + atlasGutter() <= state.atlasH {
-                                newSlot.atlasX = state.cursorX
-                                newSlot.atlasY = state.cursorY
-                                atlasBlitCoverage(state, buffer, pitch, newSlot.atlasX, newSlot.atlasY, gwp, ghp)
-                                state.cursorX += gwp + atlasGutter()
-                                if ghp > state.rowHeight {
-                                    state.rowHeight = ghp
-                                }
-                            } else {
-                                newSlot.valid = false
-                                state.atlasExhausted = true
-                            }
-                        }
-                        // A glyph that found no room is still appended, for its
-                        // advance, but left out of the hash so the started-over
-                        // atlas rasterizes it again.
-                        let cached = newSlot.valid && glyphCacheHasRoom(state, homeSlot)
-                        state.glyphs.append(move newSlot)
-                        slotIdx = state.glyphs.count - 1
-                        glyphSlots = state.glyphs
-                        if cached {
-                            state.glyphHashKeys[homeSlot] = key
-                            state.glyphHashVals[homeSlot] = slotIdx
-                            // The write above gave the state's hash a block of its
-                            // own; take the new one, or later probes read an entry
-                            // this one is missing.
-                            hashKeys = state.glyphHashKeys
-                            hashVals = state.glyphHashVals
-                        }
-                    }
-                    freeBytes(bm)
-                }
-                // --- inline slot read + emit ---
-                if slotIdx >= 0 {
+            }
+            // --- inline slot read + emit ---
+            match slotIndex {
+                Some(index) -> {
                     // The whole slot at once. It is nine scalars and owns nothing,
                     // so copying it is a handful of loads — where reading eight of
                     // its fields one at a time was eight element reads through the
                     // recovered state, each re-deriving the payload address and
                     // walking into an array of structs.
-                    let slot = glyphSlots[slotIdx]
+                    let slot = glyphSlots[index]
                     let valid = slot.valid
                     let gwpx = slot.w
                     let ghpx = slot.h
@@ -581,10 +552,11 @@ extend UiBatch {
                         // extents come back from the rasterizer in raster pixels, so
                         // at 2x oversampling an odd one lands the edge on a half
                         // pixel — which is where this went wrong.
-                        let leftDev = Float(Int(devicePen)) + Float(bearingX) / overs
-                        let topDev = baselineDevice - Float(bearingY) / overs
-                        let rightDev = leftDev + Float(gwpx) / overs
-                        let bottomDev = topDev + Float(ghpx) / overs
+                        let leftDev = trunc(devicePen) + Number(bearingX) / overs
+                        let topDev = baselineDevice - Number(bearingY) / overs
+                            - trunc(shaped.rise / rasterScale * scale + 0.5)
+                        let rightDev = leftDev + Number(gwpx) / overs
+                        let bottomDev = topDev + Number(ghpx) / overs
                         // Grown to whole device pixels.
                         //
                         // A quad edge sitting exactly on a pixel CENTER is decided by
@@ -599,10 +571,10 @@ extend UiBatch {
                         // is taken from the atlas's own one-texel gutter, which is
                         // transparent. Every pixel the glyph touches is rasterized,
                         // and the sampling stays exactly two texels to a pixel.
-                        let x0 = Float(Int(leftDev))
-                        let y0 = Float(Int(topDev))
-                        let x1 = Float(Int(rightDev) + 1)
-                        let y1 = Float(Int(bottomDev) + 1)
+                        let x0 = trunc(leftDev) - shadowPad
+                        let y0 = trunc(topDev) - shadowPad
+                        let x1 = trunc(rightDev) + 1 + shadowPad
+                        let y1 = trunc(bottomDev) + 1 + shadowPad
                         var gx = x0 / scale
                         var gy = y0 / scale
                         let gw = (x1 - x0) / scale
@@ -619,12 +591,26 @@ extend UiBatch {
                             gx = rotatedCenterX - gw * 0.5
                             gy = rotatedCenterY - gh * 0.5
                         }
-                        let u0 = (Float(atlasX) - (leftDev - x0) * overs) / atlasW
-                        let v0 = (Float(atlasY) - (topDev - y0) * overs) / atlasW
-                        let u1 = (Float(atlasX + gwpx) + (x1 - rightDev) * overs) / atlasW
-                        let v1 = (Float(atlasY + ghpx) + (y1 - bottomDev) * overs) / atlasW
+                        let u0 = (Number(atlasX) - (leftDev - x0) * overs) / atlasW
+                        let v0 = (Number(atlasY) - (topDev - y0) * overs) / atlasW
+                        let u1 = (Number(atlasX + gwpx) + (x1 - rightDev) * overs) / atlasW
+                        let v1 = (Number(atlasY + ghpx) + (y1 - bottomDev) * overs) / atlasW
+                        // Mode 1.5 carries the glyph's own box in the atlas, which
+                        // its blur stays inside, where mode 4 has its sample point.
+                        var boxLeft = runCenterU
+                        var boxTop = runCenterV
+                        var boxRight: Number = 0.0
+                        var boxBottom: Number = 0.0
+                        var reach = glyphWash
+                        if shadow {
+                            boxLeft = Number(atlasX) / atlasW
+                            boxTop = Number(atlasY) / atlasW
+                            boxRight = Number(atlasX + gwpx) / atlasW
+                            boxBottom = Number(atlasY + ghpx) / atlasW
+                            reach = shadowReach
+                        }
                         let quad = state.quadCount
-                        if quad < maxQuadsPerBatch() && contentsReady {
+                        if quad < QuadLayout.maxPerBatch && contentsReady {
                             let base = frameBase + quad * stride
                             // The mode this quad is, recorded where the draw path
                             // looks it up. writeQuad does this for every quad that
@@ -634,83 +620,54 @@ extend UiBatch {
                             // and a glyph inheriting a glass region code is drawn
                             // through a glass pipeline, which is where the black
                             // boxes and vanished letters came from.
-                            if quad < state.streams[stream].quadModes.count {
-                                state.streams[stream].quadModes[quad] = glyphModeCode
-                                state.streams[stream].quadRequiresGeneric[quad] = requiresGeneric
-                            } else {
-                                state.streams[stream].quadModes.append(glyphModeCode)
-                                state.streams[stream].quadRequiresGeneric.append(requiresGeneric)
-                            }
+                            state.streams[stream].recordMode(quad, glyphModeCode, requiresGeneric)
                             // Mode 4 reuses the fields it has no other use for:
                             // borderWidth is the wash strength, edgeRefraction its
                             // color's luminance, border.rg the run's sample point
-                            // in capture uv.
+                            // in capture uv. Mode 1.5 has the blur's reach in
+                            // borderWidth and the glyph's atlas box in border.
                             writeQuadRecord(
-                                contents, base,
-                                originX + gx * shown, originY + gy * shown,
-                                originX + (gx + gw) * shown, originY + (gy + gh) * shown,
-                                u0, v0, u1, v1,
-                                viewW, viewH,
-                                0.0, 0.0, 0.0, glyphWash, glyphMode, glyphWashLuma,
-                                ink.r, ink.g, ink.b, ink.a,
-                                runCenterU, runCenterV, 0.0, 0.0,
-                                clipMinX, clipMinY, clipMaxX, clipMaxY,
-                                rotCos, rotSin
+                                contents,
+                                base,
+                                originX + gx * shown,
+                                originY + gy * shown,
+                                originX + (gx + gw) * shown,
+                                originY + (gy + gh) * shown,
+                                u0,
+                                v0,
+                                u1,
+                                v1,
+                                viewW,
+                                viewH,
+                                0.0,
+                                0.0,
+                                0.0,
+                                reach,
+                                glyphMode,
+                                glyphWashLuma,
+                                ink.r,
+                                ink.g,
+                                ink.b,
+                                ink.a,
+                                boxLeft,
+                                boxTop,
+                                boxRight,
+                                boxBottom,
+                                clipMinX,
+                                clipMinY,
+                                clipMaxX,
+                                clipMaxY,
+                                rotCos,
+                                rotSin
                             )
                             state.quadCount = quad + 1
                         }
                     }
-                        penX += slot.advance / rasterScale
+                    penX += (slot.advance + shaped.kerning) / rasterScale
                 }
+                // A glyph that could not be drawn or kept adds no ink and no advance.
+                None -> {}
             }
-            guard += 1
         }
-        freeBytes(decoded)
-        return
     }
-}
-
-// How many bytes UTF-8 spells a scalar in.
-function utf8Length(codepoint: Int) -> Int {
-    if codepoint < 128 {
-        return 1
-    }
-    if codepoint < 2048 {
-        return 2
-    }
-    if codepoint < 65536 {
-        return 3
-    }
-    return 4
-}
-
-// Which face a run in `design` is set in: 1 for the monospaced one, 0 for the
-// default, which also sets monospaced runs where the host has no face for them.
-public function uiBatchFaceKey(state: borrow UiBatchState, design: borrow CAFontDesign) -> Int {
-    if design == .Monospaced && state.monoFace != RawPtr.null {
-        return 1
-    }
-    return 0
-}
-
-// Sets a face to a run's size and weight, reading its vertical metrics into
-// the state, unless it already stands there. False when the face refuses.
-public function uiBatchSetFace(state: borrow mut UiBatchState, sizeKey: Int, weightKey: Int, faceKey: Int) -> Bool {
-    if state.fontSizeSet == sizeKey && state.fontWeightSet == weightKey && state.fontFaceSet == faceKey {
-        return true
-    }
-    let face = faceKey == 1 ? state.monoFace : state.face
-    let applied = kira_text_face_set_pixel_size(face, Float(sizeKey), glyphWeightAxis(weightKey))
-    if applied == 0 {
-        return false
-    }
-    let mv: kira_text_vmetrics_ptr = allocateBytes(verticalMetricsSize())
-    kira_text_face_vmetrics(face, mv)
-    state.ascender = Float(mv.ascender)
-    state.descender = Float(mv.descender)
-    freeBytes(mv)
-    state.fontSizeSet = sizeKey
-    state.fontWeightSet = weightKey
-    state.fontFaceSet = faceKey
-    return true
 }

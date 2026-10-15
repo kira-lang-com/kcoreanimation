@@ -17,40 +17,46 @@ import Ember
 public struct UiGlassFrameStats {
     // Glass surfaces the frame pushed: `pushGlass` calls past the degenerate-size
     // and no-stream rejections, whether or not the clip left any of them visible.
-    var surfaces: Int = 0
+    var surfaces: Number = 0
     // Quads those surfaces expanded into, counted after the clip, so a surface
     // scrolled off screen adds to `surfaces` and nothing here. The ratio between
     // the two is the per-frame CPU geometry expansion.
-    var patchQuads: Int = 0
+    var patchQuads: Number = 0
     // Glass layers the frame cut itself into. Each one owns a capture and a
     // blur chain.
-    var layers: Int = 0
+    var layers: Number = 0
     // Times the scene beneath a glass layer was drawn into that layer's capture
     // target. One per layer is the architectural target; one per capture region
     // is what a per-bound scissor loop costs.
-    var captureReplays: Int = 0
+    var captureReplays: Number = 0
     // Scissor regions those replays ran under.
-    var captureRegions: Int = 0
+    var captureRegions: Number = 0
     // Compute dispatches the blur pyramid cost.
-    var blurDispatches: Int = 0
+    var blurDispatches: Number = 0
     // Surfaces whose interior was presented from the cache, and surfaces that
     // shaded their interior live.
-    var cachedInteriors: Int = 0
-    var liveInteriors: Int = 0
+    var cachedInteriors: Number = 0
+    var liveInteriors: Number = 0
 }
 
-// Clear the emission counters. Called by `beginBatch`.
-//
-// Only the emission half: a re-presented frame never calls `beginBatch`, and
-// what it draws is the retained stream the last full frame emitted, so those
-// counts still describe the quads on screen. The presentation half is cleared
-// by `presentBatch`, which every frame runs.
-public function uiGlassStatsResetEmission(state: borrow mut UiBatchState) {
-    state.glassStatSurfaces = 0
-    state.glassStatPatchQuads = 0
-    state.glassStatCachedInteriors = 0
-    state.glassStatLiveInteriors = 0
-    return
+extend UiBatchState {
+    // Clear the emission counters. Called by `beginBatch`.
+    //
+    // Only the emission half: a re-presented frame never calls `beginBatch`, and
+    // what it draws is the retained stream the last full frame emitted, so those
+    // counts still describe the quads on screen. The presentation half is cleared
+    // by `presentBatch`, which every frame runs.
+    function resetGlassEmissionStats(borrow mut self) {
+        // The last frame's rasterising, said as it is given up, so a log shows
+        // the first frame of a screen filling the atlas and the next one
+        // drawing every glyph from it.
+        log debug("a frame rasterised glyphs", count: self.glyphsRasterised)
+        self.glyphsRasterised = 0
+        self.glassStatSurfaces = 0
+        self.glassStatPatchQuads = 0
+        self.glassStatCachedInteriors = 0
+        self.glassStatLiveInteriors = 0
+    }
 }
 
 // Where one frame's `presentBatch` spent its time, in nanoseconds.
@@ -59,31 +65,32 @@ public function uiGlassStatsResetEmission(state: borrow mut UiBatchState) {
 // `presentBatch` and leaving it falls in exactly one of them, so a reader who
 // sums them gets the phase back and never has to wonder what the remainder was.
 public struct UiBatchPhaseTimes {
-    // EMUniform, atlas and vertex-stream uploads: what the GPU must have before
+    // GraphicsUniform, atlas and vertex-stream uploads: what the GPU must have before
     // the first pass reads it.
-    var uploadNs: Int = 0
+    var uploadNs: Number = 0
     // The per-layer scene passes that draw what sits beneath the glass into
     // that layer's capture target, plus the decision of whether a capture is
     // needed at all — a layer standing on a photograph takes neither.
-    var captureNs: Int = 0
+    var captureNs: Number = 0
     // The blur pyramid: two compute dispatches per glass layer and the retile
     // that follows them.
-    var blurNs: Int = 0
+    var blurNs: Number = 0
     // The interior-cache pass and the swapchain composite that ends the frame.
-    var compositeNs: Int = 0
+    var compositeNs: Number = 0
 }
 
-// Clear the presentation counters. Called by `presentBatch`.
-public function uiGlassStatsResetPresentation(state: borrow mut UiBatchState) {
-    state.glassStatLayers = 0
-    state.glassStatCaptureReplays = 0
-    state.glassStatCaptureRegions = 0
-    state.glassStatBlurDispatches = 0
-    state.presentUploadNs = 0
-    state.presentCaptureNs = 0
-    state.presentBlurNs = 0
-    state.presentCompositeNs = 0
-    return
+extend UiBatchState {
+    // Clear the presentation counters. Called by `presentBatch`.
+    function resetGlassPresentationStats(borrow mut self) {
+        self.glassStatLayers = 0
+        self.glassStatCaptureReplays = 0
+        self.glassStatCaptureRegions = 0
+        self.glassStatBlurDispatches = 0
+        self.presentUploadNs = 0
+        self.presentCaptureNs = 0
+        self.presentBlurNs = 0
+        self.presentCompositeNs = 0
+    }
 }
 
 // This frame's Liquid Glass workload, as the compositor counted it.

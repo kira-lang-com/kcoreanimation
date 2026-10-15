@@ -1,0 +1,271 @@
+import Foundation
+
+// Contextual and chained contextual substitution (GSUB lookup types 5 and
+// 6): a rule matches the glyphs before, at and after a position, by glyph,
+// by class or by coverage, and then calls other lookups at positions inside
+// what it matched, as Inter's `calt` sets an arrow only between the glyphs
+// that make one.
+
+extend FontFile {
+    // Applies the first rule of the contextual subtable at `subtable` that
+    // matches at `at`; how many glyphs it consumed, or -1.
+    function contextSubstitution(
+        subtable: Int,
+        lookup: borrow LayoutLookup,
+        buffer: borrow mut ShapingBuffer,
+        at: Int,
+        depth: Int,
+        chained: Bool
+    ) -> Int {
+        if depth >= ShapingLimits.nesting { return -1 }
+        let rules = chained ? chainedRules(subtable, buffer.glyphs[at]) : contextRules(
+            subtable,
+            buffer.glyphs[at]
+        )
+        for rule in rules {
+            let positions = matchedInput(rule, lookup, buffer, at)
+            if positions.count == 0 { continue }
+            return applyRecords(rule, buffer, positions, depth)
+        }
+        return -1
+    }
+
+    // The rules of a type 5 subtable that may match a run whose glyph at the
+    // position is `glyph`.
+    function contextRules(subtable: Int, glyph: Int) -> [ContextRule] {
+        var rules: [ContextRule] = []
+        let format = data.u16(subtable)
+        if format == 3 {
+            let count = data.u16(subtable + 2)
+            let input = RuleSequence {
+                at: subtable + 6,
+                count: count,
+                test: .Coverages,
+                base: subtable
+            }
+            rules.append(
+                ContextRule {
+                    backtrack: emptySequence(),
+                    input: input,
+                    withFirst: true,
+                    lookahead: emptySequence(),
+                    records: subtable + 6 + count * 2,
+                    recordCount: data.u16(subtable + 4)
+                }
+            )
+            return rules
+        }
+        if data.coverageIndex(subtable + data.u16(subtable + 2), glyph) < 0 { return rules }
+        if format != 1 && format != 2 { return rules }
+        let set = format == 2 ? ruleSet(subtable, glyph, 4, 6) : ruleSet(subtable, glyph, 0, 4)
+        if set == 0 { return rules }
+        let test: SequenceTest = format == 2 ? .Classes(subtable + data.u16(subtable + 4)) : .Glyphs
+        for index in 0..data.u16(set) {
+            let rule = set + data.u16(set + 2 + index * 2)
+            let count = data.u16(rule)
+            if count == 0 { continue }
+            rules.append(
+                ContextRule {
+                    backtrack: emptySequence(),
+                    input: RuleSequence {
+                        at: rule + 4,
+                        count: count - 1,
+                        test: copy test,
+                        base: subtable
+                    },
+                    withFirst: false,
+                    lookahead: emptySequence(),
+                    records: rule + 4 + (count - 1) * 2,
+                    recordCount: data.u16(rule + 2)
+                }
+            )
+        }
+        return rules
+    }
+
+    // The rules of a type 6 subtable that may match a run whose glyph at the
+    // position is `glyph`.
+    function chainedRules(subtable: Int, glyph: Int) -> [ContextRule] {
+        var rules: [ContextRule] = []
+        let format = data.u16(subtable)
+        if format == 3 {
+            let backtrack = data.u16(subtable + 2)
+            let inputAt = subtable + 4 + backtrack * 2
+            let input = data.u16(inputAt)
+            let lookaheadAt = inputAt + 2 + input * 2
+            let lookahead = data.u16(lookaheadAt)
+            let recordsAt = lookaheadAt + 2 + lookahead * 2
+            rules.append(
+                ContextRule {
+                    backtrack: RuleSequence {
+                        at: subtable + 4,
+                        count: backtrack,
+                        test: .Coverages,
+                        base: subtable
+                    },
+                    input: RuleSequence {
+                        at: inputAt + 2,
+                        count: input,
+                        test: .Coverages,
+                        base: subtable
+                    },
+                    withFirst: true,
+                    lookahead: RuleSequence {
+                        at: lookaheadAt + 2,
+                        count: lookahead,
+                        test: .Coverages,
+                        base: subtable
+                    },
+                    records: recordsAt + 2,
+                    recordCount: data.u16(recordsAt)
+                }
+            )
+            return rules
+        }
+        if data.coverageIndex(subtable + data.u16(subtable + 2), glyph) < 0 { return rules }
+        var backtrackTest: SequenceTest = .Glyphs
+        var inputTest: SequenceTest = .Glyphs
+        var lookaheadTest: SequenceTest = .Glyphs
+        if format == 2 {
+            backtrackTest = .Classes(subtable + data.u16(subtable + 4))
+            inputTest = .Classes(subtable + data.u16(subtable + 6))
+            lookaheadTest = .Classes(subtable + data.u16(subtable + 8))
+        }
+        if format != 1 && format != 2 { return rules }
+        let set = format == 2 ? ruleSet(subtable, glyph, 6, 10) : ruleSet(subtable, glyph, 0, 4)
+        if set == 0 { return rules }
+        for index in 0..data.u16(set) {
+            let rule = set + data.u16(set + 2 + index * 2)
+            let backtrack = data.u16(rule)
+            let inputAt = rule + 2 + backtrack * 2
+            let input = data.u16(inputAt)
+            if input == 0 { continue }
+            let lookaheadAt = inputAt + 2 + (input - 1) * 2
+            let lookahead = data.u16(lookaheadAt)
+            let recordsAt = lookaheadAt + 2 + lookahead * 2
+            rules.append(
+                ContextRule {
+                    backtrack: RuleSequence {
+                        at: rule + 2,
+                        count: backtrack,
+                        test: copy backtrackTest,
+                        base: subtable
+                    },
+                    input: RuleSequence {
+                        at: inputAt + 2,
+                        count: input - 1,
+                        test: copy inputTest,
+                        base: subtable
+                    },
+                    withFirst: false,
+                    lookahead: RuleSequence {
+                        at: lookaheadAt + 2,
+                        count: lookahead,
+                        test: copy lookaheadTest,
+                        base: subtable
+                    },
+                    records: recordsAt + 2,
+                    recordCount: data.u16(recordsAt)
+                }
+            )
+        }
+        return rules
+    }
+
+    // The rule set a format 1 or 2 subtable keeps for `glyph`: by its place
+    // in the coverage, or, where `classes` is not zero, by the class the input
+    // class definition whose offset is `classes` bytes in gives it. The set
+    // count is `sets` bytes in. Zero for none.
+    function ruleSet(subtable: Int, glyph: Int, classes: Int, sets: Int) -> Int {
+        var index = data.coverageIndex(subtable + data.u16(subtable + 2), glyph)
+        if classes != 0 {
+            index = data.glyphClassIn(subtable + data.u16(subtable + classes), glyph)
+        }
+        if index < 0 || index >= data.u16(subtable + sets) { return 0 }
+        let offset = data.u16(subtable + sets + 2 + index * 2)
+        return offset == 0 ? 0 : subtable + offset
+    }
+
+    // Where `rule`'s input lies when it matches at `at`, the glyphs before
+    // and after it matching too; nothing where it does not match.
+    function matchedInput(
+        rule: borrow ContextRule,
+        lookup: borrow LayoutLookup,
+        buffer: borrow ShapingBuffer,
+        at: Int
+    ) -> [Int] {
+        let none: [Int] = []
+        var positions: [Int] = [at]
+        var first: Int = 0
+        if rule.withFirst {
+            if rule.input.count == 0 || !entryMatches(rule.input, 0, buffer.glyphs[at]) {
+                return none
+            }
+            first = 1
+        }
+        var position = at
+        for entry in first..rule.input.count {
+            position = nextUnskipped(buffer, position + 1, lookup)
+            if position < 0 || !entryMatches(rule.input, entry, buffer.glyphs[position]) {
+                return none
+            }
+            positions.append(position)
+        }
+        var behind = at
+        for entry in 0..rule.backtrack.count {
+            behind = previousUnskipped(buffer, behind - 1, lookup)
+            if behind < 0 || !entryMatches(rule.backtrack, entry, buffer.glyphs[behind]) {
+                return none
+            }
+        }
+        var ahead = position
+        for entry in 0..rule.lookahead.count {
+            ahead = nextUnskipped(buffer, ahead + 1, lookup)
+            if ahead < 0 || !entryMatches(rule.lookahead, entry, buffer.glyphs[ahead]) {
+                return none
+            }
+        }
+        return positions
+    }
+
+    // Whether entry number `entry` of `sequence` names `glyph`.
+    function entryMatches(sequence: borrow RuleSequence, entry: Int, glyph: Int) -> Bool {
+        let value = data.u16(sequence.at + entry * 2)
+        return match sequence.test {
+            Glyphs -> value == glyph
+            Classes(classes) -> data.glyphClassIn(classes, glyph) == value
+            Coverages -> data.coverageIndex(sequence.base + value, glyph) >= 0
+        }
+    }
+
+    // Calls the lookups `rule` names at the input `positions` it matched,
+    // following each change in length; how many glyphs the rule consumed.
+    function applyRecords(
+        rule: borrow ContextRule,
+        buffer: borrow mut ShapingBuffer,
+        positions: borrow [Int],
+        depth: Int
+    ) -> Int {
+        var spots = copy positions
+        for index in 0..rule.recordCount {
+            let record = rule.records + index * 4
+            let sequence = data.u16(record)
+            if sequence >= spots.count { continue }
+            let position = spots[sequence]
+            if position >= buffer.glyphs.count { continue }
+            let nested = data.lookupAt(layout.substitutions.lookupList, data.u16(record + 2), 7)
+            let before = buffer.glyphs.count
+            substituteAt(nested, buffer, position, depth + 1)
+            let change = buffer.glyphs.count - before
+            if change == 0 { continue }
+            for spot in 0..spots.count {
+                if spots[spot] > position { spots[spot] = spots[spot] + change }
+            }
+        }
+        return max(spots[spots.count - 1] - positions[0] + 1, 1)
+    }
+}
+
+function emptySequence() -> RuleSequence {
+    return RuleSequence { at: 0, count: 0, test: .Glyphs, base: 0 }
+}

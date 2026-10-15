@@ -1,0 +1,277 @@
+import Foundation
+
+// A symbol's SVG source read as the shapes it paints: the subset hand-drawn
+// and lucide- or feather-style symbols are written in.
+//
+//   elements   svg (its viewBox and paint defaults), path, rect, circle,
+//              ellipse, line, polyline, polygon; any other is passed over
+//   paint      fill and stroke as none or painted (a symbol is coverage, tinted
+//              where it is drawn, so a color is never read), fill-rule,
+//              stroke-width
+//
+// Transforms, gradients, clip paths, text, markers and CSS are not read: a
+// symbol needing them is flattened before it ships.
+
+namespace SymbolDefault {
+    // The canvas a symbol states no size for, which is lucide's.
+    let canvas: Float = 24
+    // The stroke width a symbol states none for.
+    let strokeWidth: Float = 2
+    // A rectangle corner radius below this is drawn square.
+    let squareCorner: Float = 0.01
+}
+
+enum SymbolFill {
+    Unfilled
+    NonZero
+    EvenOdd
+}
+
+// One element's outlines and how they are painted. `stroke` is the stroke's
+// width in document units, when the element is stroked.
+struct SymbolShape {
+    let outlines: [SymbolOutline]
+    let fill: SymbolFill
+    let stroke: Float?
+}
+
+struct SymbolBox {
+    let x: Float
+    let y: Float
+    let width: Float
+    let height: Float
+}
+
+struct SymbolDocument {
+    let canvas: SymbolBox
+    let shapes: [SymbolShape]
+}
+
+// What the `<svg>` element says every shape inherits.
+struct SymbolPaintDefaults {
+    let filled: Bool
+    let stroked: Bool
+    let strokeWidth: Float
+}
+
+// The text between one `<` and the `>` that closes it.
+struct SymbolTag {
+    let name: String
+    let text: String
+
+    // The value `name="..."` gives, when the tag has that attribute.
+    function attribute(borrow self, name: borrow String) -> String? {
+        var from: Number = 0
+        while true {
+            let found = match text.indexOf(name, from) {
+                Some(found) -> found
+                None -> return .None
+            }
+            from = found + 1
+            // An attribute starts after whitespace, so `d` is not the end of
+            // `id`.
+            if found == 0 || !isSeparator(text.byteAt(found - 1)) { continue }
+            match quotedValue(found + name.count) {
+                Some(value) -> return .Some(value)
+                None -> {}
+            }
+        }
+    }
+
+    // `= "value"` from `at`, with spaces allowed around the `=`.
+    function quotedValue(borrow self, at: Number) -> String? {
+        var scanner = SymbolScanner { text: copy text, at: at }
+        skipBlanks(scanner)
+        if scanner.peek() != .Some(SymbolCharacter.equals) { return .None }
+        scanner.at++
+        skipBlanks(scanner)
+        let quote = match scanner.peek() {
+            Some(byte) -> byte
+            None -> return .None
+        }
+        if quote != SymbolCharacter.doubleQuote && quote != SymbolCharacter.singleQuote {
+            return .None
+        }
+        let opened = scanner.at + 1
+        for index in opened..text.count {
+            if text.byteAt(index) == quote { return .Some(text.substring(opened, index)) }
+        }
+        return .None
+    }
+
+    function float(borrow self, name: borrow String) -> Float? {
+        match attribute(name) {
+            Some(value) -> {
+                let numbers = symbolNumbers(value)
+                if numbers.count == 0 { return .None }
+                return .Some(numbers[0])
+            }
+            None -> return .None
+        }
+    }
+
+    function says(borrow self, name: borrow String, value: borrow String) -> Bool {
+        return match attribute(name) {
+            Some(said) -> said == value
+            None -> false
+        }
+    }
+}
+
+function skipBlanks(scanner: borrow mut SymbolScanner) {
+    while true {
+        match scanner.peek() {
+            Some(byte) -> {
+                if byte != SymbolCharacter.space && byte != SymbolCharacter.tab { return }
+                scanner.at++
+            }
+            None -> return
+        }
+    }
+}
+
+// Every tag of `source`, in order.
+function symbolTags(source: borrow String) -> [SymbolTag] {
+    var tags: [SymbolTag] = []
+    var from: Number = 0
+    while true {
+        let open = match source.indexOf("<", from) {
+            Some(open) -> open
+            None -> return tags
+        }
+        let close = match source.indexOf(">", open) {
+            Some(close) -> close
+            None -> return tags
+        }
+        let text = source.substring(open + 1, close)
+        tags.append(SymbolTag { name: tagName(text), text: move text })
+        from = close + 1
+    }
+}
+
+// The element name a tag's text starts with.
+function tagName(text: borrow String) -> String {
+    for index in 0..text.count {
+        let byte = text.byteAt(index)
+        if isSeparator(byte) || byte == SymbolCharacter.slash { return text.substring(0, index) }
+    }
+    return copy text
+}
+
+// The shapes `source` paints, or why it paints none.
+function symbolDocument(source: borrow String) -> Result<SymbolDocument, SymbolFailure> {
+    let tags = symbolTags(source)
+    var canvas = SymbolBox {
+        x: 0.0,
+        y: 0.0,
+        width: SymbolDefault.canvas,
+        height: SymbolDefault.canvas
+    }
+    var defaults = SymbolPaintDefaults {
+        filled: true,
+        stroked: false,
+        strokeWidth: SymbolDefault.strokeWidth
+    }
+    for tag in tags {
+        if symbolElement(tag.name) == .Some(.Canvas) {
+            canvas = symbolCanvas(tag)
+            defaults = symbolPaintDefaults(tag)
+            break
+        }
+    }
+    if canvas.width <= 0.0 || canvas.height <= 0.0 { return .Error(.EmptyCanvas) }
+    var shapes: [SymbolShape] = []
+    for tag in tags {
+        match symbolShape(tag, defaults) {
+            Some(shape) -> shapes.append(shape)
+            // Not a drawing element, or one that draws nothing.
+            None -> {}
+        }
+    }
+    return .Ok(SymbolDocument { canvas: canvas, shapes: shapes })
+}
+
+// The `viewBox`, or a box at the origin as wide and tall as the element says.
+function symbolCanvas(tag: borrow SymbolTag) -> SymbolBox {
+    match tag.attribute("viewBox") {
+        Some(box) -> {
+            let numbers = symbolNumbers(box)
+            if numbers.count == 4 {
+                return SymbolBox {
+                    x: numbers[0],
+                    y: numbers[1],
+                    width: numbers[2],
+                    height: numbers[3]
+                }
+            }
+        }
+        None -> {
+            return SymbolBox {
+                x: 0.0,
+                y: 0.0,
+                width: floatOr(tag.float("width"), SymbolDefault.canvas),
+                height: floatOr(tag.float("height"), SymbolDefault.canvas)
+            }
+        }
+    }
+    return SymbolBox { x: 0.0, y: 0.0, width: SymbolDefault.canvas, height: SymbolDefault.canvas }
+}
+
+function symbolPaintDefaults(tag: borrow SymbolTag) -> SymbolPaintDefaults {
+    return SymbolPaintDefaults {
+        filled: !tag.says("fill", "none"),
+        stroked: match tag.attribute("stroke") {
+            Some(stroke) -> stroke != "none"
+            None -> false
+        },
+        strokeWidth: floatOr(tag.float("stroke-width"), SymbolDefault.strokeWidth)
+    }
+}
+
+function floatOr(value: Float?, otherwise: Float) -> Float {
+    return match value {
+        Some(given) -> given
+        None -> otherwise
+    }
+}
+
+// The shape `tag` draws, painted as it and the document's defaults say.
+function symbolShape(tag: borrow SymbolTag, defaults: borrow SymbolPaintDefaults) -> SymbolShape? {
+    let element = match symbolElement(tag.name) {
+        Some(element) -> element
+        None -> return .None
+    }
+    let outlines = elementOutlines(element, tag)
+    if outlines.count == 0 { return .None }
+    return .Some(
+        SymbolShape {
+            outlines: outlines,
+            fill: shapeFill(element, tag, defaults),
+            stroke: shapeStroke(tag, defaults)
+        }
+    )
+}
+
+function shapeFill(
+    element: borrow SymbolElement,
+    tag: borrow SymbolTag,
+    defaults: borrow SymbolPaintDefaults
+) -> SymbolFill {
+    if !element.fillable() { return .Unfilled }
+    let filled = match tag.attribute("fill") {
+        Some(fill) -> fill != "none"
+        None -> defaults.filled
+    }
+    if !filled { return .Unfilled }
+    return tag.says("fill-rule", "evenodd") ? .EvenOdd : .NonZero
+}
+
+function shapeStroke(tag: borrow SymbolTag, defaults: borrow SymbolPaintDefaults) -> Float? {
+    let stroked = match tag.attribute("stroke") {
+        Some(stroke) -> stroke != "none"
+        None -> defaults.stroked
+    }
+    let width = floatOr(tag.float("stroke-width"), defaults.strokeWidth)
+    if !stroked || width <= 0.0 { return .None }
+    return .Some(width)
+}

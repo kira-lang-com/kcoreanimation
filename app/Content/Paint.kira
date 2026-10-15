@@ -4,21 +4,16 @@ import Foundation
 // A collision-free spelling for hosts that also expose their own design-token
 // `Color`. Package imports are flat in Kira, so the distinct name is the type
 // boundary rather than a module qualifier.
-public type FoundationColor = Color
+public type FoundationColor = RGBAColor
 
-public function foundationRgba(r: Float, g: Float, b: Float, a: Float) -> FoundationColor {
-    return Color { r: r, g: g, b: b, a: a }
+public function foundationRgba(r: Number, g: Number, b: Number, a: Number) -> FoundationColor {
+    return RGBAColor { r: r, g: g, b: b, a: a }
 }
 
 public struct Glow {
-    let color: Color = Color {
-        r: 0.0,
-        g: 0.0,
-        b: 0.0,
-        a: 1.0
-    }
-    let radius: Float = 0.0
-    let intensity: Float = 0.0
+    let color: RGBAColor = RGBAColor { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }
+    let radius: Number = 0.0
+    let intensity: Number = 0.0
 }
 
 public enum FoundationShape {
@@ -106,7 +101,7 @@ public enum FoundationBlur {
 
 // The blur dial (0..1) a NAMED step means. The pyramid itself is fixed (half-res,
 // eight gaussian iterations); this is how far the glass reads across it.
-public function foundationBlurMix(blur: borrow FoundationBlur) -> Float {
+public function foundationBlurMix(blur: borrow FoundationBlur) -> Number {
     match blur {
         // A raw Surface has no frost step to follow, so Step means the blur of the
         // platform's default material — Regular, which FoundationFrost calls High.
@@ -126,7 +121,7 @@ public function foundationBlurMix(blur: borrow FoundationBlur) -> Float {
 // capture. The dial's own split (CAGlassMaterial.blurNearSplit, 0.25) is
 // what puts the near level there, so the whole ramp is spent crossing sharp ->
 // near and never touches the far level at all.
-public function foundationFrostBlur(frost: borrow FoundationFrost) -> Float {
+public function foundationFrostBlur(frost: borrow FoundationFrost) -> Number {
     match frost {
         Translucent -> return 0.0
         Light -> return 0.05
@@ -141,7 +136,7 @@ public function foundationFrostBlur(frost: borrow FoundationFrost) -> Float {
 public function foundationBlurAmount(
     blur: borrow FoundationBlur,
     frost: borrow FoundationFrost,
-) -> Float {
+) -> Number {
     match blur {
         Step -> return foundationFrostBlur(frost)
         None -> return 0.0
@@ -156,7 +151,7 @@ public function foundationBlurAmount(
 // The rim-highlight scale a surface ends up shading with: the requested strength
 // when edge lighting is on, and zero when it is off, which removes the hairline and
 // the inner bloom without touching the lens, wash or shadow.
-public function foundationEdgeLightingScale(enabled: Bool, strength: Float) -> Float {
+public function foundationEdgeLightingScale(enabled: Bool, strength: Number) -> Number {
     if enabled {
         return strength
     }
@@ -264,8 +259,8 @@ public function foundationGlassMaterialEdgeLit(
 
 // The surface fill a tint stack's LOWER layer is: its color, with the layer's
 // opacity as the alpha the compositor reads the wash strength from.
-public function foundationTintFill(stack: borrow FoundationTintStack) -> Color {
-    return Color {
+public function foundationTintFill(stack: borrow FoundationTintStack) -> RGBAColor {
+    return RGBAColor {
         r: stack.lower.color.r,
         g: stack.lower.color.g,
         b: stack.lower.color.b,
@@ -312,31 +307,16 @@ public enum FoundationEffect {
 
 public struct FoundationTextPaint {
     let content: String
-    let color: Color = Color {
-        r: 0.08,
-        g: 0.08,
-        b: 0.10,
-        a: 1.0
-    }
-    let size: Float = 15.0
-    let weight: Float = 400.0
+    let color: RGBAColor = RGBAColor { r: 0.08, g: 0.08, b: 0.10, a: 1.0 }
+    let size: Number = 15.0
+    let weight: Number = 400.0
 }
 
 public struct FoundationSurfacePaint {
-    let fill: Color = Color {
-        r: 1.0,
-        g: 1.0,
-        b: 1.0,
-        a: 1.0
-    }
-    let border: Color = Color {
-        r: 0.0,
-        g: 0.0,
-        b: 0.0,
-        a: 0.0
-    }
-    let borderWidth: Float = 0.0
-    let radius: Float = 0.0
+    let fill: RGBAColor = RGBAColor { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }
+    let border: RGBAColor = RGBAColor { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }
+    let borderWidth: Number = 0.0
+    let radius: Number = 0.0
     let material: FoundationMaterial = .Flat
     let effects: [FoundationEffect] = []
     let clipContent: Bool = false

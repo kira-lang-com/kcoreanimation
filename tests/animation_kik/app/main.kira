@@ -12,5 +12,4 @@ import KCoreAnimation
 @Main
 function main() {
     print("animation-kik")
-    return
 }

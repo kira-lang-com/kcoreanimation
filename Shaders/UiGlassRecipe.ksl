@@ -1,0 +1,674 @@
+// Liquid Glass by recipe: the whole platform glass in one pass.
+//
+// A surface drawn here names a variant of one of the platform's recipes
+// (`Layer/GlassRecipe.kira`), and every number that shapes it is read from that
+// variant's record in the recipe table rather than carried by the quad. The
+// steps follow how the platform's glass filter composes a surface -- described
+// in our own words in apple-ref/GLASS.md -- and the arithmetic is our own:
+//
+// 1. the drop shadow and the ring shadow outside the shape;
+// 2. the lens: the backdrop pulled in from the edge along a quarter-circle
+//    profile, and an outer band that pushes back;
+// 3. the blur, whose radius ramps with depth into the shape;
+// 4. the face colour matrix: saturation, black and white levels, a fill and a
+//    luminance ceiling;
+// 5. the edge bleed and the blur fill;
+// 6. the edge specular, then the highlight layer -- key, fill and diffuse
+//    lights -- blended through its vibrant colour matrix.
+//
+// Cost: two backdrop reads for most fragments, one more for each effect a
+// recipe turns on. Every branch below is on a recipe value, the same for every
+// fragment of a surface.
+//
+// The quad record is `UiBatch.ksl`'s, declared whole for its stride. A recipe
+// quad uses its geometry, clip, morph and touch blocks; `edgeRefraction`
+// carries the record index, the fill block the tint, `materialSpare0` how far
+// the surface has faded and `materialSpare2` the anti-aliasing band.
+
+import GlassCommon
+
+type UiQuad {
+    let posX0: Float
+    let posY0: Float
+    let posX1: Float
+    let posY1: Float
+    let pxX0: Float
+    let pxY0: Float
+    let pxX1: Float
+    let pxY1: Float
+    let localX0: Float
+    let localY0: Float
+    let localX1: Float
+    let localY1: Float
+    let halfW: Float
+    let halfH: Float
+    let radius: Float
+    let borderWidth: Float
+    let mode: Float
+    let edgeRefraction: Float
+    let fillR: Float
+    let fillG: Float
+    let fillB: Float
+    let fillA: Float
+    let borderR: Float
+    let borderG: Float
+    let borderB: Float
+    let borderA: Float
+    let clipMinX: Float
+    let clipMinY: Float
+    let clipMaxX: Float
+    let clipMaxY: Float
+    let edgeStrokeStrength: Float
+    let edgeStrokeDarken: Float
+    let edgeStrokePeak: Float
+    let edgeStrokeFade: Float
+    let sheenStrength: Float
+    let lensMaxBend: Float
+    let refractionReach: Float
+    let blurNearSplit: Float
+    let borderSpread: Float
+    let borderSideOffset: Float
+    let borderSideSpread: Float
+    let borderGray: Float
+    let borderSideGray: Float
+    let innerRimStrength: Float
+    let innerRimWidth: Float
+    let washBlend: Float
+    let washUpperR: Float
+    let washUpperG: Float
+    let washUpperB: Float
+    let washUpperAlpha: Float
+    let washUpperBlend: Float
+    let materialSpare0: Float
+    let materialSpare1: Float
+    let materialSpare2: Float
+    // The gradient block: the color the far end of the quad takes and which
+    // way far runs. Declared by every shader that pulls this record, because
+    // the record's STRIDE is what a pull reads by — a shader that stops one
+    // field short reads the next quad from the wrong offset.
+    let gradientR: Float
+    let gradientG: Float
+    let gradientB: Float
+    let gradientA: Float
+    let gradientAxis: Float
+    // The morph block: the SECOND shape this surface fuses with, in the quad's
+    // own local space, and the smooth minimum's reach in points. `UiGlassFull`
+    // is the only shader that reads it — every other one declares it because a
+    // storage pull reads by the record's STRIDE, and a shader that stops six
+    // fields short reads the next quad from the wrong offset.
+    let morphX: Float
+    let morphY: Float
+    let morphHalfW: Float
+    let morphHalfH: Float
+    let morphRadius: Float
+    let morphBlend: Float
+    // 0 circular, 1 the continuous superellipse a squircle is.
+    let shapeKind: Float
+    // The quad turned about its own center, as cosine and sine — see
+    // `writeQuadRotation`. Only `UiBatch` acts on it; every other shader
+    // declares it because a storage pull reads by the record's STRIDE, and a
+    // shader that stops two fields short reads the next quad from the wrong
+    // offset.
+    let rotCos: Float
+    let rotSin: Float
+    // The corner of the rounded box the quad is clipped to, zero for a plain
+    // one, and its kind: one for a continuous corner. Declared by every shader
+    // that pulls this record, for its stride.
+    let clipRadius: Float
+    let clipShapeKind: Float
+}
+
+// One variant of a recipe, in `GlassRecipeField` order (Layer/GlassRecipes/
+// GlassRecipeCatalog.kira). Lengths are points, angles radians, blur radii the
+// filter's own units.
+type GlassRecipe {
+    let backdropScale: Float
+    let ovalization: Float
+    let blurRadius: Float
+    let blurDistance0: Float
+    let blurDistance1: Float
+    let blurDistance2: Float
+    let blurDistance3: Float
+    let blurOpacity0: Float
+    let blurOpacity1: Float
+    let blurOpacity2: Float
+    let blurOpacity3: Float
+    let innerRefractionHeight: Float
+    let innerRefractionAmount: Float
+    let outerRefractionHeight: Float
+    let outerRefractionAmount: Float
+    let refractionDistance0: Float
+    let refractionDistance1: Float
+    let refractionOpacity: Float
+    let faceOpacity: Float
+    let faceBlack: Float
+    let faceWhite: Float
+    let faceSaturation: Float
+    let faceMaxLuma: Float
+    let faceFillRed: Float
+    let faceFillGreen: Float
+    let faceFillBlue: Float
+    let faceFillAlpha: Float
+    let specularHeight: Float
+    let specularAngle: Float
+    let specularSpread: Float
+    let specularAmount: Float
+    let specularOffset: Float
+    let specularColorBias: Float
+    let shadowOpacity: Float
+    let shadowAmount: Float
+    let shadowHeight: Float
+    let shadowOffsetX: Float
+    let shadowOffsetY: Float
+    let shadowRadius: Float
+    let shadowBlurRadius: Float
+    let shadowDistanceOffset: Float
+    let shadowBlack: Float
+    let shadowWhite: Float
+    let shadowSaturation: Float
+    let shadowFillRed: Float
+    let shadowFillGreen: Float
+    let shadowFillBlue: Float
+    let shadowFillAlpha: Float
+    let bleedOpacity: Float
+    let bleedAmount: Float
+    let bleedHeight: Float
+    let bleedBlurRadius: Float
+    let bleedDistance0: Float
+    let bleedDistance1: Float
+    let bleedBlack: Float
+    let bleedWhite: Float
+    let bleedSaturation: Float
+    let bleedDarken: Float
+    let blurFillRadius: Float
+    let blurFillLighten: Float
+    let blurFillDarken: Float
+    let blurFillNormal: Float
+    let ringShadowOpacity: Float
+    let ringShadowOffset: Float
+    let ringShadowStrokeWidth: Float
+    let ringShadowBlurRadius: Float
+    let ringShadowMask: Float
+    let clamp: Float
+    let clampPreserveHue: Float
+    let highlightPresent: Float
+    let highlightCurvature: Float
+    let keyRed: Float
+    let keyGreen: Float
+    let keyBlue: Float
+    let keyAlpha: Float
+    let keyHeight: Float
+    let keyAngle: Float
+    let keySpread: Float
+    let keyAmount: Float
+    let fillRed: Float
+    let fillGreen: Float
+    let fillBlue: Float
+    let fillAlpha: Float
+    let fillHeight: Float
+    let fillAngle: Float
+    let fillSpread: Float
+    let fillAmount: Float
+    let diffuseHeightScale: Float
+    let diffuseSpreadScale: Float
+    let diffuseAmountScale: Float
+    let highlightMaxComponent: Float
+    let highlightOpacity: Float
+    let vibrantRed0: Float
+    let vibrantRed1: Float
+    let vibrantRed2: Float
+    let vibrantRed3: Float
+    let vibrantRed4: Float
+    let vibrantGreen0: Float
+    let vibrantGreen1: Float
+    let vibrantGreen2: Float
+    let vibrantGreen3: Float
+    let vibrantGreen4: Float
+    let vibrantBlue0: Float
+    let vibrantBlue1: Float
+    let vibrantBlue2: Float
+    let vibrantBlue3: Float
+    let vibrantBlue4: Float
+    let specularKind: Float
+}
+
+type VertexIn {
+    @builtin(vertex_index)
+    let vid: UInt
+}
+
+type VertexOut {
+    @builtin(position)
+    let clip_position: Float4
+
+    let local: Float2
+    // The pixel position (xy), how far the surface has faded (z) and its
+    // record in the recipe table (w).
+    let px: Float4
+    // Half extent (xy), the anti-aliasing band (z) and the corner radius (w).
+    let hsize: Float4
+    // The backdrop coordinate of the center (xy) and of one half extent (zw).
+    let uv: Float4
+    let clip: Float4
+    let tint: Float4
+    let morph: Float4
+    // The morph's radius and reach, and the corner kinds of the surface and
+    // of its clip.
+    let shape: Float4
+    // The touch light (xyz) and the clip's corner radius (w).
+    let glow: Float4
+}
+
+type FragmentOut {
+    let color: Float4
+}
+
+type BackdropBlend {
+    let blend: Float
+}
+
+// The blurred levels' standard deviations, in points: the near and far
+// filters in `UiGlassBlurCommon.ksl` at the pyramid's divisor.
+const nearSigma: Float = 6.5
+const farSigma: Float = 16.0
+
+// A blur radius in the filter's units as a standard deviation in points. The
+// filter reads a mip level of a backdrop captured at `scale`: level
+// `radius / 2` under a radius of two and its base-two logarithm above, and a
+// level's texel spans `2^level / scale` points.
+function blurSigma(radius: Float, scale: Float) -> Float {
+    if radius <= 0.0 {
+        return 0.0
+    }
+    let level = radius * 0.5
+    if radius > 2.0 {
+        level = log2(radius)
+    }
+    return 0.6 * exp2(level) / max(scale, 0.0625)
+}
+
+// The quarter-circle profile the lens and the shadows displace by: one at the
+// edge, falling to zero `1` into the band.
+function dome(value: Float) -> Float {
+    let x = clamp(value, 0.0, 1.0)
+    return 1.0 - sqrt(x * (2.0 - x))
+}
+
+// How far `value` has gone from `from` to `to`, zero to one; a step when the
+// two meet.
+function ramp(value: Float, from: Float, to: Float) -> Float {
+    if abs(to - from) < 0.0001 {
+        if value >= to { return 1.0 }
+        return 0.0
+    }
+    return clamp((value - from) / (to - from), 0.0, 1.0)
+}
+
+// The blur radius share at signed distance `d`: linear between the stops.
+function blurShare(d: Float, r: GlassRecipe) -> Float {
+    if d <= r.blurDistance0 { return r.blurOpacity0 }
+    if d <= r.blurDistance1 { return mix(r.blurOpacity0, r.blurOpacity1, ramp(d, r.blurDistance0, r.blurDistance1)) }
+    if d <= r.blurDistance2 { return mix(r.blurOpacity1, r.blurOpacity2, ramp(d, r.blurDistance1, r.blurDistance2)) }
+    if d <= r.blurDistance3 { return mix(r.blurOpacity2, r.blurOpacity3, ramp(d, r.blurDistance2, r.blurDistance3)) }
+    return r.blurOpacity3
+}
+
+// An sRGB-encoded colour in linear light, and back: the platform blends the
+// highlight layer in linear light.
+function linearLight(rgb: Float3) -> Float3 {
+    return Float3(linearChannel(rgb.x), linearChannel(rgb.y), linearChannel(rgb.z))
+}
+
+function linearChannel(c: Float) -> Float {
+    if c <= 0.04045 {
+        return c / 12.92
+    }
+    return pow((c + 0.055) / 1.055, 2.4)
+}
+
+function encodedLight(rgb: Float3) -> Float3 {
+    return Float3(encodedChannel(rgb.x), encodedChannel(rgb.y), encodedChannel(rgb.z))
+}
+
+function encodedChannel(c: Float) -> Float {
+    if c <= 0.0031308 {
+        return c * 12.92
+    }
+    return 1.055 * pow(c, 1.0 / 2.4) - 0.055
+}
+
+// The colour matrix the filter states as levels: saturation about the Rec. 709
+// luminance, then black and white points.
+function levels(rgb: Float3, black: Float, white: Float, saturation: Float) -> Float3 {
+    let luma = dot(rgb, Float3(0.2126, 0.7152, 0.0722))
+    let saturated = mix(Float3(luma, luma, luma), rgb, saturation)
+    return Float3(black, black, black) + saturated * (white - black)
+}
+
+// How much a light at `angle` with full width `spread` falls on an edge facing
+// `normal`: one facing it head on, nothing past half the spread, rising
+// linearly between. An angle of zero is straight up, as the platform measures
+// the highlight layer's lights: the Dock's key light at 0 lights its top edge.
+function facing(normal: Float2, angle: Float, spread: Float) -> Float {
+    let toward = dot(normal, Float2(sin(angle), 0.0 - cos(angle)))
+    let edge = cos(min(spread * 0.5, 3.14159))
+    return clamp((toward - edge) / max(1.0 - edge, 0.0001), 0.0, 1.0)
+}
+
+// How much the edge specular falls on an edge facing `normal`: the alignment
+// with the light at `angle` from the horizontal, on the lit side and the
+// opposite one alike, remapped from the cosine of `spread` up to one. The Dock's
+// 75 degrees light the corners at about six tenths of the top, as the
+// platform's rim runs round them, and leave the straight ends dark.
+function specularFacing(normal: Float2, angle: Float, spread: Float) -> Float {
+    let toward = abs(dot(normal, Float2(cos(angle), sin(angle))))
+    let edge = cos(min(spread, 3.14159))
+    return clamp((toward - edge) / max(1.0 - edge, 0.0001), 0.0, 1.0)
+}
+
+// The edge specular's height, offset and colour bias where one device pixel
+// spans `pixelLength` points. The platform's base spec derives them from the
+// pixel length: a height of 1.6 pixels below half a point and of one pixel
+// above, the offset its negative, and a colour bias of -0.3 below and -0.25
+// above. A record of kind 1 follows it; any other keeps its own.
+function edgeSpecular(r: GlassRecipe, pixelLength: Float) -> Float3 {
+    if r.specularKind < 0.5 || r.specularKind > 1.5 {
+        return Float3(r.specularHeight, r.specularOffset, r.specularColorBias)
+    }
+    if pixelLength < 0.5 {
+        return Float3(1.6 * pixelLength, -1.6 * pixelLength, -0.3)
+    }
+    return Float3(pixelLength, 0.0 - pixelLength, -0.25)
+}
+
+// One light of the highlight layer, as the platform's SDF highlight draws it,
+// `depth` points inside the edge: a band `height` deep whose fall-off is
+// `curvature` linear and the rest flat, anti-aliased over `pixel` at both of its
+// ends, where the edge faces the light; then compressed by `amount` as
+// v / (1 + amount (1 - v)). A diffuse light is the linear band alone.
+function rimLight(depth: Float, normal: Float2, height: Float, angle: Float, spread: Float, curvature: Float, amount: Float, pixel: Float) -> Float {
+    if height <= 0.0 {
+        return 0.0
+    }
+    let fall = clamp(depth / height, 0.0, 1.0)
+    let flat = 1.0 - step(1.0, fall)
+    let outer = clamp(depth / pixel + 0.5, 0.0, 1.0)
+    let inner = clamp((height - depth) / pixel + 0.5, 0.0, 1.0)
+    let lit = mix(flat, 1.0 - fall, curvature) * outer * inner * facing(normal, angle, spread)
+    return lit / max(1.0 + amount * (1.0 - lit), 0.000001)
+}
+
+// The backdrop at `uv` blurred by `sigma` points: the sharp capture, the near
+// level and the far one, each pair mixed across the gap between them.
+function blurredTap(
+    sharp: Texture2d,
+    sharpSmp: Sampler,
+    second: Texture2d,
+    secondSmp: Sampler,
+    near: Texture2d,
+    nearSmp: Sampler,
+    far: Texture2d,
+    farSmp: Sampler,
+    uv: Float2,
+    sigma: Float,
+    blend: Float
+) -> Float3 {
+    if sigma >= farSigma {
+        let farTap = sample(far, farSmp, uv)
+        return Float3(farTap.x, farTap.y, farTap.z)
+    }
+    let nearTap = sample(near, nearSmp, uv)
+    let nearRgb = Float3(nearTap.x, nearTap.y, nearTap.z)
+    if sigma >= nearSigma {
+        let farTap = sample(far, farSmp, uv)
+        return mix(nearRgb, Float3(farTap.x, farTap.y, farTap.z), (sigma - nearSigma) / (farSigma - nearSigma))
+    }
+    let sharpTap = GlassCommon.backdropTap(sharp, sharpSmp, second, secondSmp, uv, blend)
+    return mix(Float3(sharpTap.x, sharpTap.y, sharpTap.z), nearRgb, max(sigma, 0.0) / nearSigma)
+}
+
+shader UiGlassRecipe {
+    group Batch {
+        storage read verts: [UiQuad]
+        texture atlas: Texture2d
+        sampler atlasSmp: Sampler
+        texture external: Texture2d
+        sampler externalSmp: Sampler
+        texture backdrop: Texture2d
+        sampler backdropSmp: Sampler
+        texture nearBlur: Texture2d
+        sampler nearSmp: Sampler
+        texture externalSecond: Texture2d
+        sampler externalSecondSmp: Sampler
+        uniform backdropBlend: BackdropBlend
+        storage read recipes: [GlassRecipe]
+    }
+
+    vertex {
+        input VertexIn
+        output VertexOut
+
+        function entry(input: VertexIn) -> VertexOut {
+            let v = verts[input.vid / UInt(4)]
+            let corner = input.vid % UInt(4)
+            let right = Float((corner + UInt(1)) % UInt(4) / UInt(2))
+            let bottom = Float(corner / UInt(2))
+            let out: VertexOut
+            out.clip_position = Float4(mix(v.posX0, v.posX1, right), mix(v.posY0, v.posY1, bottom), 0.0, 1.0)
+            out.local = Float2(mix(v.localX0, v.localX1, right), mix(v.localY0, v.localY1, bottom))
+            out.px = Float4(mix(v.pxX0, v.pxX1, right), mix(v.pxY0, v.pxY1, bottom), v.materialSpare0, v.edgeRefraction)
+            out.hsize = Float4(v.halfW, v.halfH, v.materialSpare2, v.radius)
+            out.uv = Float4(v.borderR, v.borderG, v.borderB, v.borderA)
+            out.clip = Float4(v.clipMinX, v.clipMinY, v.clipMaxX, v.clipMaxY)
+            out.tint = Float4(v.fillR, v.fillG, v.fillB, v.borderWidth)
+            out.morph = Float4(v.morphX, v.morphY, v.morphHalfW, v.morphHalfH)
+            out.shape = Float4(v.morphRadius, v.morphBlend, v.shapeKind, v.clipShapeKind)
+            out.glow = Float4(v.gradientR, v.gradientG, v.gradientB, v.clipRadius)
+            return out
+        }
+    }
+
+    fragment {
+        input VertexOut
+        output FragmentOut
+
+        function entry(input: VertexOut) -> FragmentOut {
+            let out: FragmentOut
+            out.color = Float4(0.0, 0.0, 0.0, 0.0)
+            let pixel = Float2(input.px.x, input.px.y)
+            if pixel.x < input.clip.x || pixel.y < input.clip.y || pixel.x > input.clip.z || pixel.y > input.clip.w {
+                return out
+            }
+            let clipped = GlassCommon.clipShapeCoverage(pixel, input.clip, Float2(input.glow.w, input.shape.w))
+            if clipped <= 0.0 {
+                return out
+            }
+            let r = recipes[UInt(input.px.w + 0.5)]
+            let half = Float2(input.hsize.x, input.hsize.y)
+            let radius = input.hsize.w
+            let kind = input.shape.z
+            let morphR = input.shape.x
+            let morphK = input.shape.y
+            let aa = max(input.hsize.z * 0.5, 0.0001)
+            let d = GlassCommon.morphedDistance(input.local, half, radius, input.morph, morphR, morphK, kind)
+            let uvCenter = Float2(input.uv.x, input.uv.y)
+            let uvPerPoint = Float2(input.uv.z / half.x, input.uv.w / half.y)
+            let uvHere = uvCenter + input.local * uvPerPoint
+            let blend = backdropBlend.blend
+
+            // Outside: the drop shadow and the ring shadow, both soft and both
+            // below the shape; nothing else reaches past the edge.
+            let shadowRgb = Float3(0.0, 0.0, 0.0)
+            let shadowAlpha = 0.0
+            if d > -aa {
+                if r.shadowOpacity > 0.0 {
+                    let offset = Float2(r.shadowOffsetX, r.shadowOffsetY)
+                    let dropDistance = GlassCommon.morphedDistance(input.local - offset, half, radius, input.morph, morphR, morphK, kind)
+                    let reach = max(r.shadowRadius, 1.0)
+                    let alpha = r.shadowOpacity * (1.0 - smoothstep(0.0 - reach, reach, dropDistance))
+                    if alpha > 0.002 {
+                        let inward = r.shadowAmount * dome(0.0 - (dropDistance + r.shadowDistanceOffset) / max(r.shadowHeight, 0.0001))
+                        let toward = GlassCommon.morphedNormal(input.local, half, radius, input.morph, morphR, morphK, kind)
+                        let tap = sample(backdrop, backdropSmp, uvHere - toward * inward * uvPerPoint)
+                        let tinted = levels(Float3(tap.x, tap.y, tap.z), r.shadowBlack, r.shadowWhite, r.shadowSaturation)
+                        tinted = mix(tinted, Float3(r.shadowFillRed, r.shadowFillGreen, r.shadowFillBlue), r.shadowFillAlpha)
+                        shadowRgb = tinted * alpha
+                        shadowAlpha = alpha
+                    }
+                }
+                if r.ringShadowOpacity > 0.0 {
+                    let ringDistance = GlassCommon.morphedDistance(input.local - Float2(0.0, r.ringShadowOffset), half, radius, input.morph, morphR, morphK, kind)
+                    let soft = max(r.ringShadowBlurRadius, 0.5)
+                    let ring = smoothstep(0.0 - soft, soft, ringDistance + r.ringShadowStrokeWidth) - smoothstep(0.0 - soft, soft, ringDistance)
+                    let masked = mix(1.0, clamp(0.5 + d / aa, 0.0, 1.0), r.ringShadowMask)
+                    let ringAlpha = clamp(ring, 0.0, 1.0) * r.ringShadowOpacity * masked
+                    shadowRgb = shadowRgb * (1.0 - ringAlpha)
+                    shadowAlpha = shadowAlpha + ringAlpha * (1.0 - shadowAlpha)
+                }
+            }
+            let shown = (1.0 - input.px.z) * clipped
+            if d > aa * 0.5 {
+                out.color = Float4(shadowRgb.x, shadowRgb.y, shadowRgb.z, shadowAlpha) * shown
+                return out
+            }
+
+            let coverage = clamp(0.5 - d / aa, 0.0, 1.0)
+            let inside = max(0.0 - d, 0.0)
+            let n = GlassCommon.morphedNormal(input.local, half, radius, input.morph, morphR, morphK, kind)
+            if r.ovalization > 0.0 {
+                let ellipse = normalize(input.local / (half * half) + Float2(0.000001, 0.0))
+                n = normalize(mix(n, ellipse, r.ovalization))
+            }
+
+            // The lens: pulled in along the inner profile, pushed back by the
+            // outer one as it fades in from the edge.
+            let shift = 0.0
+            if r.innerRefractionHeight > 0.0 {
+                shift = r.innerRefractionAmount * dome(inside / r.innerRefractionHeight)
+            }
+            if r.outerRefractionHeight > 0.0 && r.refractionOpacity > 0.0 {
+                let outer = r.outerRefractionAmount * dome(inside / r.outerRefractionHeight)
+                shift = shift + outer * r.refractionOpacity * (1.0 - ramp(0.0 - inside, r.refractionDistance0, r.refractionDistance1))
+            }
+            let shortHalf = min(half.x, half.y)
+            shift = clamp(shift, 0.0 - shortHalf, shortHalf)
+            let uvLens = uvHere + n * shift * uvPerPoint
+
+            // The face: blurred by depth, then through its colour matrix.
+            let sigma = blurSigma(r.blurRadius * blurShare(0.0 - inside, r), r.backdropScale)
+            let behind = blurredTap(external, externalSmp, externalSecond, externalSecondSmp, nearBlur, nearSmp, backdrop, backdropSmp, uvLens, sigma, blend)
+            let face = levels(behind, r.faceBlack, r.faceWhite, r.faceSaturation)
+            face = mix(face, Float3(r.faceFillRed, r.faceFillGreen, r.faceFillBlue), r.faceFillAlpha)
+            let faceLuma = dot(face, Float3(0.2126, 0.7152, 0.0722))
+            if faceLuma > r.faceMaxLuma && faceLuma > 0.0 {
+                face = face * (r.faceMaxLuma / faceLuma)
+            }
+            let rgb = mix(behind, face, r.faceOpacity)
+            rgb = mix(rgb, Float3(input.tint.x, input.tint.y, input.tint.z), clamp(input.tint.w, 0.0, 1.0))
+
+            // The edge bleed: a wide blur pulled in from the rim, darkening.
+            if r.bleedOpacity > 0.0 && r.bleedHeight > 0.0 {
+                let weight = r.bleedOpacity * ramp(0.0 - inside, 0.0 - r.bleedDistance0 * r.bleedHeight, 0.0 - r.bleedDistance1 * r.bleedHeight)
+                if weight > 0.002 {
+                    let bleedUv = uvHere + n * (0.0 - r.bleedAmount) * dome(inside / r.bleedHeight) * uvPerPoint
+                    let bleedTap = blurredTap(external, externalSmp, externalSecond, externalSecondSmp, nearBlur, nearSmp, backdrop, backdropSmp, bleedUv, blurSigma(r.bleedBlurRadius, r.backdropScale), blend)
+                    let bleed = levels(bleedTap, r.bleedBlack, r.bleedWhite, r.bleedSaturation)
+                    if r.bleedDarken > 0.5 {
+                        rgb = mix(rgb, min(rgb, bleed), weight)
+                    } else {
+                        rgb = mix(rgb, bleed, weight)
+                    }
+                }
+            }
+
+            // The blur fill: one wider read, lightening and laid over.
+            if r.blurFillLighten + r.blurFillDarken + r.blurFillNormal > 0.0 {
+                let fill = blurredTap(external, externalSmp, externalSecond, externalSecondSmp, nearBlur, nearSmp, backdrop, backdropSmp, uvLens, blurSigma(r.blurFillRadius, r.backdropScale), blend)
+                let filled = levels(fill, r.faceBlack, r.faceWhite, r.faceSaturation)
+                rgb = mix(rgb, min(rgb, filled), r.blurFillDarken)
+                rgb = mix(rgb, max(rgb, filled), r.blurFillLighten)
+                rgb = mix(rgb, filled, r.blurFillNormal)
+            }
+
+            // The edge specular. The Dock's is a light band along the rim where
+            // it faces the light, both ways, tinted a little by what it lies
+            // over and added to the face. Its angle is measured from the
+            // horizontal, so the Dock's quarter turn lights the top and bottom
+            // edges, as the platform draws them. The band fades from the edge to
+            // its height less its offset, compressed as h / (1 + amount (1 - h));
+            // measured against the platform's Dock, its first three device rows
+            // land within a tenth of the platform's.
+            //
+            // Every other record takes the platform's key-fill: a band from the
+            // edge moved in by its offset, `height` deep, three quarters linear
+            // fall-off and a quarter flat, anti-aliased over a pixel at both
+            // ends, compressed the same way where the edge faces the light, and
+            // laid on the face as a bias, rgb (1 + bias k (3 - 2 rgb)).
+            let specular = edgeSpecular(r, aa)
+            if r.specularAmount > 0.0 && specular.x > 0.0 {
+                let lit = specularFacing(n, r.specularAngle, r.specularSpread)
+                if r.specularKind > 1.5 {
+                    let reach = specular.x - specular.y
+                    let band = 1.0 - clamp(inside / reach, 0.0, 1.0)
+                    let compressed = band / (1.0 + r.specularAmount * (1.0 - band))
+                    let strength = clamp(compressed * lit * r.specularAmount, 0.0, 1.0)
+                    let hue = mix(Float3(1.0, 1.0, 1.0), face, clamp(0.0 - specular.z, 0.0, 1.0))
+                    rgb = rgb + hue * strength
+                } else {
+                    let depth = 0.0 - (d + specular.y)
+                    let fall = clamp(depth / specular.x, 0.0, 1.0)
+                    let flat = 1.0 - step(1.0, fall)
+                    let outer = clamp(depth / aa + 0.5, 0.0, 1.0)
+                    let inner = clamp((specular.x - depth) / aa + 0.5, 0.0, 1.0)
+                    let band = mix(flat, 1.0 - fall, 0.75) * outer * inner * lit
+                    let k = band / (1.0 + r.specularAmount * (1.0 - band))
+                    rgb = rgb * (Float3(1.0, 1.0, 1.0) + (Float3(3.0, 3.0, 3.0) - rgb * 2.0) * (specular.z * k))
+                }
+            }
+
+            // The highlight layer: key, fill and their diffuse halves, each
+            // diffuse half drawn at its amount, and the face mixed towards
+            // itself through the vibrant matrix where they fall, in linear
+            // light. Measured against the platform's tab bar, its first three
+            // device rows land within a tenth of the platform's.
+            if r.highlightPresent > 0.5 && r.highlightOpacity > 0.0 {
+                let depth = 0.0 - d
+                let key = rimLight(depth, n, r.keyHeight, r.keyAngle, r.keySpread, r.highlightCurvature, r.keyAmount, aa)
+                key = key + rimLight(depth, n, r.keyHeight * r.diffuseHeightScale, r.keyAngle, r.keySpread * r.diffuseSpreadScale, 1.0, r.keyAmount * r.diffuseAmountScale, aa) * r.keyAmount * r.diffuseAmountScale
+                let fillLight = rimLight(depth, n, r.fillHeight, r.fillAngle, r.fillSpread, r.highlightCurvature, r.fillAmount, aa)
+                fillLight = fillLight + rimLight(depth, n, r.fillHeight * r.diffuseHeightScale, r.fillAngle, r.fillSpread * r.diffuseSpreadScale, 1.0, r.fillAmount * r.diffuseAmountScale, aa) * r.fillAmount * r.diffuseAmountScale
+                let keyAlpha = clamp(key * r.keyAlpha, 0.0, 1.0)
+                let fillAlpha = clamp(fillLight * r.fillAlpha, 0.0, 1.0)
+                let amount = clamp(keyAlpha + fillAlpha, 0.0, 1.0) * r.highlightOpacity
+                if amount > 0.0 {
+                    let under = linearLight(rgb)
+                    let vibrant = Float3(
+                        dot(under, Float3(r.vibrantRed0, r.vibrantRed1, r.vibrantRed2)) + r.vibrantRed4,
+                        dot(under, Float3(r.vibrantGreen0, r.vibrantGreen1, r.vibrantGreen2)) + r.vibrantGreen4,
+                        dot(under, Float3(r.vibrantBlue0, r.vibrantBlue1, r.vibrantBlue2)) + r.vibrantBlue4
+                    )
+                    let lightColor = (Float3(r.keyRed, r.keyGreen, r.keyBlue) * keyAlpha + Float3(r.fillRed, r.fillGreen, r.fillBlue) * fillAlpha) / max(keyAlpha + fillAlpha, 0.0001)
+                    let ceiling = max(r.highlightMaxComponent, 0.0001)
+                    vibrant = min(vibrant * lightColor, Float3(ceiling, ceiling, ceiling))
+                    rgb = encodedLight(mix(under, vibrant, amount))
+                }
+            }
+
+            if r.clamp > 0.5 {
+                if r.clampPreserveHue > 0.5 {
+                    let high = max(max(rgb.x, rgb.y), max(rgb.z, 1.0))
+                    rgb = max(rgb, Float3(0.0, 0.0, 0.0)) / high
+                } else {
+                    rgb = clamp(rgb, Float3(0.0, 0.0, 0.0), Float3(1.0, 1.0, 1.0))
+                }
+            }
+
+            let over = 1.0 - coverage
+            let lit = GlassCommon.touchGlow(input.local, Float3(input.glow.x, input.glow.y, input.glow.z), coverage)
+            let outRgb = rgb * coverage + shadowRgb * over
+            let outAlpha = coverage + shadowAlpha * over
+            out.color = Float4(outRgb.x + lit, outRgb.y + lit, outRgb.z + lit, min(outAlpha + lit, 1.0)) * shown
+            return out
+        }
+    }
+}

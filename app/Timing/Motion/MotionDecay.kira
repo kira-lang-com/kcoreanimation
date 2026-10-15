@@ -10,19 +10,31 @@ import Foundation
 // for it is the difference between a list that feels thrown and one that feels
 // dragged to a halt.
 
-// How much of its speed a fling keeps per millisecond.
-//
-// A rate rather than a deceleration, and per MILLISECOND rather than per
-// second, because that is the unit the constant is stated in: after one
-// millisecond a fling is moving at 0.998 of its speed, after two at 0.998².
-public function motionDecayRateNormal() -> Float {
-    return 0.998
-}
+public namespace MotionDecay {
+    // How much of its speed a fling keeps per millisecond.
+    //
+    // A rate rather than a deceleration, and per MILLISECOND rather than per
+    // second, because that is the unit the constant is stated in: after one
+    // millisecond a fling is moving at 0.998 of its speed, after two at 0.998².
+    let rateNormal = 0.998
 
-// The faster stop, for surfaces that should not coast: a picker, a short list
-// where a normal fling would run off the end and bounce every time.
-public function motionDecayRateFast() -> Float {
-    return 0.99
+    // The faster stop, for surfaces that should not coast: a picker, a short list
+    // where a normal fling would run off the end and bounce every time.
+    let rateFast = 0.99
+
+    // How fast a surface thrown past its end is drawn back to it, per
+    // millisecond. Not a spring: everything past the edge is multiplied by
+    // `e^(−0.01005·t)`, so the surface runs out past the end on what speed it has
+    // left, slows, and comes home along a curve that never overshoots it.
+    let bounceRate = 0.01005
+
+    // The constant the platform uses under a finger. Smaller is stiffer.
+    let rubberBandConstant = 0.55
+
+    // The constant under two fingers on a trackpad: the platform's for a large
+    // one, stiffer than a finger on the glass, since the content is not under the
+    // fingers that pull it.
+    let rubberBandConstantTrackpad = 0.17
 }
 
 // How far a fling at this velocity will travel before stopping.
@@ -36,14 +48,14 @@ public function motionDecayRateFast() -> Float {
 // The integral of `v₀·rateᵗ` from zero to infinity, which is `-v₀/ln(rate)`.
 // The `rate/(1-rate)` form seen in the wild is the discrete sum of the same
 // series and agrees with this to about a part in a thousand.
-public function motionDecayProjection(velocity: Float, rate: Float) -> Float {
+public function motionDecayProjection(velocity: Number, rate: Number) -> Number {
     let perMillisecond = velocity / 1000.0
     let decay = log(clamp(rate, 0.0001, 0.9999))
     return -perMillisecond / decay
 }
 
 // How far a fling has traveled `seconds` in.
-public function motionDecayOffset(velocity: Float, rate: Float, seconds: Float) -> Float {
+public function motionDecayOffset(velocity: Number, rate: Number, seconds: Number) -> Number {
     let perMillisecond = velocity / 1000.0
     let decay = log(clamp(rate, 0.0001, 0.9999))
     let milliseconds = max(seconds, 0.0) * 1000.0
@@ -52,12 +64,12 @@ public function motionDecayOffset(velocity: Float, rate: Float, seconds: Float) 
 
 // How fast it is still moving `seconds` in. A release that lands mid-fling
 // hands this to whatever takes over, so the two are one continuous motion.
-public function motionDecayVelocity(velocity: Float, rate: Float, seconds: Float) -> Float {
+public function motionDecayVelocity(velocity: Number, rate: Number, seconds: Number) -> Number {
     return velocity * pow(rate, max(seconds, 0.0) * 1000.0)
 }
 
 // What is left of a speed after `milliseconds` of decay: `rateᵗ`.
-public function motionDecayKept(rate: Float, milliseconds: Float) -> Float {
+public function motionDecayKept(rate: Number, milliseconds: Number) -> Number {
     return exp(milliseconds * log(clamp(rate, 0.0001, 0.9999)))
 }
 
@@ -66,34 +78,26 @@ public function motionDecayKept(rate: Float, milliseconds: Float) -> Float {
 // millisecond, `v·rate·(1 − rateᵗ)/(1 − rate)`. It is taken frame by frame
 // from wherever the fling has got to, so a frame of any length lands where the
 // same throw would on a display of any rate.
-public function motionDecayTravel(velocity: Float, rate: Float, milliseconds: Float) -> Float {
+public function motionDecayTravel(velocity: Number, rate: Number, milliseconds: Number) -> Number {
     let f = clamp(rate, 0.0001, 0.9999)
     return velocity * f * (1.0 - motionDecayKept(f, milliseconds)) / (1.0 - f)
 }
 
 // When a fling has slowed to where it is no longer worth a frame: ten points
 // a second, the platform's own floor.
-public function motionDecayIsSpent(velocity: Float) -> Bool {
+public function motionDecayIsSpent(velocity: Number) -> Bool {
     return abs(velocity) < 10.0
 }
 
 // --- the edge --------------------------------------------------------------
 
-// How fast a surface thrown past its end is drawn back to it, per
-// millisecond. Not a spring: everything past the edge is multiplied by
-// `e^(−0.01005·t)`, so the surface runs out past the end on what speed it has
-// left, slows, and comes home along a curve that never overshoots it.
-public function motionBounceRate() -> Float {
-    return 0.01005
-}
-
 // What is left of a distance past the edge after `milliseconds`.
-public function motionBounceKept(milliseconds: Float) -> Float {
-    return exp(-motionBounceRate() * milliseconds)
+public function motionBounceKept(milliseconds: Number) -> Number {
+    return exp(-MotionDecay.bounceRate * milliseconds)
 }
 
 // How close to its edge a returning surface is home: half a point.
-public function motionBounceIsHome(overshoot: Float) -> Bool {
+public function motionBounceIsHome(overshoot: Number) -> Bool {
     return abs(overshoot) < 0.5
 }
 
@@ -110,24 +114,12 @@ public function motionBounceIsHome(overshoot: Float) -> Bool {
 // `dimension` is what the pull is measured against — the viewport's own length
 // along the axis. It sets the scale at which the resistance builds, which is
 // why the same gesture on a tall list and a short one feels the same.
-public function motionRubberBand(offset: Float, dimension: Float, constant: Float) -> Float {
+public function motionRubberBand(offset: Number, dimension: Number, constant: Number) -> Number {
     if offset <= 0.0 {
         return 0.0
     }
     let d = max(dimension, 1.0)
     return (offset * d * constant) / (d + constant * offset)
-}
-
-// The constant the platform uses under a finger. Smaller is stiffer.
-public function motionRubberBandConstant() -> Float {
-    return 0.55
-}
-
-// The constant under two fingers on a trackpad: the platform's for a large
-// one, stiffer than a finger on the glass, since the content is not under the
-// fingers that pull it.
-public function motionRubberBandConstantTrackpad() -> Float {
-    return 0.17
 }
 
 // The pull that produced a given resistance — the inverse of the above.
@@ -137,7 +129,11 @@ public function motionRubberBandConstantTrackpad() -> Float {
 // position stands for, or the finger and the content come apart: the gesture
 // would add its movement to a distance that had already been compressed, and
 // the surface would jump.
-public function motionRubberBandInverse(banded: Float, dimension: Float, constant: Float) -> Float {
+public function motionRubberBandInverse(
+    banded: Number,
+    dimension: Number,
+    constant: Number
+) -> Number {
     if banded <= 0.0 {
         return 0.0
     }
@@ -155,14 +151,22 @@ public function motionRubberBandInverse(banded: Float, dimension: Float, constan
 // A surface is pulled past its start with a negative overshoot and past its end
 // with a positive one, and the curve is symmetric, so the sign is taken off,
 // the resistance applied, and the sign put back.
-public function motionRubberBandSigned(overshoot: Float, dimension: Float, constant: Float) -> Float {
+public function motionRubberBandSigned(
+    overshoot: Number,
+    dimension: Number,
+    constant: Number
+) -> Number {
     if overshoot < 0.0 {
         return -motionRubberBand(-overshoot, dimension, constant)
     }
     return motionRubberBand(overshoot, dimension, constant)
 }
 
-public function motionRubberBandInverseSigned(banded: Float, dimension: Float, constant: Float) -> Float {
+public function motionRubberBandInverseSigned(
+    banded: Number,
+    dimension: Number,
+    constant: Number
+) -> Number {
     if banded < 0.0 {
         return -motionRubberBandInverse(-banded, dimension, constant)
     }
@@ -176,7 +180,7 @@ public function motionRubberBandInverseSigned(banded: Float, dimension: Float, c
 // Taken against the PROJECTED destination rather than the release point, which
 // is what makes a flick move by one item and a hard throw move by several. A
 // snap computed from where the finger left would ignore how hard it was thrown.
-public function motionSnapNearest(destination: Float, pitch: Float, origin: Float) -> Float {
+public function motionSnapNearest(destination: Number, pitch: Number, origin: Number) -> Number {
     if pitch <= 0.0 {
         return destination
     }
@@ -187,7 +191,12 @@ public function motionSnapNearest(destination: Float, pitch: Float, origin: Floa
 // The snap position at most one step from where the surface started, for
 // surfaces that advance by exactly one item per gesture however hard it is
 // thrown — a page carousel rather than a free list.
-public function motionSnapNextPage(current: Float, destination: Float, pitch: Float, origin: Float) -> Float {
+public function motionSnapNextPage(
+    current: Number,
+    destination: Number,
+    pitch: Number,
+    origin: Number
+) -> Number {
     if pitch <= 0.0 {
         return destination
     }

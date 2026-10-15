@@ -8,16 +8,16 @@ import KCoreAnimation
 // shape covers, asking whether the merged surface has swallowed it.
 
 // Two shapes side by side with `gap` points of clear air between them.
-function mbLeft() -> MotionShape {
+function left() -> MotionShape {
     return MotionShape { x: 0.0, y: 0.0, width: 100.0, height: 100.0, radius: 20.0 }
 }
 
-function mbRight(gap: Float) -> MotionShape {
+function right(gap: Number) -> MotionShape {
     return MotionShape { x: 100.0 + gap, y: 0.0, width: 100.0, height: 100.0, radius: 20.0 }
 }
 
 // The midpoint of the gap, which is outside BOTH shapes.
-function mbMid(gap: Float) -> Float {
+function mid(gap: Number) -> Number {
     return 100.0 + gap * 0.5
 }
 
@@ -25,7 +25,7 @@ function mbMid(gap: Float) -> Float {
 
 // With no reach it is a plain union: the nearer surface, and nothing else.
 construct MbNoReachIsAPlainUnion() extends Test {
-    test { return mtScaled(motionSmoothUnion(4.0, 9.0, 0.0), 3) }
+    test { return scaled(motionSmoothUnion(4.0, 9.0, 0.0), 3) }
     expect { return .Ok(4000) }
 }
 
@@ -44,7 +44,7 @@ construct MbTheMergedFieldDipsBelowBoth() extends Test {
 // Far apart, the reach cannot bridge them and the answer is the plain minimum
 // again — which is why two shapes across a screen do not smear together.
 construct MbDistantShapesDoNotFuse() extends Test {
-    test { return mtScaled(motionSmoothUnion(5.0, 400.0, 20.0), 3) }
+    test { return scaled(motionSmoothUnion(5.0, 400.0, 20.0), 3) }
     expect { return .Ok(5000) }
 }
 
@@ -62,12 +62,16 @@ construct MbDistantShapesDoNotFuse() extends Test {
 construct MbANeckFormsAcrossASmallGap() extends Test {
     test {
         let gap = 8.0
-        let frame = MotionMetaballFrame { source: mbLeft(), target: mbRight(gap), blend: motionMetaballBlend() }
-        let atMid = motionMetaballDistance(frame, mbMid(gap), 50.0)
+        let frame = MotionMetaballFrame {
+            source: left(),
+            target: right(gap),
+            blend: MotionMetaball.blend
+        }
+        let atMid = motionMetaballDistance(frame, mid(gap), 50.0)
         // Outside both shapes on their own...
-        let leftOnly = motionShapeDistance(mbLeft(), mbMid(gap), 50.0)
+        let leftOnly = motionShapeDistance(left(), mid(gap), 50.0)
         if leftOnly <= 0.0 {
-            return 0 - 1
+            return -1
         }
         // ...and inside the merged mass.
         if atMid < 0.0 {
@@ -82,10 +86,18 @@ construct MbANeckFormsAcrossASmallGap() extends Test {
 // merge read as surface tension rather than as a drawn connector.
 construct MbTheNeckBreaksAsTheGapWidens() extends Test {
     test {
-        let near = MotionMetaballFrame { source: mbLeft(), target: mbRight(8.0), blend: motionMetaballBlend() }
-        let far = MotionMetaballFrame { source: mbLeft(), target: mbRight(40.0), blend: motionMetaballBlend() }
-        let joined = motionMetaballDistance(near, mbMid(8.0), 50.0)
-        let parted = motionMetaballDistance(far, mbMid(40.0), 50.0)
+        let near = MotionMetaballFrame {
+            source: left(),
+            target: right(8.0),
+            blend: MotionMetaball.blend
+        }
+        let far = MotionMetaballFrame {
+            source: left(),
+            target: right(40.0),
+            blend: MotionMetaball.blend
+        }
+        let joined = motionMetaballDistance(near, mid(8.0), 50.0)
+        let parted = motionMetaballDistance(far, mid(40.0), 50.0)
         if joined < 0.0 && parted > 0.0 {
             return 1
         }
@@ -99,8 +111,12 @@ construct MbTheNeckBreaksAsTheGapWidens() extends Test {
 construct MbTheNeckIsThinnestAtTheWaist() extends Test {
     test {
         let gap = 24.0
-        let frame = MotionMetaballFrame { source: mbLeft(), target: mbRight(gap), blend: motionMetaballBlend() }
-        let waist = motionMetaballDistance(frame, mbMid(gap), 50.0)
+        let frame = MotionMetaballFrame {
+            source: left(),
+            target: right(gap),
+            blend: MotionMetaball.blend
+        }
+        let waist = motionMetaballDistance(frame, mid(gap), 50.0)
         let inside = motionMetaballDistance(frame, 50.0, 50.0)
         if waist > inside {
             return 1
@@ -120,9 +136,9 @@ construct MbTheReachPeaksInTheMiddle() extends Test {
         let mid = motionMetaballReach(0.5)
         let end = motionMetaballReach(1.0)
         if start == 0.0 && end == 0.0 && mid > 15.0 {
-            return mtScaled(mid, 1)
+            return scaled(mid, 1)
         }
-        return 0 - 1
+        return -1
     }
     expect { return .Ok(200) }
 }
@@ -187,12 +203,12 @@ construct MbAMorphCompletes() extends Test {
         var frames = 0
         while frames < 600 {
             let drawn = motionMetaballAdvance(state, 1.0 / 120.0)
-            frames = frames + 1
+            frames++
             if motionMetaballSettled(state) {
-                return mtScaled(drawn.target.width, 1)
+                return scaled(drawn.target.width, 1)
             }
         }
-        return 0 - 1
+        return -1
     }
     expect { return .Ok(440) }
 }

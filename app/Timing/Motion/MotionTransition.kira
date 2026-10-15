@@ -16,16 +16,16 @@ public struct MotionPresence {
     // What it is currently heading toward.
     var present: Bool = false
     // The value this frame, 0 absent … 1 present.
-    var amount: Float = 0.0
+    var amount: Number = 0.0
 }
 
 // What an arriving or leaving element is drawn with.
 public struct MotionAppearance {
-    let opacity: Float = 1.0
+    let opacity: Number = 1.0
     // Arrivals come from slightly small; departures do not shrink, they only
     // fade and unlens. An element that shrinks on the way out reads as being
     // thrown away rather than as being dismissed.
-    let scale: Float = 1.0
+    let scale: Number = 1.0
     // How much the material bends what is behind it, 0…1.
     //
     // Glass does not fade. It MATERIALIZES: the light bending and lensing come
@@ -34,7 +34,7 @@ public struct MotionAppearance {
     // composited. A host that draws plain surfaces can ignore this and use the
     // opacity; one that draws glass should drive its lens amount with it and
     // leave the opacity alone.
-    let lensing: Float = 1.0
+    let lensing: Number = 1.0
 }
 
 public function motionPresenceEnter(state: borrow mut MotionPresence, reducedMotion: Bool) {
@@ -43,16 +43,14 @@ public function motionPresenceEnter(state: borrow mut MotionPresence, reducedMot
     }
     state.present = true
     motionPresenceRetarget(state, 1.0, reducedMotion)
-    return
 }
 
 public function motionPresenceExit(state: borrow mut MotionPresence, reducedMotion: Bool) {
-    if state.present == false {
+    if !state.present {
         return
     }
     state.present = false
     motionPresenceRetarget(state, 0.0, reducedMotion)
-    return
 }
 
 // Points the presence spring at a new end, keeping where it is and how fast.
@@ -60,22 +58,28 @@ public function motionPresenceExit(state: borrow mut MotionPresence, reducedMoti
 // The retarget rather than a fresh start is the whole mechanism: an item told
 // to leave while it is 40% arrived continues from 0.4 with the velocity it had,
 // so the reversal is continuous and the element never jumps.
-public function motionPresenceRetarget(state: borrow mut MotionPresence, target: Float, reducedMotion: Bool) {
+public function motionPresenceRetarget(
+    state: borrow mut MotionPresence,
+    target: Number,
+    reducedMotion: Bool
+) {
     let sample = motionSpringSample(state.progress, state.progress.elapsed)
     let spring = motionCurveFor(.Smooth, target, reducedMotion)
     state.progress = motionSpringStart(move spring, sample.value, sample.velocity)
-    return
 }
 
 // Advances the presence and answers what to draw. The second question — is it
 // finished — is `motionPresenceSettled`.
-public function motionPresenceAdvance(state: borrow mut MotionPresence, delta: Float) -> MotionAppearance {
+public function motionPresenceAdvance(
+    state: borrow mut MotionPresence,
+    delta: Number
+) -> MotionAppearance {
     let sample = motionSpringAdvance(state.progress, delta)
     state.amount = clamp(sample.value, 0.0, 1.0)
     // Landed exactly rather than a thousandth short. A spring settles to within
     // a tolerance, and an element left at 0.9995 present is one drawn at 0.9995
     // opacity forever — a transition that finishes has to finish.
-    if motionSpringSettled(state.progress, sample, motionSpringEpsilon()) {
+    if motionSpringSettled(state.progress, sample, MotionSpringLimit.epsilon) {
         state.amount = clamp(state.progress.spring.target, 0.0, 1.0)
     }
     return motionAppearanceFor(state.amount)
@@ -83,28 +87,28 @@ public function motionPresenceAdvance(state: borrow mut MotionPresence, delta: F
 
 public function motionPresenceSettled(state: borrow MotionPresence) -> Bool {
     let sample = motionSpringSample(state.progress, state.progress.elapsed)
-    return motionSpringSettled(state.progress, sample, motionSpringEpsilon())
+    return motionSpringSettled(state.progress, sample, MotionSpringLimit.epsilon)
 }
 
 // The three channels one presence value drives.
-public function motionAppearanceFor(amount: Float) -> MotionAppearance {
+public function motionAppearanceFor(amount: Number) -> MotionAppearance {
     let t = clamp(amount, 0.0, 1.0)
     return MotionAppearance {
         // Opacity arrives first and leaves last, so the element is legible for
         // most of the transition rather than being a ghost through the middle
         // of it.
         opacity: motionEase(.EaseOut, min(t * 1.4, 1.0)),
-        scale: motionScaleFrom() + (1.0 - motionScaleFrom()) * t,
+        scale: MotionTransition.scaleFrom + (1.0 - MotionTransition.scaleFrom) * t,
         // Lensing lags the opacity: the material condenses after the shape is
         // already there.
         lensing: motionEase(.EaseIn, t)
     }
 }
 
-// How small an arriving element starts. Barely — an entrance that scales from
-// half reads as a zoom, not as an arrival.
-public function motionScaleFrom() -> Float {
-    return 0.96
+public namespace MotionTransition {
+    // How small an arriving element starts. Barely — an entrance that scales from
+    // half reads as a zoom, not as an arrival.
+    let scaleFrom = 0.96
 }
 
 // --- moving between places -------------------------------------------------
@@ -118,14 +122,14 @@ public function motionScaleFrom() -> Float {
 public struct MotionMove {
     var x: MotionSpringState = MotionSpringState {}
     var y: MotionSpringState = MotionSpringState {}
-    var currentX: Float = 0.0
-    var currentY: Float = 0.0
+    var currentX: Number = 0.0
+    var currentY: Number = 0.0
     var moving: Bool = false
 }
 
 // Places an element with no animation — its first layout, or a jump that must
 // not be seen as movement.
-public function motionMovePlace(state: borrow mut MotionMove, x: Float, y: Float) {
+public function motionMovePlace(state: borrow mut MotionMove, x: Number, y: Number) {
     let stillX = motionSpringStart(MotionSpring { response: 0.4, damping: 1.0, target: x }, x, 0.0)
     let stillY = motionSpringStart(MotionSpring { response: 0.4, damping: 1.0, target: y }, y, 0.0)
     state.x = move stillX
@@ -133,7 +137,6 @@ public function motionMovePlace(state: borrow mut MotionMove, x: Float, y: Float
     state.currentX = x
     state.currentY = y
     state.moving = false
-    return
 }
 
 // Sends an element to a new place.
@@ -141,7 +144,13 @@ public function motionMovePlace(state: borrow mut MotionMove, x: Float, y: Float
 // Critically damped by default: a panel that overshoots its destination reads
 // as dropped rather than as placed. A caller that wants the bounce asks for a
 // different curve.
-public function motionMoveTo(state: borrow mut MotionMove, x: Float, y: Float, curve: borrow MotionCurveName, reducedMotion: Bool) {
+public function motionMoveTo(
+    state: borrow mut MotionMove,
+    x: Number,
+    y: Number,
+    curve: borrow MotionCurveName,
+    reducedMotion: Bool
+) {
     let springX = motionCurveFor(curve, x, reducedMotion)
     let springY = motionCurveFor(curve, y, reducedMotion)
     let sampleX = motionSpringSample(state.x, state.x.elapsed)
@@ -149,20 +158,19 @@ public function motionMoveTo(state: borrow mut MotionMove, x: Float, y: Float, c
     state.x = motionSpringStart(move springX, sampleX.value, sampleX.velocity)
     state.y = motionSpringStart(move springY, sampleY.value, sampleY.velocity)
     state.moving = true
-    return
 }
 
 // Advances the move by a frame. Answers whether it is still going.
-public function motionMoveAdvance(state: borrow mut MotionMove, delta: Float) -> Bool {
-    if state.moving == false {
+public function motionMoveAdvance(state: borrow mut MotionMove, delta: Number) -> Bool {
+    if !state.moving {
         return false
     }
     let sampleX = motionSpringAdvance(state.x, delta)
     let sampleY = motionSpringAdvance(state.y, delta)
     state.currentX = sampleX.value
     state.currentY = sampleY.value
-    let restX = motionSpringSettled(state.x, sampleX, motionSpringEpsilon())
-    let restY = motionSpringSettled(state.y, sampleY, motionSpringEpsilon())
+    let restX = motionSpringSettled(state.x, sampleX, MotionSpringLimit.epsilon)
+    let restY = motionSpringSettled(state.y, sampleY, MotionSpringLimit.epsilon)
     if restX && restY {
         state.currentX = state.x.spring.target
         state.currentY = state.y.spring.target
@@ -183,19 +191,18 @@ public function motionMoveAdvance(state: borrow mut MotionMove, delta: Float) ->
 // practice, rather than two rectangles dissolving through each other.
 public struct MotionMorph {
     var progress: MotionSpringState = MotionSpringState {}
-    var amount: Float = 0.0
+    var amount: Number = 0.0
 }
 
-public function motionMorphTo(state: borrow mut MotionMorph, target: Float, reducedMotion: Bool) {
+public function motionMorphTo(state: borrow mut MotionMorph, target: Number, reducedMotion: Bool) {
     let sample = motionSpringSample(state.progress, state.progress.elapsed)
     // Loose, because a morph is the material behaving like a material — this is
     // the one transition that is allowed to look alive.
     let spring = motionCurveFor(.Interactive, clamp(target, 0.0, 1.0), reducedMotion)
     state.progress = motionSpringStart(move spring, sample.value, sample.velocity)
-    return
 }
 
-public function motionMorphAdvance(state: borrow mut MotionMorph, delta: Float) -> Float {
+public function motionMorphAdvance(state: borrow mut MotionMorph, delta: Number) -> Number {
     let sample = motionSpringAdvance(state.progress, delta)
     state.amount = sample.value
     return state.amount
@@ -206,6 +213,6 @@ public function motionMorphAdvance(state: borrow mut MotionMorph, delta: Float) 
 // Glass that flexes to a larger size simulates a thicker, more substantial
 // material — so a button opening into a menu does not merely get bigger, it
 // gets heavier. The host multiplies its own thickness by this.
-public function motionMorphThickness(amount: Float, from: Float, to: Float) -> Float {
+public function motionMorphThickness(amount: Number, from: Number, to: Number) -> Number {
     return lerp(from, to, motionEase(.EaseInOut, clamp(amount, 0.0, 1.0)))
 }

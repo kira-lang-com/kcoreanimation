@@ -19,79 +19,80 @@ import Foundation
 public struct CAHitResult {
     var hit: Bool = false
     var layer: LayerId = LayerId(0)
-    var hitKey: Int = 0
+    var hitKey: Number = 0
     // Where the point landed in the layer's own coordinates, for a handler that
     // wants the local position (a slider thumb, a canvas).
-    var localX: Float = 0.0
-    var localY: Float = 0.0
+    var localX: Number = 0.0
+    var localY: Number = 0.0
     // The layer's box in window coordinates, the smallest upright rectangle
     // holding it however it is transformed: what a control that opens
     // something anchors that thing to.
-    var boundsX: Float = 0.0
-    var boundsY: Float = 0.0
-    var boundsWidth: Float = 0.0
-    var boundsHeight: Float = 0.0
+    var boundsX: Number = 0.0
+    var boundsY: Number = 0.0
+    var boundsWidth: Number = 0.0
+    var boundsHeight: Number = 0.0
     // The interactive surface under the point, zero when there is none: its
     // layer and key, where the point landed in its own coordinates, and its
     // size.
     var surfaceLayer: LayerId = LayerId(0)
-    var surfaceKey: Int = 0
-    var surfaceX: Float = 0.0
-    var surfaceY: Float = 0.0
-    var surfaceWidth: Float = 0.0
-    var surfaceHeight: Float = 0.0
+    var surfaceKey: Number = 0
+    var surfaceX: Number = 0.0
+    var surfaceY: Number = 0.0
+    var surfaceWidth: Number = 0.0
+    var surfaceHeight: Number = 0.0
     // Whether a press held on that surface slides between its controls.
     var surfaceSlides: Bool = false
     // The innermost scrolling layer under the point, zero when there is none:
     // its layer and key.
     var scrollLayer: LayerId = LayerId(0)
-    var scrollKey: Int = 0
+    var scrollKey: Number = 0
 }
 
-public function caDrawItemContainsPoint(item: borrow CADrawItem, x: Float, y: Float) -> Bool {
-    if item.opacity <= 0.0 {
-        return false
+extend CADrawItem {
+    function containsPoint(x: Number, y: Number) -> Bool {
+        if self.opacity <= 0.0 {
+            return false
+        }
+        if x < self.clipMinX || x > self.clipMaxX || y < self.clipMinY || y > self.clipMaxY {
+            return false
+        }
+        let inv = self.transform.invert()
+        return localContains(self.localWidth, self.localHeight, inv.applyX(x, y), inv.applyY(x, y))
     }
-    if x < item.clipMinX || x > item.clipMaxX || y < item.clipMinY || y > item.clipMaxY {
-        return false
-    }
-    let inv = caInvert(item.transform)
-    return caLocalContains(
-        item.localWidth,
-        item.localHeight,
-        caApplyX(inv, x, y),
-        caApplyY(inv, x, y)
-    )
 }
 
-public function caHitTest(items: borrow [CADrawItem], x: Float, y: Float) -> CAHitResult {
+public function hitTest(items: borrow [CADrawItem], x: Number, y: Number) -> CAHitResult {
     // Back to front: the last item that covers the point is the one on top. The
     // walk goes on past the control for the surface it sits on, and the
-    // scrolling layer it sits in, which are painted before it.
+    // scrolling layer it sits in, which are painted before it. An item drawn
+    // all but transparent takes no touch, as a view under 0.01 alpha takes
+    // none on an iPad.
     var result = CAHitResult {}
     var surfaceFound = false
     var scrollFound = false
     for k in 0..items.count {
         let item = items[items.count - 1 - k]
-        let wanted = (item.hit && !result.hit) || (item.interactive && !surfaceFound) || (item.scrolls && !scrollFound)
-        if !wanted || !caDrawItemContainsPoint(item, x, y) {
+        let wanted = (item.hit && !result.hit) || (item.interactive && !surfaceFound) || (
+            item.scrolls && !scrollFound
+        )
+        if !wanted || item.opacity < 0.01 || !item.containsPoint(x, y) {
             continue
         }
-        let inv = caInvert(item.transform)
+        let inv = item.transform.invert()
         if item.hit && !result.hit {
             result.hit = true
             result.layer = item.layer
             result.hitKey = item.hitKey
-            result.localX = caApplyX(inv, x, y)
-            result.localY = caApplyY(inv, x, y)
-            caHitBounds(result, item)
+            result.localX = inv.applyX(x, y)
+            result.localY = inv.applyY(x, y)
+            result.bounds(item)
         }
         if item.interactive && !surfaceFound {
             surfaceFound = true
             result.surfaceLayer = item.layer
             result.surfaceKey = item.hitKey
-            result.surfaceX = caApplyX(inv, x, y)
-            result.surfaceY = caApplyY(inv, x, y)
+            result.surfaceX = inv.applyX(x, y)
+            result.surfaceY = inv.applyY(x, y)
             result.surfaceWidth = item.localWidth
             result.surfaceHeight = item.localHeight
             result.surfaceSlides = item.slidesPress
@@ -108,32 +109,35 @@ public function caHitTest(items: borrow [CADrawItem], x: Float, y: Float) -> CAH
     return result
 }
 
-// The window-space box of a drawn item: its four corners carried through its
-// transform, and the upright rectangle around them.
-public function caHitBounds(result: borrow mut CAHitResult, item: borrow CADrawItem) {
-    let w = item.localWidth
-    let h = item.localHeight
-    let t = item.transform
-    let xs = [caApplyX(t, 0.0, 0.0), caApplyX(t, w, 0.0), caApplyX(t, 0.0, h), caApplyX(t, w, h)]
-    let ys = [caApplyY(t, 0.0, 0.0), caApplyY(t, w, 0.0), caApplyY(t, 0.0, h), caApplyY(t, w, h)]
-    var minX = xs[0]
-    var maxX = xs[0]
-    var minY = ys[0]
-    var maxY = ys[0]
-    for i in 1..4 {
-        minX = min(minX, xs[i])
-        maxX = max(maxX, xs[i])
-        minY = min(minY, ys[i])
-        maxY = max(maxY, ys[i])
+extend CAHitResult {
+    // The window-space box of a drawn item: its four corners carried through its
+    // transform, and the upright rectangle around them.
+    function bounds(borrow mut self, item: borrow CADrawItem) {
+        let w = item.localWidth
+        let h = item.localHeight
+        let t = item.transform
+        let xs = [t.applyX(0.0, 0.0), t.applyX(w, 0.0), t.applyX(0.0, h), t.applyX(w, h)]
+        let ys = [t.applyY(0.0, 0.0), t.applyY(w, 0.0), t.applyY(0.0, h), t.applyY(w, h)]
+        var minX = xs[0]
+        var maxX = xs[0]
+        var minY = ys[0]
+        var maxY = ys[0]
+        for i in 1..4 {
+            minX = min(minX, xs[i])
+            maxX = max(maxX, xs[i])
+            minY = min(minY, ys[i])
+            maxY = max(maxY, ys[i])
+        }
+        self.boundsX = minX
+        self.boundsY = minY
+        self.boundsWidth = maxX - minX
+        self.boundsHeight = maxY - minY
     }
-    result.boundsX = minX
-    result.boundsY = minY
-    result.boundsWidth = maxX - minX
-    result.boundsHeight = maxY - minY
-    return
 }
 
-// Hit test straight from the tree: flatten this frame's presentation and pick.
-public function caHitTestTree(tree: borrow CALayerTree, x: Float, y: Float) -> CAHitResult {
-    return caHitTest(caFlatten(tree), x, y)
+extend CALayerTree {
+    // Hit test straight from the tree: flatten this frame's presentation and pick.
+    function hitTestTree(x: Number, y: Number) -> CAHitResult {
+        return hitTest(self.flatten(), x, y)
+    }
 }

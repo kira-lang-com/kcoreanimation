@@ -32,7 +32,7 @@ import Ember
 // So a reach is clamped to what the shorter half-extent leaves room for. Above
 // that the authored figure is untouched, which is every surface at rest; below
 // it the effect narrows with the surface instead of swallowing it.
-public function glassReachFor(authored: Float, halfW: Float, halfH: Float) -> Float {
+public function glassReachFor(authored: Number, halfW: Number, halfH: Number) -> Number {
     var shorter = halfW
     if halfH < shorter {
         shorter = halfH
@@ -49,9 +49,9 @@ public function glassReachFor(authored: Float, halfW: Float, halfH: Float) -> Fl
 // blurs are `edgeLightDodgeBlur` and `edgeLightBurnBlur` in
 // Shaders/GlassCommon.ksl, and a sigma is half a blur; the two literals here
 // must match them.
-public function glassEdgeLightReach(material: borrow CAGlassMaterial) -> Float {
+public function glassEdgeLightReach(material: borrow CAGlassMaterial) -> Number {
     if material.edgeLightBurn < 1.0 {
-        return 30.0 * 1.5
+        return 40.0 * 1.5
     }
     if material.edgeLightDodge > 0.0 {
         return 10.0 * 1.5
@@ -60,7 +60,13 @@ public function glassEdgeLightReach(material: borrow CAGlassMaterial) -> Float {
 }
 
 extend UiBatch {
-    function beginGlassCapture(graphics: borrow EMGraphics, x: Float, y: Float, w: Float, h: Float) {
+    function beginGlassCapture(
+        graphics: borrow Graphics,
+        x: Number,
+        y: Number,
+        w: Number,
+        h: Number
+    ) {
         self.ensureGlassResources(graphics)
         var state = nativeRecover<UiBatchState>(self.storage)
         if !state.glassReady {
@@ -70,10 +76,10 @@ extend UiBatch {
             if state.probeGlassLayerOpen {
                 print(646464)
                 print(0)
-                print(Int(x))
-                print(Int(y))
-                print(Int(w))
-                print(Int(h))
+                print(trunc(x))
+                print(trunc(y))
+                print(trunc(w))
+                print(trunc(h))
                 print(1)
             }
             openStream(state, graphics)
@@ -82,26 +88,24 @@ extend UiBatch {
         // Out of layers: the surface joins the last one, refracting the content below
         // that layer rather than the glass beside it — the pre-stacking behavior, and
         // the only alternative to allocating capture chains without bound.
-        if state.streamIndex.raw + 1 > maxDrawStreams() - 1 {
+        if state.streamIndex.raw + 1 > DrawStreams.maxCount - 1 {
             return
         }
         let occupied = glassLayerOccupied(state, x, y, x + w, y + h)
         if state.probeGlassLayerOpen {
             print(646464)
             print(state.streamIndex.raw)
-            print(Int(x))
-            print(Int(y))
-            print(Int(w))
-            print(Int(h))
+            print(trunc(x))
+            print(trunc(y))
+            print(trunc(w))
+            print(trunc(h))
             if occupied { print(1) } else { print(0) }
         }
         if occupied {
             openStream(state, graphics)
         }
-        return
     }
 }
-
 
 extend UiBatch {
     function glassSplitActive() -> Bool {
@@ -110,7 +114,6 @@ extend UiBatch {
     }
 }
 
-
 // Emit one liquid-glass quad (mode 3): a rounded-rect region that refracts the
 // backdrop. Field packing: fill.rgb = the wash color, fill.a = the BLUR MIX
 // (0..1, sharp capture vs blurred pyramid), borderWidth = the wash BASE strength
@@ -118,40 +121,50 @@ extend UiBatch {
 // stronger over dark content, near invisible over light.
 extend UiBatch {
     function pushGlass(
-        x: Float, y: Float, w: Float, h: Float,
-        radius: Float,
-        tint: borrow Color,
-        blur: Float,
-        edgeRefraction: Float,
-        clipMinX: Float, clipMinY: Float, clipMaxX: Float, clipMaxY: Float,
+        x: Number,
+        y: Number,
+        w: Number,
+        h: Number,
+        radius: Number,
+        tint: borrow RGBAColor,
+        blur: Number,
+        edgeRefraction: Number,
+        clipMinX: Number,
+        clipMinY: Number,
+        clipMaxX: Number,
+        clipMaxY: Number,
         material: borrow CAGlassMaterial,
         // The touch highlight, in the same coordinates as `x`/`y`, its radius
-        // and strength packed as `caPackedGlow` packs them. It rides the
+        // and strength packed as `packedGlow` packs them. It rides the
         // gradient block: the glass pipelines carry that block for stride and
         // never read it, while all three material spares are already spoken for
         // (inverse drawable size for the copy pass, and the AA band).
-        glowX: Float = 0.0,
-        glowY: Float = 0.0,
-        glowStrength: Float = 0.0,
+        glowX: Number = 0.0,
+        glowY: Number = 0.0,
+        glowStrength: Number = 0.0,
         // The second shape this surface is fusing with, as a rectangle in the
         // same coordinates as `x`/`y`, and the smooth minimum's reach. A reach
         // of zero — or a shape with no extent — is a surface that is one shape,
         // which is every glass surface on screen but the ones in a morph.
-        morphX: Float = 0.0,
-        morphY: Float = 0.0,
-        morphW: Float = 0.0,
-        morphH: Float = 0.0,
-        morphRadius: Float = 0.0,
-        morphBlend: Float = 0.0,
+        morphX: Number = 0.0,
+        morphY: Number = 0.0,
+        morphW: Number = 0.0,
+        morphH: Number = 0.0,
+        morphRadius: Number = 0.0,
+        morphBlend: Number = 0.0,
         // The corner every patch of this surface shades against.
-        shapeKind: Float = 0.0,
+        shapeKind: Number = 0.0,
         // Layer rotation. Rotated glass uses one full exact patch; the region
         // splitter below remains the fast path for the overwhelmingly common
         // axis-aligned surface.
-        rotCos: Float = 1.0,
-        rotSin: Float = 0.0,
+        rotCos: Number = 1.0,
+        rotSin: Number = 0.0,
         // How much of the finished glass shows over what is behind it.
-        opacity: Float = 1.0,
+        opacity: Number = 1.0,
+        // The corner of the rounded box the clip is, and its kind: zero for a
+        // plain box.
+        clipRadius: Number = 0.0,
+        clipShapeKind: Number = 0.0,
     ) {
         if w <= 0.0 || h <= 0.0 || opacity <= 0.0 {
             return
@@ -172,13 +185,14 @@ extend UiBatch {
         let borderSpread = glassHairline(material.borderSpread, state.scale)
         let borderSideOffset = glassHairline(material.borderSideOffset, state.scale)
         let borderSideSpread = glassHairline(material.borderSideSpread, state.scale)
-        let rimWidth = glassHairline(material.innerRimWidth, state.scale)
+        // The specular's bevel is the kit's, in points, at every backing scale.
+        let rimWidth = material.innerRimWidth
         // Room for the border shadows the shader draws outside the shape: the
         // furthest silhouette's reach plus its own edge band, and never under the
         // 4pt the quad has always carried. The quad does not have to carry a
         // blurred ambient shadow, which is the disabled fourth effect and would
         // need ~40.
-        var pad: Float = 4.0
+        var pad: Number = 4.0
         let skirt = borderSideOffset + borderSpread + edgeBand + 1.0
         if skirt > pad {
             pad = skirt
@@ -230,7 +244,7 @@ extend UiBatch {
         // the body's world-space AABB, but not the reach of its border/lens/blur,
         // so rotate the base half extents once and inflate that box by the same
         // capture pad the axis-aligned path already proves sufficient.
-        let capturePad = pad + material.lensMaxBend + glassBlurReach()
+        let capturePad = pad + material.lensMaxBend + GlassBlur.reach
         var absCos = rotCos
         var absSin = rotSin
         if absCos < 0.0 { absCos = -absCos }
@@ -241,19 +255,7 @@ extend UiBatch {
         let captureMinY = cy - captureHalfH
         let captureMaxX = cx + captureHalfW
         let captureMaxY = cy + captureHalfH
-        let boundBase = state.streams[state.streamIndex.raw].glassBoundCount * 4
-        if boundBase + 3 < state.streams[state.streamIndex.raw].glassBounds.count {
-            state.streams[state.streamIndex.raw].glassBounds[boundBase] = captureMinX
-            state.streams[state.streamIndex.raw].glassBounds[boundBase + 1] = captureMinY
-            state.streams[state.streamIndex.raw].glassBounds[boundBase + 2] = captureMaxX
-            state.streams[state.streamIndex.raw].glassBounds[boundBase + 3] = captureMaxY
-        } else {
-            state.streams[state.streamIndex.raw].glassBounds.append(captureMinX)
-            state.streams[state.streamIndex.raw].glassBounds.append(captureMinY)
-            state.streams[state.streamIndex.raw].glassBounds.append(captureMaxX)
-            state.streams[state.streamIndex.raw].glassBounds.append(captureMaxY)
-        }
-        state.streams[state.streamIndex.raw].glassBoundCount = state.streams[state.streamIndex.raw].glassBoundCount + 1
+        state.recordGlassCapture(captureMinX, captureMinY, captureMaxX, captureMaxY)
         // A widening corner runs on past the short side to the long one; every
         // other corner stops at the short side.
         let widening = shapeKind > 1.5
@@ -273,14 +275,54 @@ extend UiBatch {
         // fading surface through. Its first spare carries how far it has faded,
         // so the zero every other full patch carries is a surface fully there.
         let fading = opacity < 1.0
-        if morphActive || rotated || fading || widening {
+        // Only the full patch blends by its coverage, so only it can leave out
+        // what falls past a rounded clip's corner: a surface that reaches one
+        // is drawn whole by it, and one that does not ignores the corner.
+        let cornered = glassReachesClipCorner(
+            x,
+            y,
+            w,
+            h,
+            clipMinX,
+            clipMinY,
+            clipMaxX,
+            clipMaxY,
+            clipRadius,
+            clipShapeKind
+        )
+        let cornerRadius = cornered ? clipRadius : 0.0
+        if morphActive || rotated || fading || widening || cornered {
             self.glassEmitPatch(
-                cx, cy, vw, vh, halfW, halfH, clampedRadius, 3.0,
-                -lhx, -lhy, lhx, lhy,
-                tint, blur, edgeRefraction,
-                clipMinX, clipMinY, clipMaxX, clipMaxY, material,
-                borderSpread, borderSideOffset, borderSideSpread, rimWidth, edgeBand,
-                1.0 - min(opacity, 1.0), 0.0, glowX, glowY, glowStrength,
+                cx,
+                cy,
+                vw,
+                vh,
+                halfW,
+                halfH,
+                clampedRadius,
+                3.0,
+                -lhx,
+                -lhy,
+                lhx,
+                lhy,
+                tint,
+                blur,
+                edgeRefraction,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                material,
+                borderSpread,
+                borderSideOffset,
+                borderSideSpread,
+                rimWidth,
+                edgeBand,
+                1.0 - min(opacity, 1.0),
+                0.0,
+                glowX,
+                glowY,
+                glowStrength,
                 // Center-relative from here down: the shader measures `local`
                 // from the quad's center, and the caller stated a rectangle.
                 (morphX + morphW * 0.5) - cx,
@@ -292,6 +334,8 @@ extend UiBatch {
                 shapeKind,
                 rotCos,
                 rotSin,
+                cornerRadius,
+                clipShapeKind,
             )
             return
         }
@@ -318,7 +362,7 @@ extend UiBatch {
         // Shaders/UiBatch.ksl), the edge stroke, the 5pt sheen and the inner rim.
         // Past it only the lens is still live; past the lens's own 72pt limit
         // nothing is. The two bounds delimit the lens ring and the core.
-        var effectReach: Float = 22.0
+        var effectReach: Number = 22.0
         if material.edgeStrokeFade > effectReach {
             effectReach = material.edgeStrokeFade
         }
@@ -332,7 +376,7 @@ extend UiBatch {
             effectReach = glassEdgeLightReach(material)
         }
         let lensInset = clampedRadius + effectReach + 1.0
-        var coreReach: Float = 72.0
+        var coreReach: Number = 72.0
         if effectReach > coreReach {
             coreReach = effectReach
         }
@@ -358,14 +402,318 @@ extend UiBatch {
         if kx > 4.0 && ky > 4.0 {
             // Nineteen patches: corner-aware full ring (4 corner squares + 4 thin
             // strips), band (6), lens ring (4), core.
-            self.glassEmitPatch(cx, cy, vw, vh, halfW, halfH, clampedRadius, 3.0, -lhx, -lhy, -bx, -by, tint, blur, edgeRefraction, clipMinX, clipMinY, clipMaxX, clipMaxY, material, borderSpread, borderSideOffset, borderSideSpread, rimWidth, edgeBand, 0.0, 0.0, glowX, glowY, glowStrength, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, shapeKind)
-            self.glassEmitPatch(cx, cy, vw, vh, halfW, halfH, clampedRadius, 3.0, bx, -lhy, lhx, -by, tint, blur, edgeRefraction, clipMinX, clipMinY, clipMaxX, clipMaxY, material, borderSpread, borderSideOffset, borderSideSpread, rimWidth, edgeBand, 0.0, 0.0, glowX, glowY, glowStrength, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, shapeKind)
-            self.glassEmitPatch(cx, cy, vw, vh, halfW, halfH, clampedRadius, 3.0, -lhx, by, -bx, lhy, tint, blur, edgeRefraction, clipMinX, clipMinY, clipMaxX, clipMaxY, material, borderSpread, borderSideOffset, borderSideSpread, rimWidth, edgeBand, 0.0, 0.0, glowX, glowY, glowStrength, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, shapeKind)
-            self.glassEmitPatch(cx, cy, vw, vh, halfW, halfH, clampedRadius, 3.0, bx, by, lhx, lhy, tint, blur, edgeRefraction, clipMinX, clipMinY, clipMaxX, clipMaxY, material, borderSpread, borderSideOffset, borderSideSpread, rimWidth, edgeBand, 0.0, 0.0, glowX, glowY, glowStrength, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, shapeKind)
-            self.glassEmitPatch(cx, cy, vw, vh, halfW, halfH, clampedRadius, 3.0, -bx, -lhy, bx, -syE, tint, blur, edgeRefraction, clipMinX, clipMinY, clipMaxX, clipMaxY, material, borderSpread, borderSideOffset, borderSideSpread, rimWidth, edgeBand, 0.0, 0.0, glowX, glowY, glowStrength, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, shapeKind)
-            self.glassEmitPatch(cx, cy, vw, vh, halfW, halfH, clampedRadius, 3.0, -bx, syE, bx, lhy, tint, blur, edgeRefraction, clipMinX, clipMinY, clipMaxX, clipMaxY, material, borderSpread, borderSideOffset, borderSideSpread, rimWidth, edgeBand, 0.0, 0.0, glowX, glowY, glowStrength, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, shapeKind)
-            self.glassEmitPatch(cx, cy, vw, vh, halfW, halfH, clampedRadius, 3.0, -lhx, -by, -sxE, by, tint, blur, edgeRefraction, clipMinX, clipMinY, clipMaxX, clipMaxY, material, borderSpread, borderSideOffset, borderSideSpread, rimWidth, edgeBand, 0.0, 0.0, glowX, glowY, glowStrength, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, shapeKind)
-            self.glassEmitPatch(cx, cy, vw, vh, halfW, halfH, clampedRadius, 3.0, sxE, -by, lhx, by, tint, blur, edgeRefraction, clipMinX, clipMinY, clipMaxX, clipMaxY, material, borderSpread, borderSideOffset, borderSideSpread, rimWidth, edgeBand, 0.0, 0.0, glowX, glowY, glowStrength, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, shapeKind)
+            self.glassEmitPatch(
+                cx,
+                cy,
+                vw,
+                vh,
+                halfW,
+                halfH,
+                clampedRadius,
+                3.0,
+                -lhx,
+                -lhy,
+                -bx,
+                -by,
+                tint,
+                blur,
+                edgeRefraction,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                material,
+                borderSpread,
+                borderSideOffset,
+                borderSideSpread,
+                rimWidth,
+                edgeBand,
+                0.0,
+                0.0,
+                glowX,
+                glowY,
+                glowStrength,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                shapeKind
+            )
+            self.glassEmitPatch(
+                cx,
+                cy,
+                vw,
+                vh,
+                halfW,
+                halfH,
+                clampedRadius,
+                3.0,
+                bx,
+                -lhy,
+                lhx,
+                -by,
+                tint,
+                blur,
+                edgeRefraction,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                material,
+                borderSpread,
+                borderSideOffset,
+                borderSideSpread,
+                rimWidth,
+                edgeBand,
+                0.0,
+                0.0,
+                glowX,
+                glowY,
+                glowStrength,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                shapeKind
+            )
+            self.glassEmitPatch(
+                cx,
+                cy,
+                vw,
+                vh,
+                halfW,
+                halfH,
+                clampedRadius,
+                3.0,
+                -lhx,
+                by,
+                -bx,
+                lhy,
+                tint,
+                blur,
+                edgeRefraction,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                material,
+                borderSpread,
+                borderSideOffset,
+                borderSideSpread,
+                rimWidth,
+                edgeBand,
+                0.0,
+                0.0,
+                glowX,
+                glowY,
+                glowStrength,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                shapeKind
+            )
+            self.glassEmitPatch(
+                cx,
+                cy,
+                vw,
+                vh,
+                halfW,
+                halfH,
+                clampedRadius,
+                3.0,
+                bx,
+                by,
+                lhx,
+                lhy,
+                tint,
+                blur,
+                edgeRefraction,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                material,
+                borderSpread,
+                borderSideOffset,
+                borderSideSpread,
+                rimWidth,
+                edgeBand,
+                0.0,
+                0.0,
+                glowX,
+                glowY,
+                glowStrength,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                shapeKind
+            )
+            self.glassEmitPatch(
+                cx,
+                cy,
+                vw,
+                vh,
+                halfW,
+                halfH,
+                clampedRadius,
+                3.0,
+                -bx,
+                -lhy,
+                bx,
+                -syE,
+                tint,
+                blur,
+                edgeRefraction,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                material,
+                borderSpread,
+                borderSideOffset,
+                borderSideSpread,
+                rimWidth,
+                edgeBand,
+                0.0,
+                0.0,
+                glowX,
+                glowY,
+                glowStrength,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                shapeKind
+            )
+            self.glassEmitPatch(
+                cx,
+                cy,
+                vw,
+                vh,
+                halfW,
+                halfH,
+                clampedRadius,
+                3.0,
+                -bx,
+                syE,
+                bx,
+                lhy,
+                tint,
+                blur,
+                edgeRefraction,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                material,
+                borderSpread,
+                borderSideOffset,
+                borderSideSpread,
+                rimWidth,
+                edgeBand,
+                0.0,
+                0.0,
+                glowX,
+                glowY,
+                glowStrength,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                shapeKind
+            )
+            self.glassEmitPatch(
+                cx,
+                cy,
+                vw,
+                vh,
+                halfW,
+                halfH,
+                clampedRadius,
+                3.0,
+                -lhx,
+                -by,
+                -sxE,
+                by,
+                tint,
+                blur,
+                edgeRefraction,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                material,
+                borderSpread,
+                borderSideOffset,
+                borderSideSpread,
+                rimWidth,
+                edgeBand,
+                0.0,
+                0.0,
+                glowX,
+                glowY,
+                glowStrength,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                shapeKind
+            )
+            self.glassEmitPatch(
+                cx,
+                cy,
+                vw,
+                vh,
+                halfW,
+                halfH,
+                clampedRadius,
+                3.0,
+                sxE,
+                -by,
+                lhx,
+                by,
+                tint,
+                blur,
+                edgeRefraction,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                material,
+                borderSpread,
+                borderSideOffset,
+                borderSideSpread,
+                rimWidth,
+                edgeBand,
+                0.0,
+                0.0,
+                glowX,
+                glowY,
+                glowStrength,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                shapeKind
+            )
             // The interior. When every input its pixels depend on matches what the
             // cache pass last rendered (stream 1's static direct backdrop only),
             // present the cached bytes as texel copies; a dirty surface renders
@@ -376,41 +724,48 @@ extend UiBatch {
             }
             var cachedInterior = false
             if cacheEligible {
-                cachedInterior = glassCacheKeyMatch(state, GlassSurfaceKey {
-                    glowX: glowX,
-                    glowY: glowY,
-                    glowStrength: glowStrength,
-                    centerX: cx,
-                    centerY: cy,
-                    halfWidth: halfW,
-                    halfHeight: halfH,
-                    radius: clampedRadius,
-                    tintR: tint.r,
-                    tintG: tint.g,
-                    tintB: tint.b,
-                    tintAlpha: tint.a,
-                    blur: blur,
-                    edgeRefraction: edgeRefraction,
-                    clipMinX: clipMinX,
-                    clipMinY: clipMinY,
-                    clipMaxX: clipMaxX,
-                    clipMaxY: clipMaxY,
-                    rimWidth: rimWidth,
-                    washBlend: material.washBlend,
-                    washUpperR: material.washUpperR,
-                    washUpperG: material.washUpperG,
-                    washUpperB: material.washUpperB,
-                    washUpperAlpha: material.washUpperAlpha,
-                    washUpperBlend: material.washUpperBlend,
-                    blurNearSplit: material.blurNearSplit,
-                    edgeLightDodge: material.edgeLightDodge,
-                    edgeLightBurn: material.edgeLightBurn,
-                    lensMaxBend: glassReachFor(material.lensMaxBend, halfW, halfH),
-                    refractionReach: glassReachFor(material.refractionReach, halfW, halfH),
-                    viewportWidth: vw,
-                    viewportHeight: vh,
-                    backdrop: Float(state.glassBlurSourceId.raw) + state.backgroundTransition * 0.5 + Float(state.glassCacheEpochValue) * 16384.0
-                })
+                cachedInterior = glassCacheKeyMatch(
+                    state,
+                    GlassSurfaceKey {
+                        glowX: glowX,
+                        glowY: glowY,
+                        glowStrength: glowStrength,
+                        centerX: cx,
+                        centerY: cy,
+                        halfWidth: halfW,
+                        halfHeight: halfH,
+                        radius: clampedRadius,
+                        tintR: tint.r,
+                        tintG: tint.g,
+                        tintB: tint.b,
+                        tintAlpha: tint.a,
+                        blur: blur,
+                        edgeRefraction: edgeRefraction,
+                        clipMinX: clipMinX,
+                        clipMinY: clipMinY,
+                        clipMaxX: clipMaxX,
+                        clipMaxY: clipMaxY,
+                        rimWidth: rimWidth,
+                        washBlend: material.washBlend,
+                        washUpperR: material.washUpperR,
+                        washUpperG: material.washUpperG,
+                        washUpperB: material.washUpperB,
+                        washUpperAlpha: material.washUpperAlpha,
+                        washUpperBlend: material.washUpperBlend,
+                        blurNearSplit: material.blurNearSplit,
+                        edgeLightDodge: material.edgeLightDodge,
+                        edgeLightBurn: material.edgeLightBurn,
+                        lensMaxBend: glassReachFor(material.lensMaxBend, halfW, halfH),
+                        refractionReach: glassReachFor(material.refractionReach, halfW, halfH),
+                        viewportWidth: vw,
+                        viewportHeight: vh,
+                        backdrop: Number(
+                            state.glassBlurSourceId.raw
+                        ) + state.backgroundTransition * 0.5 + Number(
+                            state.glassCacheEpochValue
+                        ) * 16384.0
+                    }
+                )
             }
             // Streams are retained: what is emitted here is replayed every frame
             // until the next rebuild. Eligible interiors therefore always emit as
@@ -420,8 +775,8 @@ extend UiBatch {
             var interiorMode = 3.25
             var interiorLensMode = 3.35
             var interiorCoreMode = 3.45
-            var interiorSpare0: Float = 0.0
-            var interiorSpare1: Float = 0.0
+            var interiorSpare0: Number = 0.0
+            var interiorSpare1: Number = 0.0
             if cacheEligible {
                 interiorMode = 3.15
                 interiorLensMode = 3.15
@@ -432,23 +787,441 @@ extend UiBatch {
                 // different number whenever the drawable is not a whole number of
                 // points, and the difference is a black row along the surface's
                 // bottom edge.
-                interiorSpare0 = 1.0 / Float(state.drawableW)
-                interiorSpare1 = 1.0 / Float(state.drawableH)
+                interiorSpare0 = 1.0 / Number(state.drawableW)
+                interiorSpare1 = 1.0 / Number(state.drawableH)
             }
             let interiorStart = state.quadCount
-            self.glassEmitPatch(cx, cy, vw, vh, halfW, halfH, clampedRadius, interiorMode, -bx, -syE, bx, -ly, tint, blur, edgeRefraction, clipMinX, clipMinY, clipMaxX, clipMaxY, material, borderSpread, borderSideOffset, borderSideSpread, rimWidth, edgeBand, interiorSpare0, interiorSpare1, glowX, glowY, glowStrength, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, shapeKind)
-            self.glassEmitPatch(cx, cy, vw, vh, halfW, halfH, clampedRadius, interiorMode, -bx, ly, bx, syE, tint, blur, edgeRefraction, clipMinX, clipMinY, clipMaxX, clipMaxY, material, borderSpread, borderSideOffset, borderSideSpread, rimWidth, edgeBand, interiorSpare0, interiorSpare1, glowX, glowY, glowStrength, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, shapeKind)
-            self.glassEmitPatch(cx, cy, vw, vh, halfW, halfH, clampedRadius, interiorMode, -sxE, -by, -bx, by, tint, blur, edgeRefraction, clipMinX, clipMinY, clipMaxX, clipMaxY, material, borderSpread, borderSideOffset, borderSideSpread, rimWidth, edgeBand, interiorSpare0, interiorSpare1, glowX, glowY, glowStrength, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, shapeKind)
-            self.glassEmitPatch(cx, cy, vw, vh, halfW, halfH, clampedRadius, interiorMode, bx, -by, sxE, by, tint, blur, edgeRefraction, clipMinX, clipMinY, clipMaxX, clipMaxY, material, borderSpread, borderSideOffset, borderSideSpread, rimWidth, edgeBand, interiorSpare0, interiorSpare1, glowX, glowY, glowStrength, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, shapeKind)
-            self.glassEmitPatch(cx, cy, vw, vh, halfW, halfH, clampedRadius, interiorMode, -bx, -ly, -lx, ly, tint, blur, edgeRefraction, clipMinX, clipMinY, clipMaxX, clipMaxY, material, borderSpread, borderSideOffset, borderSideSpread, rimWidth, edgeBand, interiorSpare0, interiorSpare1, glowX, glowY, glowStrength, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, shapeKind)
-            self.glassEmitPatch(cx, cy, vw, vh, halfW, halfH, clampedRadius, interiorMode, lx, -ly, bx, ly, tint, blur, edgeRefraction, clipMinX, clipMinY, clipMaxX, clipMaxY, material, borderSpread, borderSideOffset, borderSideSpread, rimWidth, edgeBand, interiorSpare0, interiorSpare1, glowX, glowY, glowStrength, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, shapeKind)
+            self.glassEmitPatch(
+                cx,
+                cy,
+                vw,
+                vh,
+                halfW,
+                halfH,
+                clampedRadius,
+                interiorMode,
+                -bx,
+                -syE,
+                bx,
+                -ly,
+                tint,
+                blur,
+                edgeRefraction,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                material,
+                borderSpread,
+                borderSideOffset,
+                borderSideSpread,
+                rimWidth,
+                edgeBand,
+                interiorSpare0,
+                interiorSpare1,
+                glowX,
+                glowY,
+                glowStrength,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                shapeKind
+            )
+            self.glassEmitPatch(
+                cx,
+                cy,
+                vw,
+                vh,
+                halfW,
+                halfH,
+                clampedRadius,
+                interiorMode,
+                -bx,
+                ly,
+                bx,
+                syE,
+                tint,
+                blur,
+                edgeRefraction,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                material,
+                borderSpread,
+                borderSideOffset,
+                borderSideSpread,
+                rimWidth,
+                edgeBand,
+                interiorSpare0,
+                interiorSpare1,
+                glowX,
+                glowY,
+                glowStrength,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                shapeKind
+            )
+            self.glassEmitPatch(
+                cx,
+                cy,
+                vw,
+                vh,
+                halfW,
+                halfH,
+                clampedRadius,
+                interiorMode,
+                -sxE,
+                -by,
+                -bx,
+                by,
+                tint,
+                blur,
+                edgeRefraction,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                material,
+                borderSpread,
+                borderSideOffset,
+                borderSideSpread,
+                rimWidth,
+                edgeBand,
+                interiorSpare0,
+                interiorSpare1,
+                glowX,
+                glowY,
+                glowStrength,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                shapeKind
+            )
+            self.glassEmitPatch(
+                cx,
+                cy,
+                vw,
+                vh,
+                halfW,
+                halfH,
+                clampedRadius,
+                interiorMode,
+                bx,
+                -by,
+                sxE,
+                by,
+                tint,
+                blur,
+                edgeRefraction,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                material,
+                borderSpread,
+                borderSideOffset,
+                borderSideSpread,
+                rimWidth,
+                edgeBand,
+                interiorSpare0,
+                interiorSpare1,
+                glowX,
+                glowY,
+                glowStrength,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                shapeKind
+            )
+            self.glassEmitPatch(
+                cx,
+                cy,
+                vw,
+                vh,
+                halfW,
+                halfH,
+                clampedRadius,
+                interiorMode,
+                -bx,
+                -ly,
+                -lx,
+                ly,
+                tint,
+                blur,
+                edgeRefraction,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                material,
+                borderSpread,
+                borderSideOffset,
+                borderSideSpread,
+                rimWidth,
+                edgeBand,
+                interiorSpare0,
+                interiorSpare1,
+                glowX,
+                glowY,
+                glowStrength,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                shapeKind
+            )
+            self.glassEmitPatch(
+                cx,
+                cy,
+                vw,
+                vh,
+                halfW,
+                halfH,
+                clampedRadius,
+                interiorMode,
+                lx,
+                -ly,
+                bx,
+                ly,
+                tint,
+                blur,
+                edgeRefraction,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                material,
+                borderSpread,
+                borderSideOffset,
+                borderSideSpread,
+                rimWidth,
+                edgeBand,
+                interiorSpare0,
+                interiorSpare1,
+                glowX,
+                glowY,
+                glowStrength,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                shapeKind
+            )
             let interiorBandEnd = state.quadCount
-            self.glassEmitPatch(cx, cy, vw, vh, halfW, halfH, clampedRadius, interiorLensMode, -lx, -ly, lx, -ky, tint, blur, edgeRefraction, clipMinX, clipMinY, clipMaxX, clipMaxY, material, borderSpread, borderSideOffset, borderSideSpread, rimWidth, edgeBand, interiorSpare0, interiorSpare1, glowX, glowY, glowStrength, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, shapeKind)
-            self.glassEmitPatch(cx, cy, vw, vh, halfW, halfH, clampedRadius, interiorLensMode, -lx, ky, lx, ly, tint, blur, edgeRefraction, clipMinX, clipMinY, clipMaxX, clipMaxY, material, borderSpread, borderSideOffset, borderSideSpread, rimWidth, edgeBand, interiorSpare0, interiorSpare1, glowX, glowY, glowStrength, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, shapeKind)
-            self.glassEmitPatch(cx, cy, vw, vh, halfW, halfH, clampedRadius, interiorLensMode, -lx, -ky, -kx, ky, tint, blur, edgeRefraction, clipMinX, clipMinY, clipMaxX, clipMaxY, material, borderSpread, borderSideOffset, borderSideSpread, rimWidth, edgeBand, interiorSpare0, interiorSpare1, glowX, glowY, glowStrength, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, shapeKind)
-            self.glassEmitPatch(cx, cy, vw, vh, halfW, halfH, clampedRadius, interiorLensMode, kx, -ky, lx, ky, tint, blur, edgeRefraction, clipMinX, clipMinY, clipMaxX, clipMaxY, material, borderSpread, borderSideOffset, borderSideSpread, rimWidth, edgeBand, interiorSpare0, interiorSpare1, glowX, glowY, glowStrength, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, shapeKind)
+            self.glassEmitPatch(
+                cx,
+                cy,
+                vw,
+                vh,
+                halfW,
+                halfH,
+                clampedRadius,
+                interiorLensMode,
+                -lx,
+                -ly,
+                lx,
+                -ky,
+                tint,
+                blur,
+                edgeRefraction,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                material,
+                borderSpread,
+                borderSideOffset,
+                borderSideSpread,
+                rimWidth,
+                edgeBand,
+                interiorSpare0,
+                interiorSpare1,
+                glowX,
+                glowY,
+                glowStrength,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                shapeKind
+            )
+            self.glassEmitPatch(
+                cx,
+                cy,
+                vw,
+                vh,
+                halfW,
+                halfH,
+                clampedRadius,
+                interiorLensMode,
+                -lx,
+                ky,
+                lx,
+                ly,
+                tint,
+                blur,
+                edgeRefraction,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                material,
+                borderSpread,
+                borderSideOffset,
+                borderSideSpread,
+                rimWidth,
+                edgeBand,
+                interiorSpare0,
+                interiorSpare1,
+                glowX,
+                glowY,
+                glowStrength,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                shapeKind
+            )
+            self.glassEmitPatch(
+                cx,
+                cy,
+                vw,
+                vh,
+                halfW,
+                halfH,
+                clampedRadius,
+                interiorLensMode,
+                -lx,
+                -ky,
+                -kx,
+                ky,
+                tint,
+                blur,
+                edgeRefraction,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                material,
+                borderSpread,
+                borderSideOffset,
+                borderSideSpread,
+                rimWidth,
+                edgeBand,
+                interiorSpare0,
+                interiorSpare1,
+                glowX,
+                glowY,
+                glowStrength,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                shapeKind
+            )
+            self.glassEmitPatch(
+                cx,
+                cy,
+                vw,
+                vh,
+                halfW,
+                halfH,
+                clampedRadius,
+                interiorLensMode,
+                kx,
+                -ky,
+                lx,
+                ky,
+                tint,
+                blur,
+                edgeRefraction,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                material,
+                borderSpread,
+                borderSideOffset,
+                borderSideSpread,
+                rimWidth,
+                edgeBand,
+                interiorSpare0,
+                interiorSpare1,
+                glowX,
+                glowY,
+                glowStrength,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                shapeKind
+            )
             let interiorLensEnd = state.quadCount
-            self.glassEmitPatch(cx, cy, vw, vh, halfW, halfH, clampedRadius, interiorCoreMode, -kx, -ky, kx, ky, tint, blur, edgeRefraction, clipMinX, clipMinY, clipMaxX, clipMaxY, material, borderSpread, borderSideOffset, borderSideSpread, rimWidth, edgeBand, interiorSpare0, interiorSpare1, glowX, glowY, glowStrength, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, shapeKind)
+            self.glassEmitPatch(
+                cx,
+                cy,
+                vw,
+                vh,
+                halfW,
+                halfH,
+                clampedRadius,
+                interiorCoreMode,
+                -kx,
+                -ky,
+                kx,
+                ky,
+                tint,
+                blur,
+                edgeRefraction,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                material,
+                borderSpread,
+                borderSideOffset,
+                borderSideSpread,
+                rimWidth,
+                edgeBand,
+                interiorSpare0,
+                interiorSpare1,
+                glowX,
+                glowY,
+                glowStrength,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                shapeKind
+            )
             if cachedInterior {
                 state.glassStatCachedInteriors += 1
             } else {
@@ -472,33 +1245,601 @@ extend UiBatch {
             // No interior cache below the nineteen-patch split: these interiors
             // always shade live.
             state.glassStatLiveInteriors += 1
-            self.glassEmitPatch(cx, cy, vw, vh, halfW, halfH, clampedRadius, 3.0, -lhx, -lhy, lhx, -by, tint, blur, edgeRefraction, clipMinX, clipMinY, clipMaxX, clipMaxY, material, borderSpread, borderSideOffset, borderSideSpread, rimWidth, edgeBand, 0.0, 0.0, glowX, glowY, glowStrength, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, shapeKind)
-            self.glassEmitPatch(cx, cy, vw, vh, halfW, halfH, clampedRadius, 3.0, -lhx, by, lhx, lhy, tint, blur, edgeRefraction, clipMinX, clipMinY, clipMaxX, clipMaxY, material, borderSpread, borderSideOffset, borderSideSpread, rimWidth, edgeBand, 0.0, 0.0, glowX, glowY, glowStrength, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, shapeKind)
-            self.glassEmitPatch(cx, cy, vw, vh, halfW, halfH, clampedRadius, 3.0, -lhx, -by, -bx, by, tint, blur, edgeRefraction, clipMinX, clipMinY, clipMaxX, clipMaxY, material, borderSpread, borderSideOffset, borderSideSpread, rimWidth, edgeBand, 0.0, 0.0, glowX, glowY, glowStrength, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, shapeKind)
-            self.glassEmitPatch(cx, cy, vw, vh, halfW, halfH, clampedRadius, 3.0, bx, -by, lhx, by, tint, blur, edgeRefraction, clipMinX, clipMinY, clipMaxX, clipMaxY, material, borderSpread, borderSideOffset, borderSideSpread, rimWidth, edgeBand, 0.0, 0.0, glowX, glowY, glowStrength, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, shapeKind)
-            self.glassEmitPatch(cx, cy, vw, vh, halfW, halfH, clampedRadius, 3.25, -bx, -by, bx, -ly, tint, blur, edgeRefraction, clipMinX, clipMinY, clipMaxX, clipMaxY, material, borderSpread, borderSideOffset, borderSideSpread, rimWidth, edgeBand, 0.0, 0.0, glowX, glowY, glowStrength, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, shapeKind)
-            self.glassEmitPatch(cx, cy, vw, vh, halfW, halfH, clampedRadius, 3.25, -bx, ly, bx, by, tint, blur, edgeRefraction, clipMinX, clipMinY, clipMaxX, clipMaxY, material, borderSpread, borderSideOffset, borderSideSpread, rimWidth, edgeBand, 0.0, 0.0, glowX, glowY, glowStrength, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, shapeKind)
-            self.glassEmitPatch(cx, cy, vw, vh, halfW, halfH, clampedRadius, 3.25, -bx, -ly, -lx, ly, tint, blur, edgeRefraction, clipMinX, clipMinY, clipMaxX, clipMaxY, material, borderSpread, borderSideOffset, borderSideSpread, rimWidth, edgeBand, 0.0, 0.0, glowX, glowY, glowStrength, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, shapeKind)
-            self.glassEmitPatch(cx, cy, vw, vh, halfW, halfH, clampedRadius, 3.25, lx, -ly, bx, ly, tint, blur, edgeRefraction, clipMinX, clipMinY, clipMaxX, clipMaxY, material, borderSpread, borderSideOffset, borderSideSpread, rimWidth, edgeBand, 0.0, 0.0, glowX, glowY, glowStrength, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, shapeKind)
-            self.glassEmitPatch(cx, cy, vw, vh, halfW, halfH, clampedRadius, 3.35, -lx, -ly, lx, ly, tint, blur, edgeRefraction, clipMinX, clipMinY, clipMaxX, clipMaxY, material, borderSpread, borderSideOffset, borderSideSpread, rimWidth, edgeBand, 0.0, 0.0, glowX, glowY, glowStrength, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, shapeKind)
+            self.glassEmitPatch(
+                cx,
+                cy,
+                vw,
+                vh,
+                halfW,
+                halfH,
+                clampedRadius,
+                3.0,
+                -lhx,
+                -lhy,
+                lhx,
+                -by,
+                tint,
+                blur,
+                edgeRefraction,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                material,
+                borderSpread,
+                borderSideOffset,
+                borderSideSpread,
+                rimWidth,
+                edgeBand,
+                0.0,
+                0.0,
+                glowX,
+                glowY,
+                glowStrength,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                shapeKind
+            )
+            self.glassEmitPatch(
+                cx,
+                cy,
+                vw,
+                vh,
+                halfW,
+                halfH,
+                clampedRadius,
+                3.0,
+                -lhx,
+                by,
+                lhx,
+                lhy,
+                tint,
+                blur,
+                edgeRefraction,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                material,
+                borderSpread,
+                borderSideOffset,
+                borderSideSpread,
+                rimWidth,
+                edgeBand,
+                0.0,
+                0.0,
+                glowX,
+                glowY,
+                glowStrength,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                shapeKind
+            )
+            self.glassEmitPatch(
+                cx,
+                cy,
+                vw,
+                vh,
+                halfW,
+                halfH,
+                clampedRadius,
+                3.0,
+                -lhx,
+                -by,
+                -bx,
+                by,
+                tint,
+                blur,
+                edgeRefraction,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                material,
+                borderSpread,
+                borderSideOffset,
+                borderSideSpread,
+                rimWidth,
+                edgeBand,
+                0.0,
+                0.0,
+                glowX,
+                glowY,
+                glowStrength,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                shapeKind
+            )
+            self.glassEmitPatch(
+                cx,
+                cy,
+                vw,
+                vh,
+                halfW,
+                halfH,
+                clampedRadius,
+                3.0,
+                bx,
+                -by,
+                lhx,
+                by,
+                tint,
+                blur,
+                edgeRefraction,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                material,
+                borderSpread,
+                borderSideOffset,
+                borderSideSpread,
+                rimWidth,
+                edgeBand,
+                0.0,
+                0.0,
+                glowX,
+                glowY,
+                glowStrength,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                shapeKind
+            )
+            self.glassEmitPatch(
+                cx,
+                cy,
+                vw,
+                vh,
+                halfW,
+                halfH,
+                clampedRadius,
+                3.25,
+                -bx,
+                -by,
+                bx,
+                -ly,
+                tint,
+                blur,
+                edgeRefraction,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                material,
+                borderSpread,
+                borderSideOffset,
+                borderSideSpread,
+                rimWidth,
+                edgeBand,
+                0.0,
+                0.0,
+                glowX,
+                glowY,
+                glowStrength,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                shapeKind
+            )
+            self.glassEmitPatch(
+                cx,
+                cy,
+                vw,
+                vh,
+                halfW,
+                halfH,
+                clampedRadius,
+                3.25,
+                -bx,
+                ly,
+                bx,
+                by,
+                tint,
+                blur,
+                edgeRefraction,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                material,
+                borderSpread,
+                borderSideOffset,
+                borderSideSpread,
+                rimWidth,
+                edgeBand,
+                0.0,
+                0.0,
+                glowX,
+                glowY,
+                glowStrength,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                shapeKind
+            )
+            self.glassEmitPatch(
+                cx,
+                cy,
+                vw,
+                vh,
+                halfW,
+                halfH,
+                clampedRadius,
+                3.25,
+                -bx,
+                -ly,
+                -lx,
+                ly,
+                tint,
+                blur,
+                edgeRefraction,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                material,
+                borderSpread,
+                borderSideOffset,
+                borderSideSpread,
+                rimWidth,
+                edgeBand,
+                0.0,
+                0.0,
+                glowX,
+                glowY,
+                glowStrength,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                shapeKind
+            )
+            self.glassEmitPatch(
+                cx,
+                cy,
+                vw,
+                vh,
+                halfW,
+                halfH,
+                clampedRadius,
+                3.25,
+                lx,
+                -ly,
+                bx,
+                ly,
+                tint,
+                blur,
+                edgeRefraction,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                material,
+                borderSpread,
+                borderSideOffset,
+                borderSideSpread,
+                rimWidth,
+                edgeBand,
+                0.0,
+                0.0,
+                glowX,
+                glowY,
+                glowStrength,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                shapeKind
+            )
+            self.glassEmitPatch(
+                cx,
+                cy,
+                vw,
+                vh,
+                halfW,
+                halfH,
+                clampedRadius,
+                3.35,
+                -lx,
+                -ly,
+                lx,
+                ly,
+                tint,
+                blur,
+                edgeRefraction,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                material,
+                borderSpread,
+                borderSideOffset,
+                borderSideSpread,
+                rimWidth,
+                edgeBand,
+                0.0,
+                0.0,
+                glowX,
+                glowY,
+                glowStrength,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                shapeKind
+            )
             return
         }
         if bx > 4.0 && by > 4.0 {
             // Five patches: outer ring plus a band-shaded center (too small for a core).
             state.glassStatLiveInteriors += 1
-            self.glassEmitPatch(cx, cy, vw, vh, halfW, halfH, clampedRadius, 3.0, -lhx, -lhy, lhx, -by, tint, blur, edgeRefraction, clipMinX, clipMinY, clipMaxX, clipMaxY, material, borderSpread, borderSideOffset, borderSideSpread, rimWidth, edgeBand, 0.0, 0.0, glowX, glowY, glowStrength, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, shapeKind)
-            self.glassEmitPatch(cx, cy, vw, vh, halfW, halfH, clampedRadius, 3.0, -lhx, by, lhx, lhy, tint, blur, edgeRefraction, clipMinX, clipMinY, clipMaxX, clipMaxY, material, borderSpread, borderSideOffset, borderSideSpread, rimWidth, edgeBand, 0.0, 0.0, glowX, glowY, glowStrength, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, shapeKind)
-            self.glassEmitPatch(cx, cy, vw, vh, halfW, halfH, clampedRadius, 3.0, -lhx, -by, -bx, by, tint, blur, edgeRefraction, clipMinX, clipMinY, clipMaxX, clipMaxY, material, borderSpread, borderSideOffset, borderSideSpread, rimWidth, edgeBand, 0.0, 0.0, glowX, glowY, glowStrength, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, shapeKind)
-            self.glassEmitPatch(cx, cy, vw, vh, halfW, halfH, clampedRadius, 3.0, bx, -by, lhx, by, tint, blur, edgeRefraction, clipMinX, clipMinY, clipMaxX, clipMaxY, material, borderSpread, borderSideOffset, borderSideSpread, rimWidth, edgeBand, 0.0, 0.0, glowX, glowY, glowStrength, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, shapeKind)
-            self.glassEmitPatch(cx, cy, vw, vh, halfW, halfH, clampedRadius, 3.25, -bx, -by, bx, by, tint, blur, edgeRefraction, clipMinX, clipMinY, clipMaxX, clipMaxY, material, borderSpread, borderSideOffset, borderSideSpread, rimWidth, edgeBand, 0.0, 0.0, glowX, glowY, glowStrength, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, shapeKind)
+            self.glassEmitPatch(
+                cx,
+                cy,
+                vw,
+                vh,
+                halfW,
+                halfH,
+                clampedRadius,
+                3.0,
+                -lhx,
+                -lhy,
+                lhx,
+                -by,
+                tint,
+                blur,
+                edgeRefraction,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                material,
+                borderSpread,
+                borderSideOffset,
+                borderSideSpread,
+                rimWidth,
+                edgeBand,
+                0.0,
+                0.0,
+                glowX,
+                glowY,
+                glowStrength,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                shapeKind
+            )
+            self.glassEmitPatch(
+                cx,
+                cy,
+                vw,
+                vh,
+                halfW,
+                halfH,
+                clampedRadius,
+                3.0,
+                -lhx,
+                by,
+                lhx,
+                lhy,
+                tint,
+                blur,
+                edgeRefraction,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                material,
+                borderSpread,
+                borderSideOffset,
+                borderSideSpread,
+                rimWidth,
+                edgeBand,
+                0.0,
+                0.0,
+                glowX,
+                glowY,
+                glowStrength,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                shapeKind
+            )
+            self.glassEmitPatch(
+                cx,
+                cy,
+                vw,
+                vh,
+                halfW,
+                halfH,
+                clampedRadius,
+                3.0,
+                -lhx,
+                -by,
+                -bx,
+                by,
+                tint,
+                blur,
+                edgeRefraction,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                material,
+                borderSpread,
+                borderSideOffset,
+                borderSideSpread,
+                rimWidth,
+                edgeBand,
+                0.0,
+                0.0,
+                glowX,
+                glowY,
+                glowStrength,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                shapeKind
+            )
+            self.glassEmitPatch(
+                cx,
+                cy,
+                vw,
+                vh,
+                halfW,
+                halfH,
+                clampedRadius,
+                3.0,
+                bx,
+                -by,
+                lhx,
+                by,
+                tint,
+                blur,
+                edgeRefraction,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                material,
+                borderSpread,
+                borderSideOffset,
+                borderSideSpread,
+                rimWidth,
+                edgeBand,
+                0.0,
+                0.0,
+                glowX,
+                glowY,
+                glowStrength,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                shapeKind
+            )
+            self.glassEmitPatch(
+                cx,
+                cy,
+                vw,
+                vh,
+                halfW,
+                halfH,
+                clampedRadius,
+                3.25,
+                -bx,
+                -by,
+                bx,
+                by,
+                tint,
+                blur,
+                edgeRefraction,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                material,
+                borderSpread,
+                borderSideOffset,
+                borderSideSpread,
+                rimWidth,
+                edgeBand,
+                0.0,
+                0.0,
+                glowX,
+                glowY,
+                glowStrength,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                shapeKind
+            )
             return
         }
         state.glassStatLiveInteriors += 1
-        self.glassEmitPatch(cx, cy, vw, vh, halfW, halfH, clampedRadius, 3.0, -lhx, -lhy, lhx, lhy, tint, blur, edgeRefraction, clipMinX, clipMinY, clipMaxX, clipMaxY, material, borderSpread, borderSideOffset, borderSideSpread, rimWidth, edgeBand, 0.0, 0.0, glowX, glowY, glowStrength, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, shapeKind)
-        return
+        self.glassEmitPatch(
+            cx,
+            cy,
+            vw,
+            vh,
+            halfW,
+            halfH,
+            clampedRadius,
+            3.0,
+            -lhx,
+            -lhy,
+            lhx,
+            lhy,
+            tint,
+            blur,
+            edgeRefraction,
+            clipMinX,
+            clipMinY,
+            clipMaxX,
+            clipMaxY,
+            material,
+            borderSpread,
+            borderSideOffset,
+            borderSideSpread,
+            rimWidth,
+            edgeBand,
+            0.0,
+            0.0,
+            glowX,
+            glowY,
+            glowStrength,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            shapeKind
+        )
     }
 }
-
 
 // (lx0,ly0)-(lx1,ly1) of the surface's local space, as one quad carrying the
 // surface's full shape and material — every patch shades against the whole
@@ -509,45 +1850,60 @@ extend UiBatch {
 // them).
 extend UiBatch {
     function glassEmitPatch(
-        cx: Float, cy: Float, vw: Float, vh: Float,
-        halfW: Float, halfH: Float, radius: Float, mode: Float,
-        lx0: Float, ly0: Float, lx1: Float, ly1: Float,
-        tint: borrow Color,
-        blur: Float,
-        edgeRefraction: Float,
-        clipMinX: Float, clipMinY: Float, clipMaxX: Float, clipMaxY: Float,
+        cx: Number,
+        cy: Number,
+        vw: Number,
+        vh: Number,
+        halfW: Number,
+        halfH: Number,
+        radius: Number,
+        mode: Number,
+        lx0: Number,
+        ly0: Number,
+        lx1: Number,
+        ly1: Number,
+        tint: borrow RGBAColor,
+        blur: Number,
+        edgeRefraction: Number,
+        clipMinX: Number,
+        clipMinY: Number,
+        clipMaxX: Number,
+        clipMaxY: Number,
         material: borrow CAGlassMaterial,
         // The border block and the inner rim, already turned from the device
         // pixels the material states them in into the quad's own units, plus the
         // width of one anti-aliasing band (two device pixels) for the shader to
         // ramp its coverage and its silhouette edges over.
-        borderSpread: Float,
-        borderSideOffset: Float,
-        borderSideSpread: Float,
-        rimWidth: Float,
-        edgeBand: Float,
-        spare0: Float = 0.0,
-        spare1: Float = 0.0,
+        borderSpread: Number,
+        borderSideOffset: Number,
+        borderSideSpread: Number,
+        rimWidth: Number,
+        edgeBand: Number,
+        spare0: Number = 0.0,
+        spare1: Number = 0.0,
         // The touch highlight, in the same coordinates as the surface. It rides
         // the gradient block, which the glass pipelines carry for stride and
         // never read — all three material spares are already spoken for — and
         // so does the edge light, in the block's last two.
-        glowX: Float = 0.0,
-        glowY: Float = 0.0,
-        glowStrength: Float = 0.0,
+        glowX: Number = 0.0,
+        glowY: Number = 0.0,
+        glowStrength: Number = 0.0,
         // The second shape this surface fuses with, already in the surface's
         // own center-relative space — the same origin `local` is measured from,
         // so it travels to the shader unchanged.
-        morphX: Float = 0.0,
-        morphY: Float = 0.0,
-        morphHalfW: Float = 0.0,
-        morphHalfH: Float = 0.0,
-        morphRadius: Float = 0.0,
-        morphBlend: Float = 0.0,
+        morphX: Number = 0.0,
+        morphY: Number = 0.0,
+        morphHalfW: Number = 0.0,
+        morphHalfH: Number = 0.0,
+        morphRadius: Number = 0.0,
+        morphBlend: Number = 0.0,
         // 0 for a circular corner, 1 for a squircle's continuous superellipse.
-        shapeKind: Float = 0.0,
-        rotCos: Float = 1.0,
-        rotSin: Float = 0.0,
+        shapeKind: Number = 0.0,
+        rotCos: Number = 1.0,
+        rotSin: Number = 0.0,
+        // The corner of the rounded box the clip is, and its kind.
+        clipRadius: Number = 0.0,
+        clipShapeKind: Number = 0.0,
     ) {
         // Put every CUT between patches on a whole device pixel — see
         // `glassSnapToDevicePixel` for what goes wrong when one lands on a pixel
@@ -569,8 +1925,8 @@ extend UiBatch {
         // two differ whenever the drawable is not a whole number of points, and
         // snapping to the wrong grid snaps to no grid at all.
         var state = nativeRecover<UiBatchState>(self.storage)
-        let scaleX = Float(state.drawableW) / state.viewportW
-        let scaleY = Float(state.drawableH) / state.viewportH
+        let scaleX = Number(state.drawableW) / state.viewportW
+        let scaleY = Number(state.drawableH) / state.viewportH
         let clipX0 = glassSnapToDevicePixel(clipMinX, scaleX)
         let clipY0 = glassSnapToDevicePixel(clipMinY, scaleY)
         let clipX1 = glassSnapToDevicePixel(clipMaxX, scaleX)
@@ -601,16 +1957,40 @@ extend UiBatch {
         }
         state.glassStatPatchQuads += 1
         self.emitQuad(
-            px0, py0, px1, py1,
-            px0 - cx, py0 - cy, px1 - cx, py1 - cy,
-            halfW, halfH, radius, tint.a, mode, edgeRefraction,
-            tint.r, tint.g, tint.b, blur,
-            cx / vw, cy / vh, halfW / vw, halfH / vh,
-            clipX0, clipY0, clipX1, clipY1,
-            material.edgeStrokeStrength, material.edgeStrokeDarken,
-            material.edgeStrokePeak, material.edgeStrokeFade,
-            material.sheenStrength, glassReachFor(material.lensMaxBend, halfW, halfH),
-            glassReachFor(material.refractionReach, halfW, halfH), material.blurNearSplit,
+            px0,
+            py0,
+            px1,
+            py1,
+            px0 - cx,
+            py0 - cy,
+            px1 - cx,
+            py1 - cy,
+            halfW,
+            halfH,
+            radius,
+            tint.a,
+            mode,
+            edgeRefraction,
+            tint.r,
+            tint.g,
+            tint.b,
+            blur,
+            cx / vw,
+            cy / vh,
+            halfW / vw,
+            halfH / vh,
+            clipX0,
+            clipY0,
+            clipX1,
+            clipY1,
+            material.edgeStrokeStrength,
+            material.edgeStrokeDarken,
+            material.edgeStrokePeak,
+            material.edgeStrokeFade,
+            material.sheenStrength,
+            glassReachFor(material.lensMaxBend, halfW, halfH),
+            glassReachFor(material.refractionReach, halfW, halfH),
+            material.blurNearSplit,
             // Device pixels, converted. The design document measures the ring at
             // one pixel and the side edge at two, off a 2x capture; carrying the
             // point values that happened to produce those on a 2x display made
@@ -618,28 +1998,42 @@ extend UiBatch {
             // 0.6 of a pixel — a fainter line, not the same one.
             borderSpread,
             borderSideOffset,
-            borderSideSpread, material.borderGray,
+            borderSideSpread,
+            material.borderGray,
             material.borderSideGray,
             material.innerRimStrength,
             rimWidth,
             // The wash: how `fill` blends (the lower layer), then the upper layer whole.
             material.washBlend,
-            material.washUpperR, material.washUpperG, material.washUpperB,
-            material.washUpperAlpha, material.washUpperBlend,
+            material.washUpperR,
+            material.washUpperG,
+            material.washUpperB,
+            material.washUpperAlpha,
+            material.washUpperBlend,
             // Spares: the copy patches carry 1/drawable-size in the first two
             // (UiGlassCopy turns its device position into the cache texel through
             // them), and a full patch carries in the first how far its surface
             // has faded; the third is the anti-aliasing band every glass
             // pipeline ramps its coverage over.
-            spare0, spare1, edgeBand,
-            glowX - cx, glowY - cy, glowStrength,
-            material.edgeLightDodge, material.edgeLightBurn,
-            morphX, morphY, morphHalfW, morphHalfH, morphRadius, morphBlend,
+            spare0,
+            spare1,
+            edgeBand,
+            glowX - cx,
+            glowY - cy,
+            glowStrength,
+            material.edgeLightDodge,
+            material.edgeLightBurn,
+            morphX,
+            morphY,
+            morphHalfW,
+            morphHalfH,
+            morphRadius,
+            morphBlend,
             shapeKind,
-            rotCos, rotSin
+            rotCos,
+            rotSin,
+            clipRadius,
+            clipShapeKind
         )
-        return
     }
 }
-
-

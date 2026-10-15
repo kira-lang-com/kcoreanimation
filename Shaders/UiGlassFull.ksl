@@ -151,8 +151,12 @@ type VertexOut {
     // The touch highlight: center in this quad's space, and how hard it burns.
     // The touch highlight (xyz) and the surface's corner kind (w). A `Float3`
     // varying already costs a whole four-component slot, so the fourth rides
-    // free — and this record has no slot to spare.
+    // free.
     let glow: Float4
+    // The corner of the rounded box the surface is clipped to, radius then
+    // kind: a sidebar's glass running under a window's continuous corner. It
+    // takes the sixteenth slot, the last a fragment stage is guaranteed.
+    let clipCorner: Float2
 }
 
 type FragmentOut {
@@ -212,6 +216,7 @@ shader UiGlassFull {
             out.washMorph = Float4(v.washBlend, v.washUpperBlend, v.morphRadius, v.morphBlend)
             out.morph = Float4(v.morphX, v.morphY, v.morphHalfW, v.morphHalfH)
             out.glow = Float4(v.gradientR, v.gradientG, v.gradientB, v.shapeKind)
+            out.clipCorner = Float2(v.clipRadius, v.clipShapeKind)
             return out
         }
     }
@@ -236,6 +241,11 @@ shader UiGlassFull {
                 return out
             }
             if input.px.y > input.clip.w {
+                out.color = Float4(0.0, 0.0, 0.0, 0.0)
+                return out
+            }
+            let clipped = GlassCommon.clipShapeCoverage(Float2(input.px.x, input.px.y), input.clip, input.clipCorner)
+            if clipped <= 0.0 {
                 out.color = Float4(0.0, 0.0, 0.0, 0.0)
                 return out
             }
@@ -269,8 +279,9 @@ shader UiGlassFull {
             let ringDistance = GlassCommon.morphedDistanceInflated(input.local, Float2(input.hsize.x, input.hsize.y), input.shape.x, input.morph, morphR, morphK, ringSpread, corner)
             // The ring burns where the outline faces sideways and fades as it
             // turns to face up or down, where the specular has the edge
-            // instead: the platform's menu has a dark line down each side and
-            // none along its top or bottom.
+            // instead: the platform's glass has a dark line down each side and
+            // none along its top or bottom. Burned all round, it reads as a
+            // heavy outline over any bright backdrop; keep it this way.
             let edgeNormal = GlassCommon.morphedNormal(input.local, Float2(input.hsize.x, input.hsize.y), input.shape.x, input.morph, morphR, morphK, corner)
             let ring = clamp(0.5 - ringDistance / aa, 0.0, 1.0) * abs(edgeNormal.x)
             let sideSpread = input.borderStack.z
@@ -287,8 +298,6 @@ shader UiGlassFull {
             // Each line burns in its own gray — the ring in the ring's, the
             // side lines in theirs — and where they cross, in both.
             let sideGray = input.borderInk.y
-            let hairline = stacked
-            shadowAlpha = hairline
             let coveredArea = max(stacked, 0.0001)
             let gpOutside = input.local / Float2(input.hsize.x, input.hsize.y)
             let uvOutside = Float2(
@@ -303,6 +312,7 @@ shader UiGlassFull {
             let ringBurn = GlassCommon.linearBurn(behind, ringGray)
             let sideBurn = GlassCommon.linearBurn(behind, sideGray)
             let bothBurn = GlassCommon.linearBurn(ringBurn, sideGray)
+            shadowAlpha = stacked
             shadowRgb = (ringBurn * onlyRing + sideBurn * onlyPair + bothBurn * bothBands) / coveredArea * stacked
             }
 
@@ -312,7 +322,7 @@ shader UiGlassFull {
                     return out
                 }
                 let shown = 1.0 - input.px.z
-                out.color = Float4(shadowRgb.x, shadowRgb.y, shadowRgb.z, shadowAlpha) * shown
+                out.color = Float4(shadowRgb.x, shadowRgb.y, shadowRgb.z, shadowAlpha) * (shown * clipped)
                 return out
             }
             let cov = clamp(0.5 - distancePx / aa, 0.0, 1.0)
@@ -404,7 +414,7 @@ shader UiGlassFull {
             // The surface fades whole: what it drew, premultiplied, thinned by
             // how far it has faded, so what is behind shows through it evenly.
             let shown = 1.0 - input.px.z
-            out.color = Float4(outRgb.x + lit, outRgb.y + lit, outRgb.z + lit, min(outAlpha + lit, 1.0)) * shown
+            out.color = Float4(outRgb.x + lit, outRgb.y + lit, outRgb.z + lit, min(outAlpha + lit, 1.0)) * (shown * clipped)
             return out
         }
     }

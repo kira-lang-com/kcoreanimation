@@ -1,4 +1,5 @@
 import Foundation
+import Heap
 import Ember
 // Appending a quad to the current stream.
 //
@@ -12,114 +13,172 @@ import Ember
 // glyphs). The other attributes are constant across the quad's vertices.
 extend UiBatch {
     function emitQuad(
-        px0: Float, py0: Float, px1: Float, py1: Float,
-        lx0: Float, ly0: Float, lx1: Float, ly1: Float,
-        halfW: Float, halfH: Float, radius: Float, borderWidth: Float, mode: Float,
-        edgeRefraction: Float,
-        fr: Float, fg: Float, fb: Float, fa: Float,
-        br: Float, bg: Float, bb: Float, ba: Float,
-        clipMinX: Float, clipMinY: Float, clipMaxX: Float, clipMaxY: Float,
-        m0: Float = 0.0, m1: Float = 0.0, m2: Float = 0.0, m3: Float = 0.0,
-        m4: Float = 0.0, m5: Float = 0.0, m6: Float = 0.0, m7: Float = 0.0,
-        m8: Float = 0.0, m9: Float = 0.0, m10: Float = 0.0, m11: Float = 0.0,
-        m12: Float = 0.0, m13: Float = 0.0, m14: Float = 0.0, m15: Float = 0.0,
-        m16: Float = 0.0, m17: Float = 0.0, m18: Float = 0.0, m19: Float = 0.0,
-        m20: Float = 0.0, m21: Float = 0.0, m22: Float = 0.0, m23: Float = 0.0,
+        px0: Number,
+        py0: Number,
+        px1: Number,
+        py1: Number,
+        lx0: Number,
+        ly0: Number,
+        lx1: Number,
+        ly1: Number,
+        halfW: Number,
+        halfH: Number,
+        radius: Number,
+        borderWidth: Number,
+        mode: Number,
+        edgeRefraction: Number,
+        fr: Number,
+        fg: Number,
+        fb: Number,
+        fa: Number,
+        br: Number,
+        bg: Number,
+        bb: Number,
+        ba: Number,
+        clipMinX: Number,
+        clipMinY: Number,
+        clipMaxX: Number,
+        clipMaxY: Number,
+        m0: Number = 0.0,
+        m1: Number = 0.0,
+        m2: Number = 0.0,
+        m3: Number = 0.0,
+        m4: Number = 0.0,
+        m5: Number = 0.0,
+        m6: Number = 0.0,
+        m7: Number = 0.0,
+        m8: Number = 0.0,
+        m9: Number = 0.0,
+        m10: Number = 0.0,
+        m11: Number = 0.0,
+        m12: Number = 0.0,
+        m13: Number = 0.0,
+        m14: Number = 0.0,
+        m15: Number = 0.0,
+        m16: Number = 0.0,
+        m17: Number = 0.0,
+        m18: Number = 0.0,
+        m19: Number = 0.0,
+        m20: Number = 0.0,
+        m21: Number = 0.0,
+        m22: Number = 0.0,
+        m23: Number = 0.0,
         // The gradient's far color and its axis (0 none, 1 down, 2 across,
         // 3 corner to corner). A flat quad leaves them at zero.
-        gradR: Float = 0.0, gradG: Float = 0.0, gradB: Float = 0.0, gradA: Float = 0.0,
-        gradAxis: Float = 0.0,
+        gradR: Number = 0.0,
+        gradG: Number = 0.0,
+        gradB: Number = 0.0,
+        gradA: Number = 0.0,
+        gradAxis: Number = 0.0,
         // The second shape a liquid-glass surface is fusing with, in this
         // quad's own space, and the smooth minimum's reach. A reach of zero is
         // a surface that is one shape, which is every quad but the ones in a
         // morph — and the only value any other mode ever passes.
-        morphX: Float = 0.0, morphY: Float = 0.0,
-        morphHalfW: Float = 0.0, morphHalfH: Float = 0.0,
-        morphRadius: Float = 0.0, morphBlend: Float = 0.0,
+        morphX: Number = 0.0,
+        morphY: Number = 0.0,
+        morphHalfW: Number = 0.0,
+        morphHalfH: Number = 0.0,
+        morphRadius: Number = 0.0,
+        morphBlend: Number = 0.0,
         // 0 for a circular rounded rectangle, 1 for a squircle's continuous
         // superellipse corner.
-        shapeKind: Float = 0.0,
+        shapeKind: Number = 0.0,
         // The quad turned about its own center, as cosine and sine. See
         // `writeQuadRotation`; (1, 0) is a quad that is not turned, which is
         // almost all of them.
-        rotCos: Float = 1.0,
-        rotSin: Float = 0.0,
+        rotCos: Number = 1.0,
+        rotSin: Number = 0.0,
         // The corner of a rounded clip, zero for a clip that is a plain box, and
         // its kind: one for the continuous corner a squircle has.
-        clipRadius: Float = 0.0,
-        clipShapeKind: Float = 0.0,
+        clipRadius: Number = 0.0,
+        clipShapeKind: Number = 0.0,
     ) {
         var state = nativeRecover<UiBatchState>(self.storage)
-        if state.quadCount >= maxQuadsPerBatch() {
+        if state.quadCount >= QuadLayout.maxPerBatch {
             return
         }
-        let modeCode = Int(mode * 10.0)
+        let modeCode = trunc(mode * 10.0)
         let requiresGeneric = rotSin != 0.0 || rotCos != 1.0
-        if state.quadCount < state.streams[state.streamIndex.raw].quadModes.count {
-            state.streams[state.streamIndex.raw].quadModes[state.quadCount] = modeCode
-            state.streams[state.streamIndex.raw].quadRequiresGeneric[state.quadCount] = requiresGeneric
-        } else {
-            state.streams[state.streamIndex.raw].quadModes.append(modeCode)
-            state.streams[state.streamIndex.raw].quadRequiresGeneric.append(requiresGeneric)
-        }
+        state.streams[state.streamIndex.raw].recordMode(state.quadCount, modeCode, requiresGeneric)
         // Which texture this quad samples, recorded beside its mode. Only a
         // mode-2 quad samples one; every other quad records nothing, so a run
         // of them never breaks a draw call in two.
         var externalId = TextureHandle(0)
-        if modeCode == 20 {
+        if modeCode == 20 || modeCode == 21 {
             externalId = state.externalPending
         }
         var secondaryId = TextureHandle(0)
-        if modeCode == 20 {
+        if modeCode == 20 || modeCode == 21 {
             secondaryId = state.secondaryPending
         }
-        if state.quadCount < state.streams[state.streamIndex.raw].quadExternals.count {
-            state.streams[state.streamIndex.raw].quadExternals[state.quadCount] = externalId
-            state.streams[state.streamIndex.raw].quadSecondaries[state.quadCount] = secondaryId
-        } else {
-            state.streams[state.streamIndex.raw].quadExternals.append(externalId)
-            state.streams[state.streamIndex.raw].quadSecondaries.append(secondaryId)
-        }
+        state.streams[state.streamIndex.raw].recordTextures(
+            state.quadCount,
+            externalId,
+            secondaryId
+        )
         if state.streamIndex.raw == 0 && state.probeQuads {
             print(636363)
-            print(Int(mode * 10.0))
-            print(Int(px0))
-            print(Int(py0))
-            print(Int(px1))
-            print(Int(py1))
-            print(Int(fr * 1000.0))
-            print(Int(fg * 1000.0))
-            print(Int(fb * 1000.0))
-            print(Int(fa * 1000.0))
-            print(Int(edgeRefraction * 1000.0))
+            print(trunc(mode * 10.0))
+            print(trunc(px0))
+            print(trunc(py0))
+            print(trunc(px1))
+            print(trunc(py1))
+            print(trunc(fr * 1000.0))
+            print(trunc(fg * 1000.0))
+            print(trunc(fb * 1000.0))
+            print(trunc(fa * 1000.0))
+            print(trunc(edgeRefraction * 1000.0))
         }
         if state.probeCost && (mode < 0.5 || mode > 1.5) {
             print(656565)
             print(state.streamIndex.raw)
-            print(Int(mode * 10.0))
-            print(Int(px0))
-            print(Int(py0))
-            print(Int(px1 - px0))
-            print(Int(py1 - py0))
+            print(trunc(mode * 10.0))
+            print(trunc(px0))
+            print(trunc(py0))
+            print(trunc(px1 - px0))
+            print(trunc(py1 - py0))
         }
         let contents = state.contentsPtr
-        if pointerIsNull(contents) {
+        if isNull(contents) {
             return
         }
         let vw = state.viewportW
         let vh = state.viewportH
         // Base float index of this quad's record, inside this frame's ring slot.
-        let base = state.frameBase + state.quadCount * quadFloatCount()
+        let base = state.frameBase + state.quadCount * QuadLayout.floatCount
         writeQuadRecord(
-            contents, U64(base),
-            px0, py0, px1, py1,
-            lx0, ly0, lx1, ly1,
-            vw, vh,
-            halfW, halfH, radius, borderWidth, mode, edgeRefraction,
-            fr, fg, fb, fa,
-            br, bg, bb, ba,
-            clipMinX, clipMinY, clipMaxX, clipMaxY,
-            rotCos: rotCos, rotSin: rotSin,
+            contents,
+            U64(base),
+            px0,
+            py0,
+            px1,
+            py1,
+            lx0,
+            ly0,
+            lx1,
+            ly1,
+            vw,
+            vh,
+            halfW,
+            halfH,
+            radius,
+            borderWidth,
+            mode,
+            edgeRefraction,
+            fr,
+            fg,
+            fb,
+            fa,
+            br,
+            bg,
+            bb,
+            ba,
+            clipMinX,
+            clipMinY,
+            clipMaxX,
+            clipMaxY,
+            rotCos: rotCos,
+            rotSin: rotSin,
             clipRadius: clipRadius,
             clipShapeKind: clipShapeKind,
         )
@@ -129,7 +188,16 @@ extend UiBatch {
         // Unconditional for the same reason the gradient is: the slot is reused
         // and an unwritten morph block is a second shape left over from
         // whatever quad held this slot last.
-        writeQuadMorph(contents, U64(base), morphX, morphY, morphHalfW, morphHalfH, morphRadius, morphBlend)
+        writeQuadMorph(
+            contents,
+            U64(base),
+            morphX,
+            morphY,
+            morphHalfW,
+            morphHalfH,
+            morphRadius,
+            morphBlend
+        )
         writeQuadShapeKind(contents, U64(base), shapeKind)
         writeQuadRotation(contents, U64(base), rotCos, rotSin)
         // The material block too: glass shades itself with it, and a flat
@@ -137,16 +205,39 @@ extend UiBatch {
         // to glass alone, a rule drawn where a glass quad had been took that
         // quad's spares as a highlight and burned brighter than its siblings.
         writeQuadMaterial(
-            contents, U64(base),
-            m0, m1, m2, m3, m4, m5, m6, m7, m8, m9, m10, m11,
-            m12, m13, m14, m15, m16, m17, m18, m19, m20, m21, m22, m23,
+            contents,
+            U64(base),
+            m0,
+            m1,
+            m2,
+            m3,
+            m4,
+            m5,
+            m6,
+            m7,
+            m8,
+            m9,
+            m10,
+            m11,
+            m12,
+            m13,
+            m14,
+            m15,
+            m16,
+            m17,
+            m18,
+            m19,
+            m20,
+            m21,
+            m22,
+            m23,
         )
         // With a glass layer open, remember the (clipped) footprint this quad covers:
         // the next glass surface reads the grid to decide whether it is stacked over
         // this layer and therefore needs a capture of its own. The HUD's stream is
         // exempt: it is drawn after every glass decision of the frame has been taken,
         // so no glass surface can ever read what it would record.
-        if state.streamIndex.raw > 0 && state.streamIndex != hudStreamIndex() {
+        if state.streamIndex.raw > 0 && state.streamIndex != DrawStreams.hud {
             var mx0 = px0
             if mx0 < clipMinX {
                 mx0 = clipMinX
@@ -168,34 +259,43 @@ extend UiBatch {
             }
         }
         state.quadCount += 1
-        return
     }
 }
-
 
 // Push a rounded-rect / squircle surface with an optional border. The quad is padded
 // by 1px so the SDF anti-aliasing band at the edge is not clipped. `shapeMode` is
 // 0.0 for a circular rounded rectangle and 0.25 for a superellipse corner.
 extend UiBatch {
     function pushRect(
-        x: Float, y: Float, w: Float, h: Float,
-        fill: borrow Color, border: borrow Color, borderWidth: Float, radius: Float,
-        clipMinX: Float, clipMinY: Float, clipMaxX: Float, clipMaxY: Float,
-        shapeMode: Float = 0.0,
+        x: Number,
+        y: Number,
+        w: Number,
+        h: Number,
+        fill: borrow RGBAColor,
+        border: borrow RGBAColor,
+        borderWidth: Number,
+        radius: Number,
+        clipMinX: Number,
+        clipMinY: Number,
+        clipMaxX: Number,
+        clipMaxY: Number,
+        shapeMode: Number = 0.0,
         // A gradient fill: `fill` is the near end, this is the far one, and the
         // axis says which way far runs (0 none, 1 down, 2 across, 3 corner to
         // corner). One quad either way — the blend is per corner.
-        gradient: borrow Color = Color { a: 0.0 },
-        gradientAxis: Float = 0.0,
+        gradient: borrow RGBAColor = RGBAColor { a: 0.0 },
+        gradientAxis: Number = 0.0,
         // The touch highlight, in the same coordinates as `x`/`y`. Strength
         // zero is no highlight, which is every quad but the one under a finger.
-        glowX: Float = 0.0,
-        glowY: Float = 0.0,
-        glowStrength: Float = 0.0,
+        glowX: Number = 0.0,
+        glowY: Number = 0.0,
+        glowStrength: Number = 0.0,
         // The corner of the clip the surface is drawn inside, when that clip
         // is a rounded box: what it leaves past the clip's corners is not drawn.
-        clipRadius: Float = 0.0,
-        clipShapeKind: Float = 0.0,
+        clipRadius: Number = 0.0,
+        clipShapeKind: Number = 0.0,
+        // Burned or dodged into what is under it rather than laid over it.
+        blend: CABlendMode = .Normal,
     ) {
         if w <= 0.0 || h <= 0.0 {
             return
@@ -207,7 +307,9 @@ extend UiBatch {
         // ADDED to what is already there, so it needs no fill of its own. This
         // is how the highlight reaches a glass surface, whose fill the glass
         // shader owns and whose fill quad is therefore suppressed.
-        if fill.a <= 0.0 && gradient.a <= 0.0 && (border.a <= 0.0 || borderWidth <= 0.0) && glowStrength <= 0.0 {
+        if fill.a <= 0.0 && gradient.a <= 0.0 && (
+            border.a <= 0.0 || borderWidth <= 0.0
+        ) && glowStrength <= 0.0 {
             return
         }
         let pad = 1.0
@@ -224,31 +326,134 @@ extend UiBatch {
         if clampedRadius > halfH {
             clampedRadius = halfH
         }
+        let ink = blend.ink(fill)
+        let before = self.quadCount()
         self.emitQuad(
-            cx - lhx, cy - lhy, cx + lhx, cy + lhy,
-            -lhx, -lhy, lhx, lhy,
-            halfW, halfH, clampedRadius, borderWidth, shapeMode, 0.0,
-            fill.r, fill.g, fill.b, fill.a,
-            border.r, border.g, border.b, border.a,
-            clipMinX, clipMinY, clipMaxX, clipMaxY,
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            0.0, 0.0, 0.0, 0.0, 0.0,
+            cx - lhx,
+            cy - lhy,
+            cx + lhx,
+            cy + lhy,
+            -lhx,
+            -lhy,
+            lhx,
+            lhy,
+            halfW,
+            halfH,
+            clampedRadius,
+            borderWidth,
+            shapeMode,
+            0.0,
+            ink.r,
+            ink.g,
+            ink.b,
+            ink.a,
+            border.r,
+            border.g,
+            border.b,
+            border.a,
+            clipMinX,
+            clipMinY,
+            clipMaxX,
+            clipMaxY,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
             // The last three material slots are the spares, and in this mode
             // they carry the highlight. Handed over in the quad's OWN space,
             // which is what the fragment measures distance in.
-            glowX - cx, glowY - cy, glowStrength,
-            gradient.r, gradient.g, gradient.b, gradient.a, gradientAxis,
-            morphX: 0.0, morphY: 0.0, morphHalfW: 0.0, morphHalfH: 0.0, morphRadius: 0.0, morphBlend: 0.0,
+            glowX - cx,
+            glowY - cy,
+            glowStrength,
+            gradient.r,
+            gradient.g,
+            gradient.b,
+            gradient.a,
+            gradientAxis,
+            morphX: 0.0,
+            morphY: 0.0,
+            morphHalfW: 0.0,
+            morphHalfH: 0.0,
+            morphRadius: 0.0,
+            morphBlend: 0.0,
             shapeKind: 0.0,
-            rotCos: 1.0, rotSin: 0.0,
+            rotCos: 1.0,
+            rotSin: 0.0,
             clipRadius: clipRadius,
             clipShapeKind: clipShapeKind
         )
-        return
+        self.routeBlend(before, blend)
+    }
+
+    function quadCount() -> Number {
+        let state = nativeRecover<UiBatchState>(self.storage)
+        return state.quadCount
+    }
+
+    // Sends the quad just emitted, if one was, to the pipeline its blend draws
+    // through: the hundred the blend names, over the mode it shades in.
+    function routeBlend(before: Number, blend: borrow CABlendMode) {
+        if blend == .Normal {
+            return
+        }
+        var state = nativeRecover<UiBatchState>(self.storage)
+        if state.quadCount <= before {
+            return
+        }
+        let index = state.quadCount - 1
+        let mode = state.streams[state.streamIndex.raw].quads[index].mode
+        state.streams[state.streamIndex.raw].quads[index].mode = mode + blend.route()
     }
 }
 
+extend UiBatch {
+    // Sends a run's glyphs, emitted from `before` on, to the pipeline its
+    // blend draws them through. Only a plain glyph has one: an adaptive glyph
+    // decides its own ink against the glass and stays as it is.
+    function routeBlendRange(before: Number, blend: borrow CABlendMode) {
+        if blend == .Normal {
+            return
+        }
+        var state = nativeRecover<UiBatchState>(self.storage)
+        let stream = state.streamIndex.raw
+        let route = blend.route()
+        for index in before..state.quadCount {
+            if index < state.streams[stream].quads.count && state.streams[stream].quads[index].mode == 10 {
+                state.streams[stream].quads[index].mode = 10 + route
+            }
+        }
+    }
+}
+
+// The ink a blended fill is drawn in. A dodge adds its color; a burn takes
+// away the color's distance from white, which is what the subtracting
+// pipeline is handed.
+extend CABlendMode {
+    // The ink a fill is drawn in under this blend.
+    function ink(fill: borrow RGBAColor) -> RGBAColor {
+        if self == .LinearBurn {
+            return RGBAColor { r: 1.0 - fill.r, g: 1.0 - fill.g, b: 1.0 - fill.b, a: fill.a }
+        }
+        return copy fill
+    }
+}
 
 // The bind group a TextureView quad samples ITS OWN texture through.
 //
@@ -260,31 +465,46 @@ extend UiBatch {
 // Kept rather than rebuilt because an id here names a shared surface, which
 // outlives the frame -- so a window holding three components pays three
 // creations for the run of the process, not three per frame.
-public function externalCacheEnsure(state: borrow mut UiBatchState, graphics: borrow EMGraphics, textureId: TextureHandle) {
+public function externalCacheEnsure(
+    state: borrow mut UiBatchState,
+    graphics: borrow Graphics,
+    textureId: TextureHandle
+) {
     if textureId.raw <= 0 {
         return
     }
-        for index in 0..state.externalCacheIds.count {
-        if state.externalCacheIds[index] == textureId {
-            return
+    for entry in state.externalCache {
+        if entry.0 == textureId { return }
+    }
+    let texture = sampledTextureFromViewId(ViewId(U32(textureId.raw)))
+    let outcome = optionalBindGroup(
+        graphics.beginBindGroup("kira-ui-batch-external-cached"),
+        "external cache group"
+    )
+    match outcome {
+        Some(group) -> {
+            glassAddSharpBackdrop(
+                graphics,
+                group,
+                texture,
+                texture,
+                state.sampler,
+                state.backdropBlend
+            )
+            state.externalCache.append((textureId, group))
         }
-            }
-    let texture = sampledTextureFromViewId(U32(textureId.raw))
-    let group = bindGroupOrReport(graphics.beginBindGroup("kira-ui-batch-external-cached"), "external cache group")
-    glassAddSharpBackdrop(graphics, group, texture, texture, state.sampler, state.backdropBlend)
-    state.externalCacheIds.append(textureId)
-    state.externalCacheGroups.append(group)
-    return
+        None -> {}
+    }
 }
 
-public function externalCacheGroup(state: borrow UiBatchState, textureId: TextureHandle) -> BindGroup {
-        for index in 0..state.externalCacheIds.count {
-        if state.externalCacheIds[index] == textureId {
-            return shareBindGroup(state.externalCacheGroups[index])
-        }
-            }
-    // The miss case is read only through `.id != 0`, so it carries no box.
-    return unboundBindGroup()
+public function externalCacheGroup(
+    state: borrow UiBatchState,
+    textureId: TextureHandle
+) -> BindGroup? {
+    for entry in state.externalCache {
+        if entry.0 == textureId { return .Some(copy entry.1) }
+    }
+    return .None
 }
 
 // The group a crossfading quad reads its TARGET through.
@@ -294,50 +514,66 @@ public function externalCacheGroup(state: borrow UiBatchState, textureId: Textur
 // the texture in a slot mode 2 never reads, and the tap fell back to the group
 // underneath it -- which is the glyph atlas, so a sidebar mid-swipe crossfaded
 // into a page of packed glyphs.
-public function secondaryCacheEnsure(state: borrow mut UiBatchState, graphics: borrow EMGraphics, textureId: TextureHandle) {
+public function secondaryCacheEnsure(
+    state: borrow mut UiBatchState,
+    graphics: borrow Graphics,
+    textureId: TextureHandle
+) {
     if textureId.raw <= 0 {
         return
     }
-        for index in 0..state.secondaryCacheIds.count {
-        if state.secondaryCacheIds[index] == textureId {
-            return
+    for entry in state.secondaryCache {
+        if entry.0 == textureId { return }
+    }
+    let texture = sampledTextureFromViewId(ViewId(U32(textureId.raw)))
+    let outcome = optionalBindGroup(
+        graphics.beginBindGroup("kira-ui-batch-secondary-cached"),
+        "secondary cache group"
+    )
+    match outcome {
+        Some(group) -> {
+            graphics.bindGroupAddTexture(group, ShaderSlot.backdropTexture, texture)
+            graphics.bindGroupAddSampler(group, ShaderSlot.backdropSampler, state.sampler)
+            graphics.bindGroupAddTexture(group, ShaderSlot.nearTexture, texture)
+            graphics.bindGroupAddSampler(group, ShaderSlot.nearSampler, state.sampler)
+            state.secondaryCache.append((textureId, group))
         }
-            }
-    let texture = sampledTextureFromViewId(U32(textureId.raw))
-    let group = bindGroupOrReport(graphics.beginBindGroup("kira-ui-batch-secondary-cached"), "secondary cache group")
-    graphics.bindGroupAddTexture(group, backdropTextureSlot(), texture)
-    graphics.bindGroupAddSampler(group, backdropSamplerSlot(), state.sampler)
-    graphics.bindGroupAddTexture(group, nearTextureSlot(), texture)
-    graphics.bindGroupAddSampler(group, nearSamplerSlot(), state.sampler)
-    state.secondaryCacheIds.append(textureId)
-    state.secondaryCacheGroups.append(group)
-    return
+        None -> {}
+    }
 }
 
-public function secondaryCacheGroup(state: borrow UiBatchState, textureId: TextureHandle) -> BindGroup {
-        for index in 0..state.secondaryCacheIds.count {
-        if state.secondaryCacheIds[index] == textureId {
-            return shareBindGroup(state.secondaryCacheGroups[index])
-        }
-            }
-    // The miss case is read only through `.id != 0`, so it carries no box.
-    return unboundBindGroup()
+public function secondaryCacheGroup(
+    state: borrow UiBatchState,
+    textureId: TextureHandle
+) -> BindGroup? {
+    for entry in state.secondaryCache {
+        if entry.0 == textureId { return .Some(copy entry.1) }
+    }
+    return .None
 }
 
 // The texture a given quad crossfades towards, or 0 for one that does not.
-public function quadSecondaryAt(state: borrow UiBatchState, modeStream: DrawStreamId, quad: Int) -> TextureHandle {
-    if quad < 0 || quad >= state.streams[modeStream.raw].quadSecondaries.count {
+public function quadSecondaryAt(
+    state: borrow UiBatchState,
+    modeStream: DrawStreamId,
+    quad: Number
+) -> TextureHandle {
+    if quad < 0 || quad >= state.streams[modeStream.raw].quads.count {
         return TextureHandle(0)
     }
-    return state.streams[modeStream.raw].quadSecondaries[quad]
+    return state.streams[modeStream.raw].quads[quad].secondary
 }
 
 // The external texture a given quad samples, or 0 for one that samples none.
-public function quadExternalAt(state: borrow UiBatchState, modeStream: DrawStreamId, quad: Int) -> TextureHandle {
-    if quad < 0 || quad >= state.streams[modeStream.raw].quadExternals.count {
+public function quadExternalAt(
+    state: borrow UiBatchState,
+    modeStream: DrawStreamId,
+    quad: Number
+) -> TextureHandle {
+    if quad < 0 || quad >= state.streams[modeStream.raw].quads.count {
         return TextureHandle(0)
     }
-    return state.streams[modeStream.raw].quadExternals[quad]
+    return state.streams[modeStream.raw].quads[quad].external
 }
 
 // A texture this batch may have bound is gone. Its id goes back into
@@ -345,32 +581,10 @@ public function quadExternalAt(state: borrow UiBatchState, modeStream: DrawStrea
 // occupant -- or the freed slot itself, whose word is by then the link to the
 // next free id. So every group made for it goes with it.
 extend UiBatch {
-    function forgetTexture(graphics: borrow EMGraphics, textureId: TextureHandle) {
+    function forgetTexture(graphics: borrow Graphics, textureId: TextureHandle) {
         var state = nativeRecover<UiBatchState>(self.storage)
-        var externalIds: [TextureHandle] = []
-        var externalGroups: [BindGroup] = []
-        for index in 0..state.externalCacheIds.count {
-            if state.externalCacheIds[index] == textureId {
-                graphics.destroyBindGroup(state.externalCacheGroups[index])
-            } else {
-                externalIds.append(state.externalCacheIds[index])
-                externalGroups.append(shareBindGroup(state.externalCacheGroups[index]))
-            }
-        }
-        state.externalCacheIds = move externalIds
-        state.externalCacheGroups = move externalGroups
-        var secondaryIds: [TextureHandle] = []
-        var secondaryGroups: [BindGroup] = []
-        for index in 0..state.secondaryCacheIds.count {
-            if state.secondaryCacheIds[index] == textureId {
-                graphics.destroyBindGroup(state.secondaryCacheGroups[index])
-            } else {
-                secondaryIds.append(state.secondaryCacheIds[index])
-                secondaryGroups.append(shareBindGroup(state.secondaryCacheGroups[index]))
-            }
-        }
-        state.secondaryCacheIds = move secondaryIds
-        state.secondaryCacheGroups = move secondaryGroups
+        state.externalCache = withoutTexture(graphics, state.externalCache, textureId)
+        state.secondaryCache = withoutTexture(graphics, state.secondaryCache, textureId)
         // The backdrop slots are filed under an id too; left bound, the next
         // texture to take it would read as the same backdrop.
         if state.externalBindReady && state.externalTextureId == textureId {
@@ -385,7 +599,6 @@ extend UiBatch {
             state.secondaryExternalTextureId = TextureHandle(0)
             state.secondaryExternalBindReady = false
         }
-        return
     }
 }
 
@@ -394,12 +607,16 @@ extend UiBatch {
 // bind group is cached per texture id, so a stable render-target id costs one
 // creation total.
 extend UiBatch {
-    function setExternalTextures(graphics: borrow EMGraphics, textureId: U32, secondaryTextureId: U32) {
+    function setExternalTextures(
+        graphics: borrow Graphics,
+        textureId: U32,
+        secondaryTextureId: U32
+    ) {
         var state = nativeRecover<UiBatchState>(self.storage)
         // Settled before the early-out below: the quads that follow sample THIS
         // texture whether or not the backdrop slot already held it.
-        let primaryHandle = TextureHandle(Int(textureId))
-        let secondaryHandle = TextureHandle(Int(secondaryTextureId))
+        let primaryHandle = TextureHandle(Number(textureId))
+        let secondaryHandle = TextureHandle(Number(secondaryTextureId))
         state.externalPending = primaryHandle
         state.secondaryPending = secondaryHandle
         externalCacheEnsure(state, graphics, primaryHandle)
@@ -407,7 +624,9 @@ extend UiBatch {
         let primaryMatches = state.externalBindReady && state.externalTextureId == primaryHandle
         let secondaryMatches =
             (secondaryTextureId == 0 && !state.secondaryExternalBindReady) ||
-            (state.secondaryExternalBindReady && state.secondaryExternalTextureId == secondaryHandle)
+            (
+                state.secondaryExternalBindReady && state.secondaryExternalTextureId == secondaryHandle
+            )
         if primaryMatches && secondaryMatches {
             return
         }
@@ -416,9 +635,19 @@ extend UiBatch {
             if state.externalBindReady {
                 graphics.destroyBindGroup(state.externalGroup)
             }
-            let texture = sampledTextureFromViewId(textureId)
-            let bindGroup = bindGroupOrReport(graphics.beginBindGroup("kira-ui-batch-external"), "bind group")
-            glassAddSharpBackdrop(graphics, bindGroup, texture, texture, sampler, state.backdropBlend)
+            let texture = sampledTextureFromViewId(ViewId(textureId))
+            let bindGroup = bindGroupOrReport(
+                graphics.beginBindGroup("kira-ui-batch-external"),
+                "bind group"
+            )
+            glassAddSharpBackdrop(
+                graphics,
+                bindGroup,
+                texture,
+                texture,
+                sampler,
+                state.backdropBlend
+            )
             state.externalTextureId = primaryHandle
             state.externalGroup = bindGroup
             state.externalBindReady = true
@@ -433,12 +662,15 @@ extend UiBatch {
             state.secondaryExternalBindReady = false
         }
         if secondaryTextureId > 0 && !secondaryMatches {
-            let secondary = sampledTextureFromViewId(secondaryTextureId)
-            let secondaryGroup = bindGroupOrReport(graphics.beginBindGroup("kira-ui-batch-external-secondary"), "secondary group")
-            graphics.bindGroupAddTexture(secondaryGroup, backdropTextureSlot(), secondary)
-            graphics.bindGroupAddSampler(secondaryGroup, backdropSamplerSlot(), sampler)
-            graphics.bindGroupAddTexture(secondaryGroup, nearTextureSlot(), secondary)
-            graphics.bindGroupAddSampler(secondaryGroup, nearSamplerSlot(), sampler)
+            let secondary = sampledTextureFromViewId(ViewId(secondaryTextureId))
+            let secondaryGroup = bindGroupOrReport(
+                graphics.beginBindGroup("kira-ui-batch-external-secondary"),
+                "secondary group"
+            )
+            graphics.bindGroupAddTexture(secondaryGroup, ShaderSlot.backdropTexture, secondary)
+            graphics.bindGroupAddSampler(secondaryGroup, ShaderSlot.backdropSampler, sampler)
+            graphics.bindGroupAddTexture(secondaryGroup, ShaderSlot.nearTexture, secondary)
+            graphics.bindGroupAddSampler(secondaryGroup, ShaderSlot.nearSampler, sampler)
             state.secondaryExternalTextureId = secondaryHandle
             state.secondaryExternalGroup = secondaryGroup
             state.secondaryExternalBindReady = true
@@ -447,38 +679,51 @@ extend UiBatch {
         // photographs at once, so a glass surface over a scheme change shades
         // against the crossfade without the compositor ever rendering that
         // crossfade into a full-resolution capture for it to read back.
-        if state.backdropSharpGroup.id != 0 {
-            graphics.destroyBindGroup(state.backdropSharpGroup)
-        }
-        let primary = sampledTextureFromViewId(U32(state.externalTextureId.raw))
+        glassDestroyBindGroup(graphics, state.backdropSharpGroup)
+        let primary = sampledTextureFromViewId(ViewId(U32(state.externalTextureId.raw)))
         var second = primary
         if state.secondaryExternalBindReady {
-            second = sampledTextureFromViewId(U32(state.secondaryExternalTextureId.raw))
+            second = sampledTextureFromViewId(ViewId(U32(state.secondaryExternalTextureId.raw)))
         }
-        let sharp = bindGroupOrReport(graphics.beginBindGroup("kira-ui-batch-backdrop-sharp"), "backdrop sharp")
-        glassAddSharpBackdrop(graphics, sharp, primary, second, sampler, state.backdropBlend)
+        let sharp = optionalBindGroup(
+            graphics.beginBindGroup("kira-ui-batch-backdrop-sharp"),
+            "backdrop sharp"
+        )
+        match sharp {
+            Some(group) -> glassAddSharpBackdrop(
+                graphics,
+                group,
+                primary,
+                second,
+                sampler,
+                state.backdropBlend
+            )
+            None -> {}
+        }
         state.backdropSharpGroup = sharp
-        return
     }
 }
-
 
 extend UiBatch {
-    function setExternalTexture(graphics: borrow EMGraphics, textureId: U32) {
+    function setExternalTexture(graphics: borrow Graphics, textureId: U32) {
         self.setExternalTextures(graphics, textureId, U32(0))
-        return
     }
 }
-
 
 // Emit an external-texture quad (mode 2): `local` spans uv 0..1 across the rect.
 extend UiBatch {
     function pushExternalRect(
-        x: Float, y: Float, w: Float, h: Float,
-        alpha: Float,
-        transition: Float,
-        radius: Float,
-        clipMinX: Float, clipMinY: Float, clipMaxX: Float, clipMaxY: Float,
+        x: Number,
+        y: Number,
+        w: Number,
+        h: Number,
+        alpha: Number,
+        transition: Number,
+        radius: Number,
+        clipMinX: Number,
+        clipMinY: Number,
+        clipMaxX: Number,
+        clipMaxY: Number,
     ) {
         if w <= 0.0 || h <= 0.0 || alpha <= 0.0 {
             return
@@ -497,13 +742,50 @@ extend UiBatch {
             return
         }
         self.emitQuad(
-            x, y, x + w, y + h,
-            0.0, 0.0, 1.0, 1.0,
-            w / 2.0, h / 2.0, radius, 0.0, 2.0, transition,
-            1.0, 1.0, 1.0, alpha,
-            0.0, 0.0, 0.0, 0.0,
-            clipMinX, clipMinY, clipMaxX, clipMaxY
+            x,
+            y,
+            x + w,
+            y + h,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            w / 2.0,
+            h / 2.0,
+            radius,
+            0.0,
+            2.0,
+            transition,
+            1.0,
+            1.0,
+            1.0,
+            alpha,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            clipMinX,
+            clipMinY,
+            clipMaxX,
+            clipMaxY
         )
-        return
     }
+}
+
+// A bind-group cache without its entry for `textureId`, whose group is
+// destroyed: the id is going back into circulation.
+function withoutTexture(
+    graphics: borrow Graphics,
+    cache: borrow [(TextureHandle, BindGroup)],
+    textureId: TextureHandle
+) -> [(TextureHandle, BindGroup)] {
+    var kept: [(TextureHandle, BindGroup)] = []
+    for (id, group) in cache {
+        if id == textureId {
+            graphics.destroyBindGroup(group)
+        } else {
+            kept.append((id, copy group))
+        }
+    }
+    return kept
 }

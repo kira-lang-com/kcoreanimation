@@ -16,5 +16,4 @@ import KCoreAnimation
 @Main
 function main() {
     print("motion-kik")
-    return
 }

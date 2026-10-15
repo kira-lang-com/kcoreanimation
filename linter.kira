@@ -3,5 +3,5 @@ import Foundation
 construct FileLength() extends Lint {
     let code: String = "KLINT003"
     let level: LintLevel = .Warn
-    let limit: Int = 700
+    let limit: Number = 700
 }

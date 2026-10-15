@@ -9,14 +9,14 @@ import Foundation
 // property animation of `backgroundColor` should look like. Every color channel
 // crossfade in the layer tree goes through here.
 
-public function caSrgbToLinear(c: Float) -> Float {
+public function srgbToLinear(c: Number) -> Number {
     if c <= 0.04045 {
         return c / 12.92
     }
     return pow((c + 0.055) / 1.055, 2.4)
 }
 
-public function caLinearToSrgb(c: Float) -> Float {
+public function linearToSrgb(c: Number) -> Number {
     let v = clamp(c, 0.0, 1.0)
     if v <= 0.0031308 {
         return v * 12.92
@@ -26,13 +26,18 @@ public function caLinearToSrgb(c: Float) -> Float {
 
 // One OKLab coordinate. Its own struct so the lerp reads as three numbers moving.
 public struct CAOklab {
-    var l: Float = 0.0
-    var a: Float = 0.0
-    var b: Float = 0.0
-    var alpha: Float = 1.0
+    var l: Number = 0.0
+    var a: Number = 0.0
+    var b: Number = 0.0
+    var alpha: Number = 1.0
 }
 
-public function lerp(from: borrow CAOklab, to: borrow CAOklab, amount: Float) -> CAOklab {
+public function lerp(from: borrow CAOklab, to: borrow CAOklab, amount: Number) -> CAOklab {
+    return oklabBetween(from, to, amount)
+}
+
+// `lerp` over two Oklab colors, under a name the `lerp` methods do not shadow.
+function oklabBetween(from: borrow CAOklab, to: borrow CAOklab, amount: Number) -> CAOklab {
     return CAOklab {
         l: lerp(from.l, to.l, amount),
         a: lerp(from.a, to.a, amount),
@@ -41,63 +46,66 @@ public function lerp(from: borrow CAOklab, to: borrow CAOklab, amount: Float) ->
     }
 }
 
-public function caColorToOklab(color: borrow CAColor) -> CAOklab {
-    let r = caSrgbToLinear(color.r)
-    let g = caSrgbToLinear(color.g)
-    let b = caSrgbToLinear(color.b)
-    let l = 0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b
-    let m = 0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b
-    let s = 0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b
-    let lc = cbrt(l)
-    let mc = cbrt(m)
-    let sc = cbrt(s)
-    return CAOklab {
-        l: 0.2104542553 * lc + 0.7936177850 * mc - 0.0040720468 * sc,
-        a: 1.9779984951 * lc - 2.4285922050 * mc + 0.4505937099 * sc,
-        b: 0.0259040371 * lc + 0.7827717662 * mc - 0.8086757660 * sc,
-        alpha: color.a
+extend CAColor {
+    function toOklab() -> CAOklab {
+        let r = srgbToLinear(self.r)
+        let g = srgbToLinear(self.g)
+        let b = srgbToLinear(self.b)
+        let l = 0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b
+        let m = 0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b
+        let s = 0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b
+        let lc = cbrt(l)
+        let mc = cbrt(m)
+        let sc = cbrt(s)
+        return CAOklab {
+            l: 0.2104542553 * lc + 0.7936177850 * mc - 0.0040720468 * sc,
+            a: 1.9779984951 * lc - 2.4285922050 * mc + 0.4505937099 * sc,
+            b: 0.0259040371 * lc + 0.7827717662 * mc - 0.8086757660 * sc,
+            alpha: self.a
+        }
     }
 }
 
-public function caOklabToColor(lab: borrow CAOklab) -> CAColor {
-    let lc = lab.l + 0.3963377774 * lab.a + 0.2158037573 * lab.b
-    let mc = lab.l - 0.1055613458 * lab.a - 0.0638541728 * lab.b
-    let sc = lab.l - 0.0894841775 * lab.a - 1.2914855480 * lab.b
-    let l = lc * lc * lc
-    let m = mc * mc * mc
-    let s = sc * sc * sc
-    let r = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s
-    let g = 0.0 - 1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s
-    let b = 0.0 - 0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s
-    return CAColor {
-        r: caLinearToSrgb(r),
-        g: caLinearToSrgb(g),
-        b: caLinearToSrgb(b),
-        a: lab.alpha
+extend CAOklab {
+    function toColor() -> CAColor {
+        let lc = self.l + 0.3963377774 * self.a + 0.2158037573 * self.b
+        let mc = self.l - 0.1055613458 * self.a - 0.0638541728 * self.b
+        let sc = self.l - 0.0894841775 * self.a - 1.2914855480 * self.b
+        let l = lc * lc * lc
+        let m = mc * mc * mc
+        let s = sc * sc * sc
+        let r = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s
+        let g = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s
+        let b = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s
+        return CAColor { r: linearToSrgb(r), g: linearToSrgb(g), b: linearToSrgb(b), a: self.alpha }
     }
 }
 
-// The color `t` of the way from `from` to `to`, mixed perceptually. Alpha rides
-// linearly, which is correct: opacity is already a linear quantity.
-//
-// Each end's color counts by how opaque it is, as a premultiplied blend does.
-// A fade to clear is a fade to transparent black, and mixed straight the color
-// would darken toward that black on its way out: a light band fading in or out
-// went through dark gray. Weighted, a clear end has no say in the color, and
-// only the alpha moves.
-public function caColorLerp(from: borrow CAColor, to: borrow CAColor, t: Float) -> CAColor {
-    let a = caColorToOklab(from)
-    let b = caColorToOklab(to)
-    let alpha = a.alpha + (b.alpha - a.alpha) * t
-    if alpha <= 0.0 {
-        return caOklabToColor(lerp(a, b, t))
+extend CAColor {
+    // The color `t` of the way from `from` to `to`, mixed perceptually. Alpha rides
+    // linearly, which is correct: opacity is already a linear quantity.
+    //
+    // Each end's color counts by how opaque it is, as a premultiplied blend does.
+    // A fade to clear is a fade to transparent black, and mixed straight the color
+    // would darken toward that black on its way out: a light band fading in or out
+    // went through dark gray. Weighted, a clear end has no say in the color, and
+    // only the alpha moves.
+    function lerp(to: borrow CAColor, t: Number) -> CAColor {
+        let a = self.toOklab()
+        let b = to.toOklab()
+        let alpha = a.alpha + (b.alpha - a.alpha) * t
+        if alpha <= 0.0 {
+            return oklabBetween(a, b, t).toColor()
+        }
+        let wa = a.alpha * (1.0 - t)
+        let wb = b.alpha * t
+        return (
+            CAOklab {
+                l: (a.l * wa + b.l * wb) / alpha,
+                a: (a.a * wa + b.a * wb) / alpha,
+                b: (a.b * wa + b.b * wb) / alpha,
+                alpha: alpha
+            }
+        ).toColor()
     }
-    let wa = a.alpha * (1.0 - t)
-    let wb = b.alpha * t
-    return caOklabToColor(CAOklab {
-        l: (a.l * wa + b.l * wb) / alpha,
-        a: (a.a * wa + b.a * wb) / alpha,
-        b: (a.b * wa + b.b * wb) / alpha,
-        alpha: alpha
-    })
 }
