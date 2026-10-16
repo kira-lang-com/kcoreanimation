@@ -223,6 +223,11 @@ public struct CALayerDescription {
     // over the others, and the one it lifts on is the one chosen.
     var slidesPress: Bool = false
     var hitKey: Number = 0
+    // The accessibility element this layer is, by the key its toolkit
+    // registered the element under, as `hitKey` names its press: what the
+    // element says and does is the toolkit's, and the compositor stores the
+    // key and never acts on it. `.None` for a layer that is no element.
+    var accessibilityElement: Number? = .None
     // The axis the layer scrolls its content along, as a `CAScrollLayer`: its
     // sublayers are laid out as long as they want along it and shown through
     // the layer's own box, and a hit test reports the innermost scrolling layer
