@@ -27,7 +27,7 @@ public function foundationTextRunWidth(
 ) -> Number {
     var engine = nativeRecover<TextEngine>(textEngine())
     let raster = size * GlyphRaster.oversample
-    return engine.runWidth(design, content, raster, weight) / GlyphRaster.oversample
+    return engine.runWidth(design, content, raster, size, weight) / GlyphRaster.oversample
 }
 
 public function foundationTextRunLineHeight(
@@ -72,7 +72,7 @@ function foundationTextFaceMetric(
     metric: (FaceInstance) -> Number
 ) -> Number {
     var engine = nativeRecover<TextEngine>(textEngine())
-    return match engine.runInstance(design, size * GlyphRaster.oversample, weight) {
+    return match engine.runInstance(design, size * GlyphRaster.oversample, size, weight) {
         Some(instance) -> metric(move instance) / GlyphRaster.oversample
         None -> 0
     }
@@ -87,7 +87,7 @@ function foundationTextInkEdge(
     edge: (TextInk) -> Number
 ) -> Number {
     var engine = nativeRecover<TextEngine>(textEngine())
-    return match engine.runInk(design, content, size * GlyphRaster.oversample, weight) {
+    return match engine.runInk(design, content, size * GlyphRaster.oversample, size, weight) {
         Some(ink) -> edge(move ink) / GlyphRaster.oversample
         None -> 0
     }

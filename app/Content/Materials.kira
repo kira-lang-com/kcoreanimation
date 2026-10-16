@@ -61,6 +61,9 @@ public enum FoundationBlendMode {
     // An HSL-space blend rather than a per-channel one: the backdrop's hue and
     // saturation at the layer's luminance.
     Luminosity
+    // The other HSL blend: the backdrop's hue and luminance at the layer's
+    // saturation.
+    Saturation
 }
 
 // The id the vertex carries for a blend mode. The shader switches on this number,
@@ -76,6 +79,7 @@ public function foundationBlendId(mode: borrow FoundationBlendMode) -> Number {
         Darken -> return 6.0
         Multiply -> return 7.0
         Luminosity -> return 8.0
+        Saturation -> return 9.0
     }
 }
 
@@ -93,6 +97,7 @@ public function foundationBlendModeFromId(id: Number) -> FoundationBlendMode {
     if id < 6.5 { return .Darken }
     if id < 7.5 { return .Multiply }
     if id < 8.5 { return .Luminosity }
+    if id < 9.5 { return .Saturation }
     return .Normal
 }
 
@@ -604,20 +609,35 @@ public function foundationLiquidGlassBorderInk(scheme: borrow FoundationScheme) 
     }
 }
 
+//
+// The document casts each ambient shadow from what its "Fill + Shadow" frame
+// draws, as a design tool casts a drop shadow from a layer's own coverage, and
+// that frame's fills are not opaque. So the shadow on the page is the stated
+// black thinned by how much of the frame its fills cover: the panel's fills
+// cover all of it dark and 73% light, and the small glass's 17% dark and 82%
+// light, which leaves a button's shadow all but invisible, as on the platform.
 public function foundationLiquidGlassAmbientAlpha(scheme: borrow FoundationScheme) -> Number {
     match scheme {
-        Light -> return 0.25
-        Dark -> return 0.45
+        Light -> return 0.25 * fillCoverage([0.7, 0.1])
+        Dark -> return 0.45 * fillCoverage([0.7, 0.9, 1.0])
     }
 }
 
-// The small glass's ambient shadow is the same Y 8 under a blur of 15, at a
-// sliver of the panel's opacity: black 2% light, 4% dark.
+// The small glass's ambient shadow is the same Y 8 under a blur of 15, stated
+// as black 2% light and 4% dark, and thinned the same way.
 public function foundationLiquidGlassSmallAmbientAlpha(scheme: borrow FoundationScheme) -> Number {
     match scheme {
-        Light -> return 0.02
-        Dark -> return 0.04
+        Light -> return 0.02 * fillCoverage([0.25, 0.25, 0.6, 0.2])
+        Dark -> return 0.04 * fillCoverage([0.17])
     }
+}
+
+// How much of a frame fills of these opacities cover, stacked: each covers
+// its share of what those under it left uncovered.
+function fillCoverage(opacities: borrow [Number]) -> Number {
+    var uncovered: Number = 1
+    for opacity in opacities { uncovered = uncovered * (1 - opacity) }
+    return 1 - uncovered
 }
 
 // --- vibrancy ---------------------------------------------------------------
@@ -642,7 +662,10 @@ public function foundationVibrantFill(level: Number, scheme: borrow FoundationSc
     }
 }
 
-public function foundationVibrantLabel(level: Number, scheme: borrow FoundationScheme) -> RGBAColor {
+public function foundationVibrantLabel(
+    level: Number,
+    scheme: borrow FoundationScheme
+) -> RGBAColor {
     match scheme {
         Light -> {
             // Primary #000000; secondary and tertiary are both #3D3D3D over a

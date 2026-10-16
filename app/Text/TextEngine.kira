@@ -21,10 +21,7 @@ namespace TextCache {
     // nearest tenth of the axis, the step the glyph atlas rasterizes at.
     let inkScale: Number = 4
     let inkWeightStep: Number = 10
-    // An instance key's parts: half pixels below this, whole weights below
-    // the other.
-    let sizeSteps: Number = 1048576
-    let weightSteps: Number = 2048
+    // An advance's key: its instance's below this, its glyph above.
     let glyphSteps: Number = 65536
 }
 
@@ -59,10 +56,11 @@ namespace SystemFonts {
 
 distinct FontId = Int
 
-// A font set at one pixel size and weight: what every measurement and every
-// glyph drawn at that size reads. Metrics are in pixels.
+// A font set at one pixel size, optical size and weight: what every
+// measurement and every glyph drawn at that size reads. Metrics are in pixels.
 struct FaceInstance {
     let font: FontId
+    // The instance's own number, in the order the engine made them.
     let key: Number
     // Whether its figures are set tabular, every one the same width.
     let tabular: Bool
@@ -93,7 +91,8 @@ enum FontLookup {
 struct TextEngine {
     var fonts: [FontFile] = []
     var lookups: [(CAFontDesign, FontLookup)] = []
-    var instances: Map<Number, FaceInstance> = Map()
+    var instances: Map<String, FaceInstance> = Map()
+    var instancesMade: Number = 0
     var advances: Map<Number, Number> = Map()
     var runs: Map<String, Number> = Map()
     var shapes: Map<String, [ShapedGlyph]> = Map()
@@ -170,6 +169,7 @@ function fontPaths(design: borrow CAFontDesign) -> [String] {
                 Windows -> {}
                 Linux -> {}
                 Tessera -> {}
+                Android -> {}
                 Wasm -> {}
                 Unknown -> {}
             }
@@ -181,8 +181,10 @@ function fontPaths(design: borrow CAFontDesign) -> [String] {
                 Ios -> paths = copy SystemFonts.appleMonospaced
                 Windows -> paths = copy SystemFonts.windowsMonospaced
                 Linux -> paths = copy SystemFonts.linuxMonospaced
-                // Tessera ships no monospaced face, and a browser has no files.
+                // Tessera ships no monospaced face, Android's are not read
+                // yet, and a browser has no files.
                 Tessera -> {}
+                Android -> {}
                 Wasm -> {}
                 Unknown -> {}
             }
@@ -203,29 +205,36 @@ function fontAt(path: borrow String) -> Result<FontFile, FontFailure> {
 }
 
 extend TextEngine {
-    // `font` set at `size` pixels and `weight`, at the nearest half pixel
-    // and whole weight, so a size or weight in motion reuses instances.
+    // `font` set at `size` pixels for text of `points` and `weight`, at the
+    // nearest half pixel, half point and whole weight, so a size or weight in
+    // motion reuses instances.
     function instance(
         borrow mut self,
         font: FontId,
         size: Number,
+        points: Number,
         weight: Number,
         tabular: Bool
     ) -> FaceInstance {
         let halfPixels = max(round(size * 2), 1)
+        let halfPoints = max(round(points * 2), 1)
         let wholeWeight = round(weight)
-        let key = (
-            (
-                Number(font.raw) * TextCache.sizeSteps + halfPixels
-            ) * TextCache.weightSteps + wholeWeight
-        ) * 2 + (tabular ? 1 : 0)
-        match instances.value(key) {
+        let name = "\(font.raw) \(halfPixels) \(halfPoints) \(wholeWeight) \(tabular)"
+        match instances.value(name) {
             Some(known) -> return known
             None -> {}
         }
-        let made = fonts[font.raw].instance(font, key, halfPixels / 2, wholeWeight, tabular)
+        instancesMade += 1
+        let made = fonts[font.raw].instance(
+            font,
+            instancesMade,
+            halfPixels / 2,
+            halfPoints / 2,
+            wholeWeight,
+            tabular
+        )
         if instances.count() >= TextCache.instances { instances.removeAll() }
-        instances.set(key, copy made)
+        instances.set(move name, copy made)
         return made
     }
 
@@ -256,13 +265,15 @@ extend TextEngine {
 }
 
 extend FontFile {
-    // This font at `pixels` per em and `weight`. A font that asks for whole
-    // pixels per em is scaled at the nearest whole size, and line metrics are
-    // rounded to whole pixels, as FreeType sets a TrueType size.
+    // This font at `pixels` per em, for text of `points`, and `weight`. A
+    // font that asks for whole pixels per em is scaled at the nearest whole
+    // size, and line metrics are rounded to whole pixels, as FreeType sets a
+    // TrueType size.
     function instance(
         font: FontId,
         key: Number,
         pixels: Number,
+        points: Number,
         weight: Number,
         tabular: Bool
     ) -> FaceInstance {
@@ -274,7 +285,7 @@ extend FontFile {
             key: key,
             tabular: tabular,
             scale: scale,
-            coordinates: coordinates(Float(pixels), Float(weight)),
+            coordinates: coordinates(Float(points), Float(weight)),
             ascender: Number(round(ascender * scale)),
             descender: Number(-round(descender * scale)),
             lineHeight: Number(round((ascender - descender + lineGap) * scale))

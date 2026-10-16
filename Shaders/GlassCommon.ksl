@@ -151,6 +151,21 @@ function luminosity(base: Float3, layer: Float3) -> Float3 {
     return clipped
 }
 
+// Saturation: the backdrop's hue and luminance at the layer's saturation --
+// the W3C `SetSat`, then `SetLum` back to the backdrop's luminance. A gray at
+// saturation drains what is behind it to the gray of its own luminance, which
+// is how the platform's sidebar takes the color out of what it blurs.
+function saturation(base: Float3, layer: Float3) -> Float3 {
+    let low = min(min(base.x, base.y), base.z)
+    let high = max(max(base.x, base.y), base.z)
+    let target = max(max(layer.x, layer.y), layer.z) - min(min(layer.x, layer.y), layer.z)
+    let saturated = Float3(0.0, 0.0, 0.0)
+    if high > low {
+        saturated = (base - Float3(low, low, low)) * (target / (high - low))
+    }
+    return luminosity(saturated, base)
+}
+
 // What is behind darkened by how far `gray` is from white, floored at black.
 function linearBurn(behind: Float3, gray: Float) -> Float3 {
     return Float3(
@@ -164,6 +179,7 @@ function blendLayer(base: Float3, layer: Float3, alpha: Float, mode: Float) -> F
     if alpha <= 0.0 { return base }
     if mode < 0.5 { return mix(base, layer, alpha) }
     if mode > 7.5 && mode < 8.5 { return mix(base, luminosity(base, layer), alpha) }
+    if mode > 8.5 && mode < 9.5 { return mix(base, saturation(base, layer), alpha) }
     if mode < 1.5 {
         let added = Float3(
             clamp(base.x + layer.x, 0.0, 1.0),

@@ -194,8 +194,8 @@ extend FontBytes {
 
 extend FontFile {
     // The normalized design coordinates of an instance: the optical size
-    // axis at the pixel size the face is set at, as the axis is stated in
-    // points and a pixel is a point at 1x, and the weight axis at `weight`.
+    // axis at the text's size in points, the unit OpenType states the axis
+    // in, whatever the pixels it is drawn at, and the weight axis at `weight`.
     // Every other axis stands at its default.
     function coordinates(opticalSize: Float, weight: Float) -> [Float] {
         var coordinates: [Float] = []

@@ -313,30 +313,6 @@ function blurShare(d: Float, r: GlassRecipe) -> Float {
     return r.blurOpacity3
 }
 
-// An sRGB-encoded colour in linear light, and back: the platform blends the
-// highlight layer in linear light.
-function linearLight(rgb: Float3) -> Float3 {
-    return Float3(linearChannel(rgb.x), linearChannel(rgb.y), linearChannel(rgb.z))
-}
-
-function linearChannel(c: Float) -> Float {
-    if c <= 0.04045 {
-        return c / 12.92
-    }
-    return pow((c + 0.055) / 1.055, 2.4)
-}
-
-function encodedLight(rgb: Float3) -> Float3 {
-    return Float3(encodedChannel(rgb.x), encodedChannel(rgb.y), encodedChannel(rgb.z))
-}
-
-function encodedChannel(c: Float) -> Float {
-    if c <= 0.0031308 {
-        return c * 12.92
-    }
-    return 1.055 * pow(c, 1.0 / 2.4) - 0.055
-}
-
 // The colour matrix the filter states as levels: saturation about the Rec. 709
 // luminance, then black and white points.
 function levels(rgb: Float3, black: Float, white: Float, saturation: Float) -> Float3 {
@@ -345,13 +321,15 @@ function levels(rgb: Float3, black: Float, white: Float, saturation: Float) -> F
     return Float3(black, black, black) + saturated * (white - black)
 }
 
-// How much a light at `angle` with full width `spread` falls on an edge facing
-// `normal`: one facing it head on, nothing past half the spread, rising
-// linearly between. An angle of zero is straight up, as the platform measures
-// the highlight layer's lights: the Dock's key light at 0 lights its top edge.
+// How much a light at `angle` with spread `spread` falls on an edge facing
+// `normal`: one facing it head on, nothing where the edge turns `spread` or
+// more away from it, rising linearly with the cosine between, as the platform's
+// highlight takes the cosine of the spread it is given. An angle of zero is
+// straight up, as the platform measures the highlight layer's lights: the
+// Dock's key light at 0 lights its top edge.
 function facing(normal: Float2, angle: Float, spread: Float) -> Float {
     let toward = dot(normal, Float2(sin(angle), 0.0 - cos(angle)))
-    let edge = cos(min(spread * 0.5, 3.14159))
+    let edge = cos(min(spread, 3.14159))
     return clamp((toward - edge) / max(1.0 - edge, 0.0001), 0.0, 1.0)
 }
 
@@ -385,7 +363,9 @@ function edgeSpecular(r: GlassRecipe, pixelLength: Float) -> Float3 {
 // `depth` points inside the edge: a band `height` deep whose fall-off is
 // `curvature` linear and the rest flat, anti-aliased over `pixel` at both of its
 // ends, where the edge faces the light; then compressed by `amount` as
-// v / (1 + amount (1 - v)). A diffuse light is the linear band alone.
+// v / (1 + k (1 - v)), k = 1 / amount - 2, the platform's own conversion, so
+// an amount of a half draws the band as it is. A diffuse light is the linear
+// band alone.
 function rimLight(depth: Float, normal: Float2, height: Float, angle: Float, spread: Float, curvature: Float, amount: Float, pixel: Float) -> Float {
     if height <= 0.0 {
         return 0.0
@@ -395,7 +375,8 @@ function rimLight(depth: Float, normal: Float2, height: Float, angle: Float, spr
     let outer = clamp(depth / pixel + 0.5, 0.0, 1.0)
     let inner = clamp((height - depth) / pixel + 0.5, 0.0, 1.0)
     let lit = mix(flat, 1.0 - fall, curvature) * outer * inner * facing(normal, angle, spread)
-    return lit / max(1.0 + amount * (1.0 - lit), 0.000001)
+    let k = 1.0 / max(amount, 0.000001) - 2.0
+    return lit / max(1.0 + k * (1.0 - lit), 0.000001)
 }
 
 // The backdrop at `uv` blurred by `sigma` points: the sharp capture, the near
@@ -602,8 +583,9 @@ shader UiGlassRecipe {
             // Every other record takes the platform's key-fill: a band from the
             // edge moved in by its offset, `height` deep, three quarters linear
             // fall-off and a quarter flat, anti-aliased over a pixel at both
-            // ends, compressed the same way where the edge faces the light, and
-            // laid on the face as a bias, rgb (1 + bias k (3 - 2 rgb)).
+            // ends, where the edge faces the light compressed as
+            // h / (1 + c (1 - h)) with c = 1 / amount - 2, the platform's own
+            // conversion, and laid on the face as a bias, rgb (1 + bias k (3 - 2 rgb)).
             let specular = edgeSpecular(r, aa)
             if r.specularAmount > 0.0 && specular.x > 0.0 {
                 let lit = specularFacing(n, r.specularAngle, r.specularSpread)
@@ -621,36 +603,36 @@ shader UiGlassRecipe {
                     let outer = clamp(depth / aa + 0.5, 0.0, 1.0)
                     let inner = clamp((specular.x - depth) / aa + 0.5, 0.0, 1.0)
                     let band = mix(flat, 1.0 - fall, 0.75) * outer * inner * lit
-                    let k = band / (1.0 + r.specularAmount * (1.0 - band))
+                    let compression = 1.0 / r.specularAmount - 2.0
+                    let k = band / max(1.0 + compression * (1.0 - band), 0.000001)
                     rgb = rgb * (Float3(1.0, 1.0, 1.0) + (Float3(3.0, 3.0, 3.0) - rgb * 2.0) * (specular.z * k))
                 }
             }
 
             // The highlight layer: key, fill and their diffuse halves, each
-            // diffuse half drawn at its amount, and the face mixed towards
-            // itself through the vibrant matrix where they fall, in linear
-            // light. Measured against the platform's tab bar, its first three
-            // device rows land within a tenth of the platform's.
+            // diffuse half compressed by its own amount, and the face mixed towards
+            // itself through the vibrant matrix where they fall. The platform's
+            // blend reads what lies under it as it is stored, encoded, so the
+            // matrix and the mix work on encoded values.
             if r.highlightPresent > 0.5 && r.highlightOpacity > 0.0 {
                 let depth = 0.0 - d
                 let key = rimLight(depth, n, r.keyHeight, r.keyAngle, r.keySpread, r.highlightCurvature, r.keyAmount, aa)
-                key = key + rimLight(depth, n, r.keyHeight * r.diffuseHeightScale, r.keyAngle, r.keySpread * r.diffuseSpreadScale, 1.0, r.keyAmount * r.diffuseAmountScale, aa) * r.keyAmount * r.diffuseAmountScale
+                key = key + rimLight(depth, n, r.keyHeight * r.diffuseHeightScale, r.keyAngle, r.keySpread * r.diffuseSpreadScale, 1.0, r.keyAmount * r.diffuseAmountScale, aa)
                 let fillLight = rimLight(depth, n, r.fillHeight, r.fillAngle, r.fillSpread, r.highlightCurvature, r.fillAmount, aa)
-                fillLight = fillLight + rimLight(depth, n, r.fillHeight * r.diffuseHeightScale, r.fillAngle, r.fillSpread * r.diffuseSpreadScale, 1.0, r.fillAmount * r.diffuseAmountScale, aa) * r.fillAmount * r.diffuseAmountScale
+                fillLight = fillLight + rimLight(depth, n, r.fillHeight * r.diffuseHeightScale, r.fillAngle, r.fillSpread * r.diffuseSpreadScale, 1.0, r.fillAmount * r.diffuseAmountScale, aa)
                 let keyAlpha = clamp(key * r.keyAlpha, 0.0, 1.0)
                 let fillAlpha = clamp(fillLight * r.fillAlpha, 0.0, 1.0)
                 let amount = clamp(keyAlpha + fillAlpha, 0.0, 1.0) * r.highlightOpacity
                 if amount > 0.0 {
-                    let under = linearLight(rgb)
                     let vibrant = Float3(
-                        dot(under, Float3(r.vibrantRed0, r.vibrantRed1, r.vibrantRed2)) + r.vibrantRed4,
-                        dot(under, Float3(r.vibrantGreen0, r.vibrantGreen1, r.vibrantGreen2)) + r.vibrantGreen4,
-                        dot(under, Float3(r.vibrantBlue0, r.vibrantBlue1, r.vibrantBlue2)) + r.vibrantBlue4
+                        dot(rgb, Float3(r.vibrantRed0, r.vibrantRed1, r.vibrantRed2)) + r.vibrantRed4,
+                        dot(rgb, Float3(r.vibrantGreen0, r.vibrantGreen1, r.vibrantGreen2)) + r.vibrantGreen4,
+                        dot(rgb, Float3(r.vibrantBlue0, r.vibrantBlue1, r.vibrantBlue2)) + r.vibrantBlue4
                     )
                     let lightColor = (Float3(r.keyRed, r.keyGreen, r.keyBlue) * keyAlpha + Float3(r.fillRed, r.fillGreen, r.fillBlue) * fillAlpha) / max(keyAlpha + fillAlpha, 0.0001)
                     let ceiling = max(r.highlightMaxComponent, 0.0001)
                     vibrant = min(vibrant * lightColor, Float3(ceiling, ceiling, ceiling))
-                    rgb = encodedLight(mix(under, vibrant, amount))
+                    rgb = mix(rgb, vibrant, amount)
                 }
             }
 

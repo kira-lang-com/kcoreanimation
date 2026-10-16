@@ -25,6 +25,9 @@ extend UiBatchState {
 
     // Sets a face to a run's size and weight, reading its vertical metrics into
     // the state, unless it already stands there. False where there is no face.
+    // `sizeKey` is in raster pixels; the face's optical size is the run's size
+    // in points, the raster pixels divided back by the backing scale and the
+    // oversample, as the runs are laid out.
     function setFace(borrow mut self, sizeKey: Number, weightKey: Number, faceKey: Number) -> Bool {
         if self.fontSizeSet == sizeKey && self.fontWeightSet == weightKey && self.fontFaceSet == faceKey {
             return true
@@ -33,8 +36,13 @@ extend UiBatchState {
             Some(face) -> face
             None -> return false
         }
+        var scale = self.scale
+        if scale <= 0.0 {
+            scale = 1.0
+        }
+        let points = sizeKey / (scale * textOversampleAt(scale))
         var engine = nativeRecover<TextEngine>(textEngine())
-        let instance = engine.instance(face, sizeKey, glyphWeightAxis(weightKey), faceKey == 2)
+        let instance = engine.instance(face, sizeKey, points, glyphWeightAxis(weightKey), faceKey == 2)
         self.ascender = instance.ascender
         self.descender = instance.descender
         self.faceInstance = .Some(instance)

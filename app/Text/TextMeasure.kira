@@ -4,19 +4,21 @@ import Foundation
 // ink, each from the instance the compositor draws the run with.
 
 extend TextEngine {
-    // A run's advance in pixels: each glyph's, in order.
+    // A run's advance in pixels, set at `size` pixels for text of `points`:
+    // each glyph's, in order.
     function runWidth(
         borrow mut self,
         design: borrow CAFontDesign,
         text: borrow String,
         size: Number,
+        points: Number,
         weight: Number
     ) -> Number {
         let font = match face(design) {
             Some(font) -> font
             None -> return 0
         }
-        let instance = instance(font, size, weight, design == .MonospacedDigits)
+        let instance = instance(font, size, points, weight, design == .MonospacedDigits)
         let key = "\(instance.key) \(text)"
         match runs.value(key) {
             Some(known) -> return known
@@ -31,15 +33,17 @@ extend TextEngine {
         return width
     }
 
-    // The instance a run in `design` at `size` and `weight` is drawn with.
+    // The instance a run in `design` at `size` pixels for text of `points`,
+    // and `weight`, is drawn with.
     function runInstance(
         borrow mut self,
         design: borrow CAFontDesign,
         size: Number,
+        points: Number,
         weight: Number
     ) -> FaceInstance? {
         return match face(design) {
-            Some(font) -> .Some(instance(font, size, weight, design == .MonospacedDigits))
+            Some(font) -> .Some(instance(font, size, points, weight, design == .MonospacedDigits))
             None -> .None
         }
     }
@@ -51,6 +55,7 @@ extend TextEngine {
         design: borrow CAFontDesign,
         text: borrow String,
         size: Number,
+        points: Number,
         weight: Number
     ) -> TextInk? {
         if text.count == 0 || size <= 0 { return .None }
@@ -62,6 +67,7 @@ extend TextEngine {
         let instance = instance(
             font,
             size * TextCache.inkScale,
+            points,
             round(weight / step) * step,
             design == .MonospacedDigits
         )

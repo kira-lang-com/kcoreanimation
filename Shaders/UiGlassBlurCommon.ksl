@@ -101,6 +101,19 @@ function farPair(a: Texture2d, b: Texture2d, smp: Sampler, uv: Float2, offset: F
     return pairTap(a, b, smp, uv + offset, footprint, blend) + pairTap(a, b, smp, uv - offset, footprint, blend)
 }
 
+// A blurred texel as the average of only what was drawn under it. The capture
+// is premultiplied, so a blur reaching past what was drawn -- into the
+// transparent margin round a window, where its shadow goes -- averages that
+// emptiness in as black, and glass along the window's edge darkens toward it.
+// Dividing by the coverage leaves the empty texels out of the average; a texel
+// with nothing drawn under it stays empty.
+function drawnAverage(c: Float4) -> Float4 {
+    if c.w <= settled {
+        return c
+    }
+    return Float4(c.x / c.w, c.y / c.w, c.z / c.w, 1.0)
+}
+
 function farFilter(a: Texture2d, b: Texture2d, smp: Sampler, uv: Float2, step: Float2, footprint: Float2, blend: Float) -> Float4 {
     let c = footprintTap(a, b, smp, uv, footprint, blend) * farCenter
     return c
