@@ -1,0 +1,58 @@
+name: Weekly source release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: weekly-source-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Release matching version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MANIFEST: package.kira
+          TZ: Europe/Paris
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t versions < <(sed -nE 's/^[[:space:]]*let[[:space:]]+version[[:space:]]*:[[:space:]]*String[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$MANIFEST")
+          if [ "${#versions[@]}" -ne 1 ]; then
+            echo "Expected one version in $MANIFEST" >&2
+            exit 1
+          fi
+          read -r year month day < <(date "+%y %-m %-d")
+          week=$(( (day + 6) / 7 ))
+          (( week > 4 )) && week=4
+          current="$year.$month.$week"
+          version="${versions[0]}"
+          if [ "$version" != "$current" ]; then
+            echo "Version $version does not match $current; skipping"
+            exit 0
+          fi
+          status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/tags/$version")
+          case "$status" in
+            200) echo "Release $version already exists"; exit 0 ;;
+            404) ;;
+            *) echo "Could not check release: HTTP $status" >&2; exit 1 ;;
+          esac
+          status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/git/ref/tags/$version")
+          case "$status" in
+            404) ;;
+            200) echo "Tag $version exists without a release; refusing to use an unknown commit" >&2; exit 1 ;;
+            *) echo "Could not check tag: HTTP $status" >&2; exit 1 ;;
+          esac
+          gh release create "$version" --target "$GITHUB_SHA" --title "$version" --notes "Source release $version."
