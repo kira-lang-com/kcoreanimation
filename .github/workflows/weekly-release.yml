@@ -55,4 +55,8 @@ jobs:
             200) echo "Tag $version exists without a release; refusing to use an unknown commit" >&2; exit 1 ;;
             *) echo "Could not check tag: HTTP $status" >&2; exit 1 ;;
           esac
-          gh release create "$version" --target "$GITHUB_SHA" --title "$version" --notes "Source release $version."
+          if ! grep -Fxq "# $version" RELEASE.md; then
+            echo "RELEASE.md must have a heading for $version" >&2
+            exit 1
+          fi
+          gh release create "$version" --target "$GITHUB_SHA" --title "$version" --notes-file RELEASE.md
