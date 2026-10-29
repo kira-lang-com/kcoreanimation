@@ -1,0 +1,140 @@
+import Foundation
+
+// GPOS mark attachment: an accent, a vowel sign or a tone mark set on the
+// glyph before it, anchor to anchor (types 4, 5 and 6 of the OpenType GPOS
+// table). The lookup only names which glyph a mark hangs from and how far
+// its anchor sits from that glyph's; where the two glyphs end up on the line
+// is settled once the run's pen positions are known (TextShaping.kira).
+
+// The GPOS lookup types this file applies.
+namespace AttachmentLookup {
+    let markToBase: Number = 4
+    let markToLigature: Number = 5
+    let markToMark: Number = 6
+}
+
+// One anchor point, in font units, with what the variation store moves it by
+// at the instance's coordinates.
+struct AnchorPoint {
+    let x: Float
+    let y: Float
+}
+
+extend FontFile {
+    // Hangs the mark at `at` from the glyph a mark attachment subtable takes
+    // it to; how many glyphs it consumed, or -1 when it does not apply.
+    function attachMark(
+        subtable: Number,
+        kind: Number,
+        lookup: borrow LayoutLookup,
+        buffer: borrow ShapingBuffer,
+        at: Number,
+        coordinates: borrow [Float],
+        placement: borrow mut GlyphPlacement
+    ) -> Number {
+        if data.u16(subtable) != 1 { return -1 }
+        let mark = buffer.glyphs[at]
+        let markIndex = data.coverageIndex(subtable + data.u16(subtable + 2), mark)
+        if markIndex < 0 { return -1 }
+        let target = kind == AttachmentLookup.markToMark
+        ? previousMark(buffer, at, lookup)
+        : previousBase(buffer, at)
+        if target < 0 { return -1 }
+        let targetIndex = data.coverageIndex(
+            subtable + data.u16(subtable + 4),
+            buffer.glyphs[target]
+        )
+        if targetIndex < 0 { return -1 }
+        let classCount = data.u16(subtable + 6)
+        let marks = subtable + data.u16(subtable + 8)
+        if markIndex >= data.u16(marks) { return -1 }
+        let markRecord = marks + 2 + markIndex * 4
+        let markClass = data.u16(markRecord)
+        if markClass >= classCount { return -1 }
+        let targets = subtable + data.u16(subtable + 10)
+        let targetAnchor = kind == AttachmentLookup.markToLigature
+        ? ligatureAnchor(targets, targetIndex, classCount, markClass)
+        : baseAnchor(targets, targetIndex, classCount, markClass)
+        if targetAnchor < 0 { return -1 }
+        let markPoint = anchorPoint(marks + data.u16(markRecord + 2), coordinates)
+        let targetPoint = anchorPoint(targetAnchor, coordinates)
+        placement.attachments[at] = target
+        placement.anchorX[at] = targetPoint.x - markPoint.x
+        placement.anchorY[at] = targetPoint.y - markPoint.y
+        return 1
+    }
+
+    // Where a base record's anchor for `markClass` is, in a base array (or a
+    // second mark array, which is laid out the same); -1 for none.
+    function baseAnchor(
+        array: Number,
+        index: Number,
+        classCount: Number,
+        markClass: Number
+    ) -> Number {
+        if index >= data.u16(array) { return -1 }
+        let offset = data.u16(array + 2 + (index * classCount + markClass) * 2)
+        if offset == 0 { return -1 }
+        return array + offset
+    }
+
+    // Where a ligature's anchor for `markClass` is. A mark hangs from the
+    // ligature's last component, the one the letters before it became last.
+    function ligatureAnchor(
+        array: Number,
+        index: Number,
+        classCount: Number,
+        markClass: Number
+    ) -> Number {
+        if index >= data.u16(array) { return -1 }
+        let attach = array + data.u16(array + 2 + index * 2)
+        let components = data.u16(attach)
+        if components == 0 { return -1 }
+        let record = attach + 2 + (components - 1) * classCount * 2
+        let offset = data.u16(record + markClass * 2)
+        if offset == 0 { return -1 }
+        return attach + offset
+    }
+
+    // An anchor table's point: its coordinates, and, in format 3, what its
+    // device tables add at `coordinates`. Format 2's contour point is a
+    // hinting refinement, and glyphs are not hinted.
+    function anchorPoint(anchor: Number, coordinates: borrow [Float]) -> AnchorPoint {
+        var x = Float(data.i16(anchor + 2))
+        var y = Float(data.i16(anchor + 4))
+        if data.u16(anchor) == 3 {
+            x += deviceDelta(anchor, data.u16(anchor + 6), coordinates)
+            y += deviceDelta(anchor, data.u16(anchor + 8), coordinates)
+        }
+        return AnchorPoint { x: x, y: y }
+    }
+
+    // The glyph before `at` a mark hangs from: the nearest that is not
+    // itself a mark; -1 for none.
+    function previousBase(buffer: borrow ShapingBuffer, at: Number) -> Number {
+        var position = at - 1
+        while position >= 0 {
+            if !isMark(buffer.glyphs[position]) { return position }
+            position -= 1
+        }
+        return -1
+    }
+
+    // The glyph right before `at`, among those the lookup does not skip,
+    // when it is a mark; -1 otherwise.
+    function previousMark(
+        buffer: borrow ShapingBuffer,
+        at: Number,
+        lookup: borrow LayoutLookup
+    ) -> Number {
+        let position = previousUnskipped(buffer, at - 1, lookup)
+        if position < 0 || !isMark(buffer.glyphs[position]) { return -1 }
+        return position
+    }
+
+    // Whether `GDEF` says `glyph` is a mark.
+    function isMark(glyph: Number) -> Bool {
+        if layout.glyphClasses == 0 { return false }
+        return data.glyphClassIn(layout.glyphClasses, glyph) == GlyphClass.mark
+    }
+}

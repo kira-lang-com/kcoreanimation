@@ -1,0 +1,10 @@
+construct KCoreAnimation extends Package {
+    let version: String = "26.10.4"
+    let kind: PackageKind = .Library
+    let dependencies: [Dependency] = [
+        Dependency { name: "KiraLayout", path: "../kira-layout" },
+        Dependency { name: "Ember", path: "../ember" }
+    ]
+    // The face text is set in wherever the host offers none better.
+    let assets: [String] = ["Resources/Fonts/InterVariable.ttf"]
+}

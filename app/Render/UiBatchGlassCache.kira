@@ -1,0 +1,150 @@
+// The glass interior cache: what a surface's interior pixels depend on, and
+// whether the ones already in the cache still describe it.
+//
+// Split from `UiBatchGlass.kira`, which owns pushing a surface and cutting it
+// into patches. This half answers one question — is the interior this frame
+// would shade the same interior the cache pass last rendered — and a surface
+// that answers yes is presented as texel copies instead of running the glass
+// branch again.
+
+// Cached-interior surface slots; surfaces past the cap render live.
+import Foundation
+
+public namespace GlassCache {
+    let maxSurfaces: Number = 32
+}
+
+// Compare (and store) this surface's cache key at the current push-order
+// slot. True means every input matches the interior already in the cache;
+// false marks the surface dirty and leaves the new key in place.
+// What a glass interior's shading depends on.
+//
+// A surface whose every one of these is unchanged shades to the same pixels, so
+// the frame re-presents the cached interior instead of running the glass branch
+// again. This used to be twenty-eight positional `Float` parameters named `k0`
+// through `k27`, compared by a hand-written loop over a flat array — one
+// argument out of order was a silent cache hit on the wrong surface, and
+// nothing named what any of them measured.
+public struct GlassSurfaceKey: Copyable {
+    // Where the touch highlight is and how hard it burns. In the key because it
+    // CHANGES THE INTERIOR PIXELS: without it a lit surface matches last frame's
+    // unlit cache entry, the interior is presented from that copy, and the light
+    // never reaches the screen however faithfully everything below carries it.
+    var glowX: Number = 0.0
+    var glowY: Number = 0.0
+    var glowStrength: Number = 0.0
+    var centerX: Number = 0.0
+    var centerY: Number = 0.0
+    var halfWidth: Number = 0.0
+    var halfHeight: Number = 0.0
+    var radius: Number = 0.0
+    var tintR: Number = 0.0
+    var tintG: Number = 0.0
+    var tintB: Number = 0.0
+    var tintAlpha: Number = 0.0
+    var blur: Number = 0.0
+    var edgeRefraction: Number = 0.0
+    var clipMinX: Number = 0.0
+    var clipMinY: Number = 0.0
+    var clipMaxX: Number = 0.0
+    var clipMaxY: Number = 0.0
+    var rimWidth: Number = 0.0
+    var washBlend: Number = 0.0
+    var washUpperR: Number = 0.0
+    var washUpperG: Number = 0.0
+    var washUpperB: Number = 0.0
+    var washUpperAlpha: Number = 0.0
+    var washUpperBlend: Number = 0.0
+    var blurNearSplit: Number = 0.0
+    var edgeLightDodge: Number = 0.0
+    var edgeLightBurn: Number = 0.0
+    var lensMaxBend: Number = 0.0
+    var refractionReach: Number = 0.0
+    var viewportWidth: Number = 0.0
+    var viewportHeight: Number = 0.0
+    // The backdrop this surface refracted, folded together with the cache epoch
+    // so a new backdrop or a cache flush reads as a different surface.
+    var backdrop: Number = 0.0
+}
+
+// Whether this surface's interior can be re-presented from the cache.
+//
+// Records the key either way: a miss is what the next frame compares against.
+// The comparison is `eq_GlassSurfaceKey`, generated from the declaration, so a
+// field added above is compared without this function changing.
+// Whether this surface's interior is already in the cache, unchanged.
+//
+// Matched by CONTENT, not by the order surfaces are pushed in.
+//
+// A slot handed out by a per-frame cursor makes a surface's identity its
+// position in the frame's list of glass surfaces — so the moment one appears or
+// goes, every surface after it shifts a slot and is compared against a DIFFERENT
+// surface's key. The comparison then answers about the wrong surface: a stale
+// interior is presented over one that has moved, and a surface that did not
+// change is re-rendered. What that looks like is a panel flashing to another
+// panel's interior on the frames where the count changes, which is every frame
+// of anything opening or closing.
+//
+// The key already holds everything that decides the interior's pixels — where
+// the surface is, how big, its tint, its wash, its light. Two surfaces with the
+// same key have the same interior by definition, so content IS identity here and
+// the scan needs nothing the key does not already carry.
+public function glassCacheKeyMatch(
+    state: borrow mut UiBatchState,
+    fresh: borrow GlassSurfaceKey
+) -> Bool {
+    var free: Number? = .None
+    for slot in 0..min(GlassCache.maxSurfaces, state.glassCacheSlots.count) {
+        if state.glassCacheSlots[slot].claimed { continue }
+        let cached = match state.glassCacheSlots[slot].key {
+            Some(key) -> key == fresh
+            None -> false
+        }
+        if cached {
+            state.glassCacheSlots[slot].claimed = true
+            log debug("glass cache hit", slot)
+            return true
+        }
+        if free.isNone() { free = .Some(slot) }
+    }
+    // Not cached. Take an unclaimed slot and record what is about to be drawn
+    // into it; with none left the surface simply renders every frame, which is
+    // correct and merely slower.
+    match free {
+        Some(slot) -> {
+            state.glassCacheSlots[slot] = GlassCacheSlot { key: .Some(copy fresh), claimed: true }
+            log debug("glass cache miss", slot)
+        }
+        None -> {}
+    }
+    return false
+}
+
+// Remember a dirty surface's interior quads so the cache pass re-renders them.
+public function glassCacheRecordRange(
+    state: borrow mut UiBatchState,
+    stream: DrawStreamId,
+    start: Number,
+    bandCount: Number,
+    lensCount: Number,
+    coreCount: Number
+) {
+    if bandCount + lensCount + coreCount <= 0 {
+        return
+    }
+    let range = GlassCacheRange {
+        stream: stream,
+        start: start,
+        band: bandCount,
+        lens: lensCount,
+        core: coreCount
+    }
+    if state.glassCacheRangeCount < state.glassCacheRanges.count {
+        state.glassCacheRanges[state.glassCacheRangeCount] = range
+    } else {
+        state.glassCacheRanges.append(range)
+    }
+    state.glassCacheRangeCount += 1
+}
+
+// Emit one region patch of a liquid-glass surface: the sub-rectangle

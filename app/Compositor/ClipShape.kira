@@ -1,0 +1,72 @@
+import Foundation
+import Ember
+
+// A clip as the shaders take it: a rectangle in device pixels, the radius of
+// its corners, and their shape with the corners left square.
+//
+// The shape is the content's shape kind (0 a circular corner, 1 a continuous
+// one, 2 a wide one) plus `ClipCorner.squareStride` times a mask of the
+// corners drawn square, so one number still says it.
+public struct CAClipShape {
+    var minX: Number = -1000000.0
+    var minY: Number = -1000000.0
+    var maxX: Number = 1000000.0
+    var maxY: Number = 1000000.0
+    var radius: Number = 0.0
+    var kind: Number = 0.0
+}
+
+public namespace ClipCorner {
+    let squareStride: Number = 4
+    let topLeading: Number = 1
+    let topTrailing: Number = 2
+    let bottomLeading: Number = 4
+    let bottomTrailing: Number = 8
+    let all: Number = 15
+    // How near an edge must come to the outer clip's to reach its corner, in
+    // pixels.
+    let reach: Number = 0.5
+}
+
+// The clip a layer that clips its children sets inside `outer`: its own box,
+// `box`, with its own corners. A square clip inside a rounded one, as a
+// scrolling list's is inside a window's, keeps the rounded corners it reaches:
+// a rectangle cannot hold more than one radius, and without them the list
+// would draw square corners out past the window's.
+public function nestedClip(
+    outer: borrow CAClipShape,
+    box: borrow Rect,
+    radius: Number,
+    kind: Number
+) -> CAClipShape {
+    var inner = CAClipShape {
+        minX: max(outer.minX, box.x),
+        minY: max(outer.minY, box.y),
+        maxX: min(outer.maxX, box.x + box.width),
+        maxY: min(outer.maxY, box.y + box.height),
+        radius: radius,
+        kind: kind
+    }
+    if radius > 0.0 || outer.radius <= 0.0 { return inner }
+    let leading = inner.minX <= outer.minX + ClipCorner.reach
+    let top = inner.minY <= outer.minY + ClipCorner.reach
+    let trailing = inner.maxX >= outer.maxX - ClipCorner.reach
+    let bottom = inner.maxY >= outer.maxY - ClipCorner.reach
+    var square: Number = 0
+    if !(top && leading) { square += ClipCorner.topLeading }
+    if !(top && trailing) { square += ClipCorner.topTrailing }
+    if !(bottom && leading) { square += ClipCorner.bottomLeading }
+    if !(bottom && trailing) { square += ClipCorner.bottomTrailing }
+    // The outer clip's own square corners stay square.
+    let outerSquare = trunc(outer.kind / ClipCorner.squareStride)
+    square = square | outerSquare
+    if square == ClipCorner.all { return inner }
+    inner.radius = outer.radius
+    inner.kind = clipShapeKindOf(outer.kind) + square * ClipCorner.squareStride
+    return inner
+}
+
+// The corner's shape in a clip's shape, without the mask of square corners.
+public function clipShapeKindOf(kind: Number) -> Number {
+    return kind - trunc(kind / ClipCorner.squareStride) * ClipCorner.squareStride
+}

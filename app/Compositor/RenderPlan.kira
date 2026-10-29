@@ -1,0 +1,206 @@
+import Foundation
+
+// The render plan: the layer tree lowered into an ordered list of GPU passes,
+// each an ordered list of draw commands with EXACT geometry. This is the shape
+// the four hard cases live in and the shape a test can assert without a GPU.
+//
+//   * A rotated/scaled layer is an oriented quad (center, half extents, cos/sin),
+//     never an axis-aligned box.
+//   * A clipped subtree's commands each carry the intersected clip rectangle.
+//   * A group-opacity subtree becomes its OWN pass, composited into its parent
+//     by a SINGLE command at the group's alpha — child alphas are never folded.
+//   * A render-target subtree becomes a pass targeting a texture; a glass layer
+//     is a command the executor draws through the backdrop-capture path, which
+//     stacks in the batch.
+//   * A pass whose subtree took no damage this frame is `dirty = false`, so the
+//     executor reuses its cached texture instead of re-rendering it.
+
+public enum CAPassKind {
+    // The swapchain / window pass. Executed last.
+    Root
+    // An isolated offscreen for real group opacity.
+    GroupOpacity
+    // A subtree rendered into its own (possibly external) texture.
+    RenderTarget
+}
+
+public namespace DrawKind {
+    // kind 0..6 mirror CAContent.kind; 100 is a composite of another pass's texture.
+    let composite: Number = 100
+
+    let shadow: Number = 101
+}
+
+public struct CADrawCmd {
+    var layer: LayerId = LayerId(0)
+    var kind: Number = 0
+    var content: CAContent = .Empty
+    var quad: CAOrientedQuad = CAOrientedQuad {}
+    var worldBounds: Rect = Rect {}
+    var localWidth: Number = 0.0
+    var localHeight: Number = 0.0
+    // The width text breaks its lines in: the layer's settled width, so a
+    // run whose box is animating keeps the lines it is going to have.
+    var layoutWidth: Number = 0.0
+    var opacity: Number = 1.0
+    var fill: CAColor = CAColor {}
+    var border: CAColor = CAColor {}
+    var cornerRadius: Number = 0.0
+    var borderWidth: Number = 0.0
+    var shadowRadius: Number = 0.0
+    // For a shadow command: how far the shadow falls from the layer casting
+    // it, and whether that layer is glass -- which captures what is behind it,
+    // the shadow included, so a shadow under glass stops at the glass's edge
+    // instead of darkening the glass from beneath.
+    var shadowOffset: Point = Point {}
+    var shadowKnockout: Bool = false
+    // Whether the shadow falls inside the layer's box instead of outside it.
+    var shadowInverts: Bool = false
+    var shapeKind: Number = 0
+    var lengthScale: Number = 1.0
+    var textScale: Number = 1.0
+    // The weight a run is drawn at, as its layer's weight channel has it now.
+    var textWeight: Number = 400.0
+    var glassWash: Number = 0.0
+    var glassWashLuma: Number = 1.0
+    var capturesBackdrop: Bool = false
+    // The capture opens a blending group's surface: always a fresh one, so it
+    // holds everything drawn before the group.
+    var seedsGroup: Bool = false
+    var clipMinX: Number = 0.0
+    var clipMinY: Number = 0.0
+    var clipMaxX: Number = 1000000.0
+    var clipMaxY: Number = 1000000.0
+    var clipRadius: Number = 0.0
+    var clipShapeKind: Number = 0
+    // For a composite command: the pass whose texture is drawn. -1 otherwise.
+    var sourcePass: RenderPassId? = .None
+    // For a composite command: the blur it is drawn with, in points.
+    var blur: Number = 0.0
+    // Whether that blur is opaque (`CALayerDescription.blurOpaque`).
+    var blurOpaque: Bool = false
+    // For a composite command: the displacement map it is drawn through, and
+    // the rounded box -- the displaced layer's own -- the map is read off. The
+    // box is centered where the layer is in world space but measured in its
+    // own space at the world's length scale, as are the map's lengths; world
+    // space times `elementScale` is that space, axis by axis, so a layer
+    // squashed or stretched under it is displaced as its own map would be and
+    // then squashed, as a filter in Core Animation is drawn in its layer's
+    // space before the layer's transform.
+    var displacement: CADisplacement = CADisplacement {}
+    var element: CAOrientedQuad = CAOrientedQuad {}
+    var elementRadius: Number = 0.0
+    var elementScale: Point = Point { x: 1.0, y: 1.0 }
+    var hit: Bool = false
+    var hitKey: Number = 0
+}
+
+public struct CAPass {
+    var kind: CAPassKind = .Root
+    var passId: RenderPassId = RenderPassId(0)
+    var owner: LayerId = LayerId(0)
+    // >0 names an externally registered render target; 0 asks the compositor
+    // for its cached transient target. The retained tree never owns GPU objects.
+    var targetId: RenderTargetId = RenderTargetId(0)
+    // The alpha the isolated subtree composites at.
+    var groupOpacity: Number = 1.0
+    // World-space extent of every command this pass draws. Offscreen execution
+    // translates this origin to (0,0), so the texture is exactly the subtree's
+    // painted extent rather than a full-window scratch image.
+    var bounds: Rect = Rect {}
+    var hasBounds: Bool = false
+    // Model/presentation damage controls whether the retained batch must be
+    // re-encoded. Live sampled content can still require the already-encoded
+    // pass to be presented again even with no structural damage.
+    var dirty: Bool = false
+    var requiresRefresh: Bool = false
+    var signature: Number = 0
+    var cmds: [CADrawCmd] = []
+}
+
+public struct CARenderPlan {
+    var passes: [CAPass] = []
+    var rootPass: RenderPassId = RenderPassId(0)
+}
+
+// Append a command to a pass, folding the command's damage into the pass. Pass
+// records are read/written whole (the retained-tree discipline).
+public function rectUnion(a: borrow Rect, b: borrow Rect) -> Rect {
+    let minX = min(a.x, b.x)
+    let minY = min(a.y, b.y)
+    let maxX = max(a.x + a.width, b.x + b.width)
+    let maxY = max(a.y + a.height, b.y + b.height)
+    return Rect { x: minX, y: minY, width: maxX - minX, height: maxY - minY }
+}
+
+extend CADrawCmd {
+    function requiresRefresh() -> Bool {
+        if self.capturesBackdrop {
+            return true
+        }
+        return match self.content {
+            // A handed-over texture changes under the layer; a file does not.
+            Texture(t) -> t.path.count == 0
+            Glass(g) -> true
+            Text(t) -> t.adaptiveInk
+            Empty -> false
+            Solid(s) -> false
+            Icon(i) -> false
+            Gradient(g) -> false
+        }
+    }
+}
+
+extend CARenderPlan {
+    // Holds the blending group's capture, emitted at `index` in `passIndex`,
+    // open over everything the group drew after it: the group's own box is
+    // only where it stands, not the surface its sublayers reach across.
+    function widenSeed(borrow mut self, passIndex: RenderPassId, index: Number) {
+        let p = passIndex.raw
+        var bounds = self.passes[p].cmds[index].worldBounds
+        for i in (index + 1)..self.passes[p].cmds.count {
+            bounds = rectUnion(bounds, self.passes[p].cmds[i].worldBounds)
+        }
+        self.passes[p].cmds[index].worldBounds = bounds
+    }
+
+    function emit(borrow mut self, passIndex: RenderPassId, cmd: CADrawCmd, damaged: Bool) {
+        let p = passIndex.raw
+        // Wrapping arithmetic: the signature accumulates one factor of 31 per command,
+        // so a plain checked multiply overflows `Number` after a dozen or so commands.
+        // A change-detection hash only needs to differ when the input differs, which
+        // wrapping preserves — the same reason Foundation's `fnvStep` wraps.
+        self.passes[p].signature = wrappingAdd(
+            wrappingAdd(wrappingMul(self.passes[p].signature, 31), cmd.kind),
+            wrappingMul(cmd.layer.raw, 7)
+        )
+        if damaged {
+            self.passes[p].dirty = true
+        }
+        if cmd.requiresRefresh() {
+            self.passes[p].requiresRefresh = true
+        }
+        // Written in place: copying the pass out would copy every command it
+        // already holds, once per command emitted.
+        if self.passes[p].hasBounds {
+            self.passes[p].bounds = rectUnion(self.passes[p].bounds, cmd.worldBounds)
+        } else {
+            self.passes[p].bounds = cmd.worldBounds
+            self.passes[p].hasBounds = true
+        }
+        self.passes[p].cmds.append(move cmd)
+    }
+
+    // How many passes the plan runs, and how many draws in a given pass — the
+    // numbers a pass-planning test asserts.
+    function passCount() -> Number {
+        return self.passes.count
+    }
+
+    function drawCount(passIndex: RenderPassId) -> Number {
+        if passIndex.raw < 0 || passIndex.raw >= self.passes.count {
+            return 0
+        }
+        return self.passes[passIndex.raw].cmds.count
+    }
+}

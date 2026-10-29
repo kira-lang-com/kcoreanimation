@@ -1,0 +1,167 @@
+import Foundation
+import Ember
+import KiraLayout
+
+// The flat presentation list's submit path: each item drawn on the batched
+// backend by itself, without a render plan (see Compositor.kira).
+
+extend CADrawItem {
+    // Draw one flat presentation item (the compat single-pass path).
+    function submit(backend: borrow mut EmberFoundationBackend) -> Number {
+        if self.opacity <= 0.0 {
+            return 0
+        }
+        let fill = self.fill.toFoundation(self.opacity)
+        let border = self.border.toFoundation(self.opacity)
+        if self.capturesBackdrop {
+            backend.beginRetainedBackdrop(self.worldBounds)
+        }
+        var drawn = 0
+        match self.content {
+            Empty -> {}
+            Solid(s) -> {
+                self.quad.drawSurface(
+                    self.cornerRadius,
+                    self.borderWidth,
+                    fill,
+                    border,
+                    self.clipMinX,
+                    self.clipMinY,
+                    self.clipMaxX,
+                    self.clipMaxY,
+                    self.clipRadius,
+                    self.clipShapeKind,
+                    s.shapeKind,
+                    RGBAColor { a: 0.0 },
+                    0.0,
+                    backend,
+                    s.blend
+                )
+                drawn = 1
+            }
+            Gradient(g) -> {
+                let far = g.end.toFoundation(self.opacity)
+                self.quad.drawSurface(
+                    self.cornerRadius,
+                    self.borderWidth,
+                    fill,
+                    border,
+                    self.clipMinX,
+                    self.clipMinY,
+                    self.clipMaxX,
+                    self.clipMaxY,
+                    self.clipRadius,
+                    self.clipShapeKind,
+                    g.shapeKind,
+                    far,
+                    Number(g.axis),
+                    backend
+                )
+                drawn = 1
+            }
+            Glass(g) -> {
+                backend.drawRetainedGlass(
+                    self.quad,
+                    self.localWidth,
+                    self.localHeight,
+                    self.cornerRadius,
+                    self.fill.toFoundation(1.0),
+                    g,
+                    self.clipMinX,
+                    self.clipMinY,
+                    self.clipMaxX,
+                    self.clipMaxY,
+                    self.opacity,
+                    self.clipRadius,
+                    self.clipShapeKind
+                )
+                drawn = 1
+            }
+            Text(t) -> {
+                backend.drawText(
+                    t,
+                    self.quad,
+                    self.layoutWidth,
+                    self.textScale,
+                    self.textWeight,
+                    fill,
+                    self.clipMinX,
+                    self.clipMinY,
+                    self.clipMaxX,
+                    self.clipMaxY,
+                    self.glassWash,
+                    self.glassWashLuma,
+                    self.opacity,
+                    clipRadius: self.clipRadius,
+                    clipShapeKind: Number(self.clipShapeKind)
+                )
+                drawn = 1
+            }
+            Texture(x) -> {
+                let drew = backend.drawTextureLayer(
+                    x,
+                    self.quad,
+                    self.opacity,
+                    self.cornerRadius,
+                    self.clipMinX,
+                    self.clipMinY,
+                    self.clipMaxX,
+                    self.clipMaxY,
+                    self.clipRadius,
+                    Number(self.clipShapeKind)
+                )
+                if drew { drawn = 1 }
+            }
+            Icon(i) -> {
+                let frame = self.quad.frame()
+                backend.drewVisibleUi = true
+                backend.batch.pushIcon(
+                    backend.graphics,
+                    i.svg,
+                    frame.x,
+                    frame.y,
+                    frame.width,
+                    frame.height,
+                    fill,
+                    self.clipMinX,
+                    self.clipMinY,
+                    self.clipMaxX,
+                    self.clipMaxY,
+                    i.weightGrowth * self.lengthScale,
+                    self.quad.rotCos,
+                    self.quad.rotSin,
+                    i.blend,
+                    self.localHeight > 0.0 ? self.localWidth / self.localHeight : 0.0,
+                    clipRadius: self.clipRadius,
+                    clipShapeKind: Number(self.clipShapeKind),
+                    wholeCanvas: i.wholeCanvas
+                )
+                drawn = 1
+            }
+        }
+        if self.capturesBackdrop {
+            backend.endBackdrop(self.worldBounds)
+        }
+        return drawn
+    }
+}
+
+public function submit(
+    items: borrow [CADrawItem],
+    backend: borrow mut EmberFoundationBackend
+) -> Number {
+    var drawn = 0
+    for item in items {
+        drawn += item.submit(backend)
+    }
+    return drawn
+}
+
+extend CALayerTree {
+    // The compat single-pass path: flatten and submit in place. Group opacity here
+    // is inherited, not isolated — the isolated result is `CALayerTree.plan` + per-pass submit,
+    // which the runner drives with real render targets.
+    function composite(backend: borrow mut EmberFoundationBackend) -> Number {
+        return submit(self.flatten(), backend)
+    }
+}

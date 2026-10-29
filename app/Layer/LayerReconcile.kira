@@ -1,0 +1,292 @@
+import Foundation
+
+// What a described layer's content says about how it looks, read in one
+// match: the fill, outline and weight its channels animate to.
+//
+// One channel carries every color a node draws in: a solid's fill, a run's ink,
+// a glyph's tint, glass's tint, a gradient's first stop. A content that states
+// its color is drawn in it; `backgroundColor` is the fill of a layer whose
+// content states none. Applying the background over the content's own color
+// is what painted every label, glyph and transparent row in the description's
+// default.
+//
+// A solid states its own outline: its corner, its border and that border's
+// width; every other content takes the layer's. A run states its weight on
+// the font's axis; every other content draws no text and takes the regular
+// weight a layer starts at.
+public struct CADescribedLook {
+    var fill: CAColor = CAColor {}
+    var cornerRadius: Number = 0.0
+    var borderWidth: Number = 0.0
+    var borderColor: CAColor = CAColor {}
+    var textWeight: Number = 400.0
+}
+
+extend CALayerDescription {
+    function describedLook() -> CADescribedLook {
+        var look = CADescribedLook {
+            fill: self.backgroundColor,
+            cornerRadius: self.cornerRadius,
+            borderWidth: self.borderWidth,
+            borderColor: self.borderColor
+        }
+        match self.content {
+            Solid(s) -> {
+                look.fill = s.fill
+                look.cornerRadius = s.cornerRadius
+                look.borderWidth = s.borderWidth
+                look.borderColor = s.border
+            }
+            Text(t) -> {
+                look.fill = t.color
+                look.textWeight = t.weight
+            }
+            Icon(i) -> look.fill = i.tint
+            Glass(g) -> look.fill = g.tint
+            Gradient(r) -> look.fill = r.start
+            Texture(x) -> {}
+            Empty -> {}
+        }
+        return look
+    }
+}
+
+// Whether `now` is a run of other words than the run `was`.
+function textReplaced(was: borrow CAContent, now: borrow CAContent) -> Bool {
+    match was {
+        Text(old) -> match now {
+            Text(new) -> return old.content != new.content
+            Empty, Solid, Texture, Icon, Glass, Gradient -> return false
+        }
+        Empty, Solid, Texture, Icon, Glass, Gradient -> return false
+    }
+}
+
+extend CALayerTree {
+    // `geometryImmediate` puts the layer where the layout says at once while every
+    // other property animates as it would: what a live resize asks for.
+    //
+    // The node is found once and the transaction read once, and every value is
+    // set where it stands: going through the tree's setters looked the node up
+    // and copied the timing again for each of them.
+    function applyLayerDescription(
+        borrow mut self,
+        id: LayerId,
+        layer: borrow CALayerDescription,
+        geometryImmediate: Bool = false
+    ) {
+        var i = 0
+        match self.nodeSlot(id) {
+            None -> { return }
+            Some(slot) -> { i = slot.raw }
+        }
+        // A run given other words is other text, set where its layout puts
+        // it, as SwiftUI shows a changed `Text`: sliding it from the old
+        // words' frame drew the new words laid out in the wrong place first.
+        // Under an animation the caller asked for, it moves on that.
+        let replaced = textReplaced(self.nodes[i].content, layer.content) && self.txStack.count == 0
+        self.setContent(id, layer.content)
+        let look = layer.describedLook()
+        let timing = self.currentTiming()
+        let clock = self.clock
+        var damaged = false
+        if geometryImmediate || replaced {
+            let placed = immediateTiming()
+            if self.nodes[i].posX.applyTiming(placed, layer.position.x, clock) { damaged = true }
+            if self.nodes[i].posY.applyTiming(placed, layer.position.y, clock) { damaged = true }
+            if self.nodes[i].boundsW.applyTiming(placed, layer.size.width, clock) { damaged = true }
+            if self.nodes[i].boundsH.applyTiming(placed, layer.size.height, clock) {
+                damaged = true
+            }
+        } else {
+            if self.nodes[i].posX.applyTiming(timing, layer.position.x, clock) { damaged = true }
+            if self.nodes[i].posY.applyTiming(timing, layer.position.y, clock) { damaged = true }
+            if self.nodes[i].boundsW.applyTiming(timing, layer.size.width, clock) { damaged = true }
+            if self.nodes[i].boundsH.applyTiming(timing, layer.size.height, clock) {
+                damaged = true
+            }
+        }
+        if self.nodes[i].opacity.applyTiming(timing, layer.opacity, clock) { damaged = true }
+        if self.nodes[i].groupOpacity != layer.allowsGroupOpacity {
+            self.nodes[i].groupOpacity = layer.allowsGroupOpacity
+            damaged = true
+        }
+        if self.nodes[i].scaleX.applyTiming(timing, layer.scaleX, clock) { damaged = true }
+        if self.nodes[i].scaleY.applyTiming(timing, layer.scaleY, clock) { damaged = true }
+        if self.nodes[i].rotation.applyTiming(timing, layer.rotation, clock) { damaged = true }
+        let was = self.nodes[i].deformation
+        if was.x != layer.deformation.x || was.y != layer.deformation.y || was.scaleX != layer.deformation.scaleX || was.scaleY != layer.deformation.scaleY {
+            self.nodes[i].deformation = copy layer.deformation
+            damaged = true
+        }
+        if self.nodes[i].anchorX != layer.anchorPoint.x || self.nodes[i].anchorY != layer.anchorPoint.y {
+            self.nodes[i].anchorX = layer.anchorPoint.x
+            self.nodes[i].anchorY = layer.anchorPoint.y
+            damaged = true
+        }
+        if self.nodes[i].driveCornerRadius(timing, look.cornerRadius, clock) {
+            damaged = true
+        }
+        if self.nodes[i].borderWidth.applyTiming(timing, look.borderWidth, clock) { damaged = true }
+        if self.nodes[i].textWeight.applyTiming(timing, look.textWeight, clock) { damaged = true }
+        // The wash a hover or a press lays over the fill, and the fill under it,
+        // land as one color.
+        self.nodes[i].hoverColor = layer.hoverColor
+        self.nodes[i].pressColor = layer.pressColor
+        self.nodes[i].restingFill = look.fill
+        let shown = self.nodes[i].shownFill(id == self.hoveredId, id == self.pressedId)
+        if self.nodes[i].fillColor.applyTiming(timing, shown, clock) { damaged = true }
+        if self.nodes[i].borderColor.applyTiming(timing, look.borderColor, clock) { damaged = true }
+        let shadowOpacity = layer.shadow.color.a > 0.0 ? 1.0 : 0.0
+        if self.nodes[i].shadowRadius.applyTiming(timing, layer.shadow.radius, clock) {
+            damaged = true
+        }
+        if self.nodes[i].shadowOpacity.applyTiming(timing, shadowOpacity, clock) { damaged = true }
+        if self.nodes[i].shadowX.applyTiming(timing, layer.shadow.offset.x, clock) {
+            damaged = true
+        }
+        if self.nodes[i].shadowY.applyTiming(timing, layer.shadow.offset.y, clock) {
+            damaged = true
+        }
+        if self.nodes[i].shadowColor.applyTiming(timing, layer.shadow.color, clock) {
+            damaged = true
+        }
+        if self.nodes[i].shadowInverts != layer.shadow.inverts {
+            self.nodes[i].shadowInverts = layer.shadow.inverts
+            damaged = true
+        }
+        if self.nodes[i].clip != layer.clipsChildren {
+            self.nodes[i].clip = layer.clipsChildren
+            damaged = true
+        }
+        if self.nodes[i].renderTarget != layer.renderTarget || self.nodes[i].renderTargetId != RenderTargetId(
+            0
+        ) {
+            self.nodes[i].renderTarget = layer.renderTarget
+            self.nodes[i].renderTargetId = RenderTargetId(0)
+            damaged = true
+        }
+        if self.nodes[i].blur.applyTiming(timing, layer.blur, clock) { damaged = true }
+        if self.nodes[i].blurOpaque != layer.blurOpaque {
+            self.nodes[i].blurOpaque = layer.blurOpaque
+            damaged = true
+        }
+        if !self.nodes[i].displacement.same(layer.displacement) {
+            self.nodes[i].displacement = copy layer.displacement
+            damaged = true
+        }
+        if self.nodes[i].blendingGroup != layer.blendingGroup {
+            self.nodes[i].blendingGroup = layer.blendingGroup
+            damaged = true
+        }
+        if self.nodes[i].capturesBackdrop != layer.capturesBackdrop {
+            self.nodes[i].capturesBackdrop = layer.capturesBackdrop
+            damaged = true
+        }
+        self.nodes[i].hit = layer.hittable
+        self.nodes[i].interactive = layer.interactive
+        self.nodes[i].slidesPress = layer.slidesPress
+        self.nodes[i].hitKey = layer.hitKey
+        self.nodes[i].scrolls = layer.scrollAxis != .None
+        self.nodes[i].removal = layer.removal
+        if damaged {
+            self.nodes[i].damaged = true
+        }
+        self.setLevel(id, layer.level)
+    }
+
+    // A layer new to the tree takes its first values where they are, as Core
+    // Animation's does: there is nothing on screen for it to move from. Animating
+    // them would grow every view that appears out of the top-leading corner, from
+    // the zero size and position a fresh layer starts at.
+    // An entrance moves it in from where that names instead.
+    function reconcileLayer(
+        borrow mut self,
+        parent: LayerId,
+        layer: borrow CALayerDescription,
+        geometryImmediate: Bool = false
+    ) -> LayerId {
+        var id = self.matchChild(parent, layer.key, layer.kind, layer.place)
+        let appearing = id == Layers.none
+        if appearing {
+            id = self.makeLayer(parent, layer.key, layer.content)
+            self.setIdentity(id, layer.kind, layer.place)
+        }
+        self.reuse(id)
+        var timed = false
+        match layer.animation {
+            Inherit -> {}
+            Timed(timing) -> {
+                self.beginTransaction(copy timing)
+                timed = true
+            }
+        }
+        if appearing || layer.disablesActions {
+            let enters = appearing && layer.entrance.active && !layer.disablesActions
+            self.beginTransaction(immediateTiming())
+            self.applyLayerDescription(id, layer)
+            if enters {
+                let entrance = layer.entrance
+                self.setPosition(
+                    id,
+                    layer.position.x + entrance.offset.x + entrance.offsetFraction.x * layer.size.width,
+                    layer.position.y + entrance.offset.y + entrance.offsetFraction.y * layer.size.height
+                )
+                self.setOpacity(id, entrance.opacity)
+                self.setScale(id, layer.scaleX * entrance.scale, layer.scaleY * entrance.scale)
+            }
+            self.commitTransaction()
+            if enters {
+                self.setPosition(id, layer.position.x, layer.position.y)
+                self.setOpacity(id, layer.opacity)
+                self.setScale(id, layer.scaleX, layer.scaleY)
+            }
+        } else {
+            self.applyLayerDescription(id, layer, geometryImmediate)
+        }
+        var children: [LayerId] = []
+        for child in layer.sublayers {
+            children.append(self.reconcileLayer(id, child, geometryImmediate))
+        }
+        self.setChildren(id, move children)
+        if timed {
+            self.commitTransaction()
+        }
+        return id
+    }
+
+    function reconcile(
+        borrow mut self,
+        root: borrow CALayerDescription,
+        geometryImmediate: Bool = false
+    ) -> LayerId {
+        self.beginReconcile()
+        var rootId = self.rootId
+        if rootId == Layers.none {
+            rootId = self.makeLayer(Layers.none, root.key, root.content)
+        }
+        self.reuse(rootId)
+        self.applyLayerDescription(rootId, root, geometryImmediate)
+        var children: [LayerId] = []
+        for child in root.sublayers {
+            children.append(self.reconcileLayer(rootId, child, geometryImmediate))
+        }
+        self.setChildren(rootId, move children)
+        self.endReconcile()
+        return rootId
+    }
+
+    // A window being resized: every layer takes the new layout's frame at once, as
+    // UIKit's content follows a live resize, while a fade, a color or a press that
+    // was already running carries on rather than jumping to its end.
+    function reconcileResizing(borrow mut self, root: borrow CALayerDescription) -> LayerId {
+        return self.reconcile(root, true)
+    }
+
+    function reconcileImmediate(borrow mut self, root: borrow CALayerDescription) -> LayerId {
+        self.beginTransaction(immediateTiming())
+        let rootId = self.reconcile(root)
+        self.commitTransaction()
+        return rootId
+    }
+}

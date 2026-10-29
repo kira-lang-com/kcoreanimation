@@ -1,0 +1,474 @@
+import Foundation
+import Heap
+import Ember
+// Appending a quad to the current stream.
+//
+// One record per quad rather than per vertex: the twelve corner-varying values are
+// written as their two extremes and the vertex stage picks the one its corner
+// wants, which is what keeps a screen of glyphs at 54 floats each instead of 192.
+// Everything a caller can draw that is not a glyph, an icon or glass ends up here.
+
+// Append one quad (4 vertices) to the stream. (px0,py0)-(px1,py1) is the pixel-space
+// rectangle; (lx0,ly0)-(lx1,ly1) is the per-corner local value (SDF offset, or uv for
+// glyphs). The other attributes are constant across the quad's vertices.
+extend UiBatch {
+    function emitQuad(
+        px0: Number,
+        py0: Number,
+        px1: Number,
+        py1: Number,
+        lx0: Number,
+        ly0: Number,
+        lx1: Number,
+        ly1: Number,
+        halfW: Number,
+        halfH: Number,
+        radius: Number,
+        borderWidth: Number,
+        mode: Number,
+        edgeRefraction: Number,
+        fr: Number,
+        fg: Number,
+        fb: Number,
+        fa: Number,
+        br: Number,
+        bg: Number,
+        bb: Number,
+        ba: Number,
+        clipMinX: Number,
+        clipMinY: Number,
+        clipMaxX: Number,
+        clipMaxY: Number,
+        m0: Number = 0.0,
+        m1: Number = 0.0,
+        m2: Number = 0.0,
+        m3: Number = 0.0,
+        m4: Number = 0.0,
+        m5: Number = 0.0,
+        m6: Number = 0.0,
+        m7: Number = 0.0,
+        m8: Number = 0.0,
+        m9: Number = 0.0,
+        m10: Number = 0.0,
+        m11: Number = 0.0,
+        m12: Number = 0.0,
+        m13: Number = 0.0,
+        m14: Number = 0.0,
+        m15: Number = 0.0,
+        m16: Number = 0.0,
+        m17: Number = 0.0,
+        m18: Number = 0.0,
+        m19: Number = 0.0,
+        m20: Number = 0.0,
+        m21: Number = 0.0,
+        m22: Number = 0.0,
+        m23: Number = 0.0,
+        // The gradient's far color and its axis (0 none, 1 down, 2 across,
+        // 3 corner to corner). A flat quad leaves them at zero.
+        gradR: Number = 0.0,
+        gradG: Number = 0.0,
+        gradB: Number = 0.0,
+        gradA: Number = 0.0,
+        gradAxis: Number = 0.0,
+        // The second shape a liquid-glass surface is fusing with, in this
+        // quad's own space, and the smooth minimum's reach. A reach of zero is
+        // a surface that is one shape, which is every quad but the ones in a
+        // morph — and the only value any other mode ever passes.
+        morphX: Number = 0.0,
+        morphY: Number = 0.0,
+        morphHalfW: Number = 0.0,
+        morphHalfH: Number = 0.0,
+        morphRadius: Number = 0.0,
+        morphBlend: Number = 0.0,
+        // 0 for a circular rounded rectangle, 1 for a squircle's continuous
+        // superellipse corner.
+        shapeKind: Number = 0.0,
+        // The quad turned about its own center, as cosine and sine. See
+        // `writeQuadRotation`; (1, 0) is a quad that is not turned, which is
+        // almost all of them.
+        rotCos: Number = 1.0,
+        rotSin: Number = 0.0,
+        // The corner of a rounded clip, zero for a clip that is a plain box, and
+        // its kind: one for the continuous corner a squircle has.
+        clipRadius: Number = 0.0,
+        clipShapeKind: Number = 0.0,
+    ) {
+        var state = nativeRecover<UiBatchState>(self.storage)
+        if state.quadCount >= QuadLayout.maxPerBatch {
+            return
+        }
+        let modeCode = trunc(mode * 10.0)
+        // The plain texture pipeline keeps the exact copy/crossfade math. A
+        // mode inside this bucket that requests blur retains the generic path.
+        let requiresGeneric = rotSin != 0.0 || rotCos != 1.0 || (modeCode == 20 && mode > 2.05)
+        state.streams[state.streamIndex.raw].recordMode(state.quadCount, modeCode, requiresGeneric)
+        if modeCode >= 100 { state.blendWanted = true }
+        // Which texture this quad samples, recorded beside its mode. Only a
+        // mode-2 quad samples one; every other quad records nothing, so a run
+        // of them never breaks a draw call in two.
+        var externalId = TextureHandle(0)
+        if modeCode == 20 || modeCode == 21 || modeCode == 22 {
+            externalId = state.externalPending
+        }
+        var secondaryId = TextureHandle(0)
+        if modeCode == 20 || modeCode == 21 || modeCode == 22 {
+            secondaryId = state.secondaryPending
+        }
+        state.streams[state.streamIndex.raw].recordTextures(
+            state.quadCount,
+            externalId,
+            secondaryId
+        )
+        if state.streamIndex.raw == 0 && state.probeQuads {
+            print(636363)
+            print(trunc(mode * 10.0))
+            print(trunc(px0))
+            print(trunc(py0))
+            print(trunc(px1))
+            print(trunc(py1))
+            print(trunc(fr * 1000.0))
+            print(trunc(fg * 1000.0))
+            print(trunc(fb * 1000.0))
+            print(trunc(fa * 1000.0))
+            print(trunc(edgeRefraction * 1000.0))
+        }
+        if state.probeCost && (mode < 0.5 || mode > 1.5) {
+            print(656565)
+            print(state.streamIndex.raw)
+            print(trunc(mode * 10.0))
+            print(trunc(px0))
+            print(trunc(py0))
+            print(trunc(px1 - px0))
+            print(trunc(py1 - py0))
+        }
+        let contents = state.contentsPtr
+        if isNull(contents) {
+            return
+        }
+        let vw = state.viewportW
+        let vh = state.viewportH
+        // Base float index of this quad's record, inside this frame's ring slot.
+        let base = state.frameBase + state.quadCount * QuadLayout.floatCount
+        writeQuadRecord(
+            contents,
+            base,
+            px0,
+            py0,
+            px1,
+            py1,
+            lx0,
+            ly0,
+            lx1,
+            ly1,
+            vw,
+            vh,
+            halfW,
+            halfH,
+            radius,
+            borderWidth,
+            mode,
+            edgeRefraction,
+            fr,
+            fg,
+            fb,
+            fa,
+            br,
+            bg,
+            bb,
+            ba,
+            clipMinX,
+            clipMinY,
+            clipMaxX,
+            clipMaxY,
+            rotCos: rotCos,
+            rotSin: rotSin,
+            clipRadius: clipRadius,
+            clipShapeKind: clipShapeKind,
+        )
+        // Written for every quad, flat ones included: the slot is reused, and an
+        // unwritten block carries whatever gradient last occupied it.
+        writeQuadGradient(contents, base, gradR, gradG, gradB, gradA, gradAxis)
+        // Unconditional for the same reason the gradient is: the slot is reused
+        // and an unwritten morph block is a second shape left over from
+        // whatever quad held this slot last.
+        writeQuadMorph(
+            contents,
+            base,
+            morphX,
+            morphY,
+            morphHalfW,
+            morphHalfH,
+            morphRadius,
+            morphBlend
+        )
+        writeQuadShapeKind(contents, base, shapeKind)
+        writeQuadRotation(contents, base, rotCos, rotSin)
+        // The material block too: glass shades itself with it, and a flat
+        // surface carries its touch highlight in the block's spare slots. Left
+        // to glass alone, a rule drawn where a glass quad had been took that
+        // quad's spares as a highlight and burned brighter than its siblings.
+        writeQuadMaterial(
+            contents,
+            base,
+            m0,
+            m1,
+            m2,
+            m3,
+            m4,
+            m5,
+            m6,
+            m7,
+            m8,
+            m9,
+            m10,
+            m11,
+            m12,
+            m13,
+            m14,
+            m15,
+            m16,
+            m17,
+            m18,
+            m19,
+            m20,
+            m21,
+            m22,
+            m23,
+        )
+        // With a glass layer open, remember the (clipped) footprint this quad covers:
+        // the next glass surface reads the grid to decide whether it is stacked over
+        // this layer and therefore needs a capture of its own. The HUD's stream is
+        // exempt: it is drawn after every glass decision of the frame has been taken,
+        // so no glass surface can ever read what it would record.
+        if state.streamIndex.raw > 0 && state.streamIndex != state.hudStream {
+            var mx0 = px0
+            if mx0 < clipMinX {
+                mx0 = clipMinX
+            }
+            var my0 = py0
+            if my0 < clipMinY {
+                my0 = clipMinY
+            }
+            var mx1 = px1
+            if mx1 > clipMaxX {
+                mx1 = clipMaxX
+            }
+            var my1 = py1
+            if my1 > clipMaxY {
+                my1 = clipMaxY
+            }
+            if mx1 > mx0 && my1 > my0 {
+                glassMarkRect(state, mx0, my0, mx1, my1)
+            }
+        }
+        state.quadCount += 1
+    }
+}
+
+// Push a rounded-rect / squircle surface with an optional border. The quad is padded
+// by 1px so the SDF anti-aliasing band at the edge is not clipped. `shapeMode` is
+// 0.0 for a circular rounded rectangle and 0.25 for a superellipse corner.
+extend UiBatch {
+    function pushRect(
+        x: Number,
+        y: Number,
+        w: Number,
+        h: Number,
+        fill: borrow RGBAColor,
+        border: borrow RGBAColor,
+        borderWidth: Number,
+        radius: Number,
+        clipMinX: Number,
+        clipMinY: Number,
+        clipMaxX: Number,
+        clipMaxY: Number,
+        shapeMode: Number = 0.0,
+        // A gradient fill: `fill` is the near end, this is the far one, and the
+        // axis says which way far runs (0 none, 1 down, 2 across, 3 corner to
+        // corner). One quad either way — the blend is per corner.
+        gradient: borrow RGBAColor = RGBAColor { a: 0.0 },
+        gradientAxis: Number = 0.0,
+        // The touch highlight, in the same coordinates as `x`/`y`. Strength
+        // zero is no highlight, which is every quad but the one under a finger.
+        glowX: Number = 0.0,
+        glowY: Number = 0.0,
+        glowStrength: Number = 0.0,
+        // The corner of the clip the surface is drawn inside, when that clip
+        // is a rounded box: what it leaves past the clip's corners is not drawn.
+        clipRadius: Number = 0.0,
+        clipShapeKind: Number = 0.0,
+        // Burned or dodged into what is under it rather than laid over it.
+        blend: CABlendMode = .Normal,
+    ) {
+        if w <= 0.0 || h <= 0.0 {
+            return
+        }
+        // A gradient can start transparent and end opaque, so what decides
+        // whether there is anything to draw is BOTH ends of the fill.
+        // A quad that paints no fill, no gradient and no border still has
+        // something to draw if it is carrying a touch highlight: the light is
+        // ADDED to what is already there, so it needs no fill of its own. This
+        // is how the highlight reaches a glass surface, whose fill the glass
+        // shader owns and whose fill quad is therefore suppressed.
+        if fill.a <= 0.0 && gradient.a <= 0.0 && (
+            border.a <= 0.0 || borderWidth <= 0.0
+        ) && glowStrength == 0.0 {
+            return
+        }
+        let pad = 1.0
+        let halfW = w / 2.0
+        let halfH = h / 2.0
+        let cx = x + halfW
+        let cy = y + halfH
+        let lhx = halfW + pad
+        let lhy = halfH + pad
+        var clampedRadius = radius
+        if clampedRadius > halfW {
+            clampedRadius = halfW
+        }
+        if clampedRadius > halfH {
+            clampedRadius = halfH
+        }
+        let ink = blend.ink(fill)
+        self.noteHole(fill, blend)
+        let before = self.quadCount()
+        self.emitQuad(
+            cx - lhx,
+            cy - lhy,
+            cx + lhx,
+            cy + lhy,
+            -lhx,
+            -lhy,
+            lhx,
+            lhy,
+            halfW,
+            halfH,
+            clampedRadius,
+            borderWidth,
+            shapeMode,
+            0.0,
+            ink.r,
+            ink.g,
+            ink.b,
+            ink.a,
+            border.r,
+            border.g,
+            border.b,
+            border.a,
+            clipMinX,
+            clipMinY,
+            clipMaxX,
+            clipMaxY,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            // The last three material slots are the spares, and in this mode
+            // they carry the highlight. Handed over in the quad's OWN space,
+            // which is what the fragment measures distance in.
+            glowX - cx,
+            glowY - cy,
+            glowStrength,
+            gradient.r,
+            gradient.g,
+            gradient.b,
+            gradient.a,
+            gradientAxis,
+            morphX: 0.0,
+            morphY: 0.0,
+            morphHalfW: 0.0,
+            morphHalfH: 0.0,
+            morphRadius: 0.0,
+            morphBlend: 0.0,
+            shapeKind: 0.0,
+            rotCos: 1.0,
+            rotSin: 0.0,
+            clipRadius: clipRadius,
+            clipShapeKind: clipShapeKind
+        )
+        self.routeBlend(before, blend)
+    }
+
+    function quadCount() -> Number {
+        let state = nativeRecover<UiBatchState>(self.storage)
+        return state.quadCount
+    }
+
+    // A destination-out fill takes only its alpha from what is under it; its
+    // color names the material the host lays in the hole it cuts, which the
+    // glass over the hole samples in the cut's place.
+    function noteHole(fill: borrow RGBAColor, blend: borrow CABlendMode) {
+        if blend != .DestinationOut {
+            return
+        }
+        var state = nativeRecover<UiBatchState>(self.storage)
+        state.holeR = fill.r
+        state.holeG = fill.g
+        state.holeB = fill.b
+    }
+
+    // Sends the quad just emitted, if one was, to the pipeline its blend draws
+    // through: the hundred the blend names, over the mode it shades in.
+    function routeBlend(before: Number, blend: borrow CABlendMode) {
+        if blend == .Normal {
+            return
+        }
+        var state = nativeRecover<UiBatchState>(self.storage)
+        if state.quadCount <= before {
+            return
+        }
+        let index = state.quadCount - 1
+        let mode = state.streams[state.streamIndex.raw].quads[index].mode
+        state.streams[state.streamIndex.raw].quads[index].mode = mode + blend.route()
+        state.blendWanted = true
+    }
+}
+
+extend UiBatch {
+    // Sends a run's glyphs, emitted from `before` on, to the pipeline its
+    // blend draws them through. Only a plain glyph has one: an adaptive glyph
+    // decides its own ink against the glass and stays as it is.
+    function routeBlendRange(before: Number, blend: borrow CABlendMode) {
+        if blend == .Normal {
+            return
+        }
+        var state = nativeRecover<UiBatchState>(self.storage)
+        let stream = state.streamIndex.raw
+        let route = blend.route()
+        for index in before..state.quadCount {
+            if index < state.streams[stream].quads.count && state.streams[stream].quads[index].mode == 10 {
+                state.streams[stream].quads[index].mode = 10 + route
+            }
+        }
+    }
+}
+
+// The ink a blended fill is drawn in. A dodge adds its color; a burn takes
+// away the color's distance from white, which is what the subtracting
+// pipeline is handed.
+extend CABlendMode {
+    // The ink a fill is drawn in under this blend.
+    function ink(fill: borrow RGBAColor) -> RGBAColor {
+        if self == .LinearBurn {
+            return RGBAColor { r: 1.0 - fill.r, g: 1.0 - fill.g, b: 1.0 - fill.b, a: fill.a }
+        }
+        return copy fill
+    }
+}

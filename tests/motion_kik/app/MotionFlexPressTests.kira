@@ -1,0 +1,67 @@
+import Foundation
+import KCoreAnimation
+
+// A press on a Control Center module, as a platform hosts it: the frames a
+// host steps the flex by are whatever passed since the last one, which can be
+// nothing, a sliver, or seconds after the screen slept; and the box it is
+// fitted to can be empty when the press landed before the layer was laid out.
+
+function flexPressedFor(width: Number, height: Number, deltas: borrow [Number]) -> MotionFlexFrame {
+    var state = MotionFlexState {}
+    motionFlexFit(state, motionFlexParameters(.Automatic, .Touch, width, height), width, height)
+    state.glows = true
+    state.tracking = true
+    motionFlexPress(state, width / 2, height / 2)
+    var frame = MotionFlexFrame {}
+    for delta in deltas {
+        motionFlexMove(state, width / 2 + 3, height / 2 + 1)
+        frame = motionFlexAdvance(state, delta)
+    }
+    motionFlexRelease(state)
+    for delta in deltas {
+        frame = motionFlexAdvance(state, delta)
+    }
+    return frame
+}
+
+@Test
+function flexTakesEvenFrames() {
+    let frame = flexPressedFor(57.59375, 57.59375, [0.016, 0.016, 0.017, 0.016])
+    expect!(frame.scaleX > 0)
+}
+
+@Test
+function flexTakesNoTimeAtAll() {
+    let frame = flexPressedFor(57.59375, 57.59375, [0, 0, 0.016, 0])
+    expect!(frame.scaleX > 0)
+}
+
+@Test
+function flexTakesASliver() {
+    let frame = flexPressedFor(57.59375, 57.59375, [0.000001, 0.0000001, 0.016])
+    expect!(frame.scaleX > 0)
+}
+
+@Test
+function flexTakesALongWait() {
+    let frame = flexPressedFor(57.59375, 57.59375, [30, 0.016, 600, 0.016])
+    expect!(frame.scaleX > 0)
+}
+
+@Test
+function flexTakesTimeGoingBack() {
+    let frame = flexPressedFor(57.59375, 57.59375, [0.016, -0.004, 0.016])
+    expect!(frame.scaleX > 0)
+}
+
+@Test
+function flexTakesAnEmptyBox() {
+    let frame = flexPressedFor(0, 0, [0.016, 0.016, 0.016])
+    expect!(frame.scaleX > 0)
+}
+
+@Test
+function flexTakesAWideModule() {
+    let frame = flexPressedFor(302.5, 107, [0.016, 0.0001, 0.016, 2])
+    expect!(frame.scaleX > 0)
+}

@@ -1,0 +1,202 @@
+// Ordinary external textures: the generic mode-2 shader with unrelated
+// primitive modes removed. Rotated and blurred textures keep the generic path.
+import GlassCommon
+
+type UiQuad {
+    let posX0: Float
+    let posY0: Float
+    let posX1: Float
+    let posY1: Float
+    let pxX0: Float
+    let pxY0: Float
+    let pxX1: Float
+    let pxY1: Float
+    let localX0: Float
+    let localY0: Float
+    let localX1: Float
+    let localY1: Float
+    let halfW: Float
+    let halfH: Float
+    let radius: Float
+    let borderWidth: Float
+    let mode: Float
+    let edgeRefraction: Float
+    let fillR: Float
+    let fillG: Float
+    let fillB: Float
+    let fillA: Float
+    let borderR: Float
+    let borderG: Float
+    let borderB: Float
+    let borderA: Float
+    let clipMinX: Float
+    let clipMinY: Float
+    let clipMaxX: Float
+    let clipMaxY: Float
+    let edgeStrokeStrength: Float
+    let edgeStrokeDarken: Float
+    let edgeStrokePeak: Float
+    let edgeStrokeFade: Float
+    let sheenStrength: Float
+    let lensMaxBend: Float
+    let refractionReach: Float
+    let blurNearSplit: Float
+    let borderSpread: Float
+    let borderSideOffset: Float
+    let borderSideSpread: Float
+    let borderGray: Float
+    let borderSideGray: Float
+    let innerRimStrength: Float
+    let innerRimWidth: Float
+    let washBlend: Float
+    let washUpperR: Float
+    let washUpperG: Float
+    let washUpperB: Float
+    let washUpperAlpha: Float
+    let washUpperBlend: Float
+    let materialSpare0: Float
+    let materialSpare1: Float
+    let materialSpare2: Float
+    let gradientR: Float
+    let gradientG: Float
+    let gradientB: Float
+    let gradientA: Float
+    let gradientAxis: Float
+    let morphX: Float
+    let morphY: Float
+    let morphHalfW: Float
+    let morphHalfH: Float
+    let morphRadius: Float
+    let morphBlend: Float
+    let shapeKind: Float
+    let rotCos: Float
+    let rotSin: Float
+    let clipRadius: Float
+    let clipShapeKind: Float
+}
+
+type VertexIn {
+    @builtin(vertex_index)
+    let vid: UInt
+}
+
+type VertexOut {
+    @builtin(position)
+    let clip_position: Float4
+    let local: Float2
+    let px: Float2
+    let hsize: Float2
+    let shape: Float4
+    let fill: Float4
+    let clip: Float4
+    let clipCorner: Float2
+}
+
+type FragmentOut {
+    let color: Float4
+}
+
+function clipCoverage(input: VertexOut) -> Float {
+    return GlassCommon.clipShapeCoverage(input.px, input.clip, input.clipCorner)
+}
+
+shader UiTexture {
+    group Batch {
+        storage read verts: [UiQuad]
+        texture atlas: Texture2d
+        sampler atlasSmp: Sampler
+        texture external: Texture2d
+        sampler externalSmp: Sampler
+        texture backdrop: Texture2d
+        sampler backdropSmp: Sampler
+    }
+
+    vertex {
+        input VertexIn
+        output VertexOut
+
+        function entry(input: VertexIn) -> VertexOut {
+            let v = verts[input.vid / UInt(4)]
+            let corner = input.vid % UInt(4)
+            let right = Float((corner + UInt(1)) % UInt(4) / UInt(2))
+            let bottom = Float(corner / UInt(2))
+            let out: VertexOut
+            let clipX = mix(v.posX0, v.posX1, right)
+            let clipY = mix(v.posY0, v.posY1, bottom)
+            let pxX = mix(v.pxX0, v.pxX1, right)
+            let pxY = mix(v.pxY0, v.pxY1, bottom)
+
+            out.clip_position = Float4(clipX, clipY, 0.0, 1.0)
+            out.local = Float2(mix(v.localX0, v.localX1, right), mix(v.localY0, v.localY1, bottom))
+            out.px = Float2(pxX, pxY)
+            out.hsize = Float2(v.halfW, v.halfH)
+            out.shape = Float4(v.radius, v.borderWidth, v.mode, v.edgeRefraction)
+            let mixT = 0.0
+            if v.gradientAxis > 2.5 {
+                mixT = (right + bottom) * 0.5
+            } else if v.gradientAxis > 1.5 {
+                mixT = right
+            } else if v.gradientAxis > 0.5 {
+                mixT = bottom
+            }
+            out.fill = mix(
+                Float4(v.fillR, v.fillG, v.fillB, v.fillA),
+                Float4(v.gradientR, v.gradientG, v.gradientB, v.gradientA),
+                mixT,
+            )
+            out.clip = Float4(v.clipMinX, v.clipMinY, v.clipMaxX, v.clipMaxY)
+            out.clipCorner = Float2(v.clipRadius, v.clipShapeKind)
+            return out
+        }
+    }
+
+    fragment {
+        input VertexOut
+        output FragmentOut
+
+        function entry(input: VertexOut) -> FragmentOut {
+            let out: FragmentOut
+            if input.px.x < input.clip.x {
+                out.color = Float4(0.0, 0.0, 0.0, 0.0)
+                return out
+            }
+            if input.px.y < input.clip.y {
+                out.color = Float4(0.0, 0.0, 0.0, 0.0)
+                return out
+            }
+            if input.px.x > input.clip.z {
+                out.color = Float4(0.0, 0.0, 0.0, 0.0)
+                return out
+            }
+            if input.px.y > input.clip.w {
+                out.color = Float4(0.0, 0.0, 0.0, 0.0)
+                return out
+            }
+
+            let transition = clamp(input.shape.w, 0.0, 1.0)
+            let textureLocal = (input.local - Float2(0.5, 0.5)) * Float2(input.hsize.x * 2.0, input.hsize.y * 2.0)
+            let textureDistance = GlassCommon.sdRound(textureLocal, input.hsize, input.shape.x)
+            let textureCoverage = clamp(0.5 - textureDistance, 0.0, 1.0) * clipCoverage(input)
+            if transition <= 0.001 {
+                let read = sample(external, externalSmp, input.local)
+                let weight = mix(1.0, read.w, step(2.025, input.shape.z))
+                let texel = Float4(read.x * weight, read.y * weight, read.z * weight, read.w)
+                let alpha = texel.w * input.fill.w * textureCoverage
+                out.color = Float4(texel.x * input.fill.w * textureCoverage, texel.y * input.fill.w * textureCoverage, texel.z * input.fill.w * textureCoverage, alpha)
+                return out
+            }
+            if transition >= 0.999 {
+                let texel = sample(backdrop, backdropSmp, input.local)
+                let alpha = texel.w * input.fill.w * textureCoverage
+                out.color = Float4(texel.x * input.fill.w * textureCoverage, texel.y * input.fill.w * textureCoverage, texel.z * input.fill.w * textureCoverage, alpha)
+                return out
+            }
+            let primary = sample(external, externalSmp, input.local)
+            let secondary = sample(backdrop, backdropSmp, input.local)
+            let texel = mix(primary, secondary, transition)
+            let alpha = texel.w * input.fill.w * textureCoverage
+            out.color = Float4(texel.x * input.fill.w * textureCoverage, texel.y * input.fill.w * textureCoverage, texel.z * input.fill.w * textureCoverage, alpha)
+            return out
+        }
+    }
+}

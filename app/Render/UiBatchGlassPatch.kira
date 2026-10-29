@@ -1,0 +1,284 @@
+import Foundation
+import Ember
+// A glass surface's patches: the one call every region of `pushGlass`
+// emits through, and the record it writes.
+
+// The numbers every patch of one glass surface shares.
+struct GlassPatchCommon {
+    let cx: Number
+    let cy: Number
+    let vw: Number
+    let vh: Number
+    let halfW: Number
+    let halfH: Number
+    let radius: Number
+    let tint: RGBAColor
+    let blur: Number
+    let edgeRefraction: Number
+    let clipMinX: Number
+    let clipMinY: Number
+    let clipMaxX: Number
+    let clipMaxY: Number
+    let material: CAGlassMaterial
+    let borderSpread: Number
+    let borderSideOffset: Number
+    let borderSideSpread: Number
+    let rimWidth: Number
+    let edgeBand: Number
+    let glowX: Number
+    let glowY: Number
+    let glowStrength: Number
+    let shapeKind: Number
+}
+
+extend UiBatch {
+    // One patch of a surface, `mode` over the rectangle from (`lx0`, `ly0`)
+    // to (`lx1`, `ly1`) in its center-relative space.
+    function glassPatch(
+        common: borrow GlassPatchCommon,
+        mode: Number,
+        lx0: Number,
+        ly0: Number,
+        lx1: Number,
+        ly1: Number,
+        spare0: Number = 0.0,
+        spare1: Number = 0.0
+    ) {
+        self.glassEmitPatch(
+            common.cx,
+            common.cy,
+            common.vw,
+            common.vh,
+            common.halfW,
+            common.halfH,
+            common.radius,
+            mode,
+            lx0,
+            ly0,
+            lx1,
+            ly1,
+            common.tint,
+            common.blur,
+            common.edgeRefraction,
+            common.clipMinX,
+            common.clipMinY,
+            common.clipMaxX,
+            common.clipMaxY,
+            common.material,
+            common.borderSpread,
+            common.borderSideOffset,
+            common.borderSideSpread,
+            common.rimWidth,
+            common.edgeBand,
+            spare0,
+            spare1,
+            common.glowX,
+            common.glowY,
+            common.glowStrength,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            common.shapeKind
+        )
+    }
+}
+
+// (lx0,ly0)-(lx1,ly1) of the surface's local space, as one quad carrying the
+// surface's full shape and material — every patch shades against the whole
+// shape's SDF, only its raster extent differs. `mode` selects the pipeline the
+// draw routes the patch to: 3.0 full glass, 3.25 band, 3.35 lens, 3.45 core
+// (the codes stay below 3.5 so a fallback draw through the generic pipeline
+// renders every patch with the full glass branch, which is exact for all of
+// them).
+extend UiBatch {
+    function glassEmitPatch(
+        cx: Number,
+        cy: Number,
+        vw: Number,
+        vh: Number,
+        halfW: Number,
+        halfH: Number,
+        radius: Number,
+        mode: Number,
+        lx0: Number,
+        ly0: Number,
+        lx1: Number,
+        ly1: Number,
+        tint: borrow RGBAColor,
+        blur: Number,
+        edgeRefraction: Number,
+        clipMinX: Number,
+        clipMinY: Number,
+        clipMaxX: Number,
+        clipMaxY: Number,
+        material: borrow CAGlassMaterial,
+        // The border block and the inner rim, already turned from the device
+        // pixels the material states them in into the quad's own units, plus the
+        // width of one anti-aliasing band (two device pixels) for the shader to
+        // ramp its coverage and its silhouette edges over.
+        borderSpread: Number,
+        borderSideOffset: Number,
+        borderSideSpread: Number,
+        rimWidth: Number,
+        edgeBand: Number,
+        spare0: Number = 0.0,
+        spare1: Number = 0.0,
+        // The touch highlight, in the same coordinates as the surface. It rides
+        // the gradient block, which the glass pipelines carry for stride and
+        // never read — all three material spares are already spoken for — and
+        // so does the edge light, in the block's last two.
+        glowX: Number = 0.0,
+        glowY: Number = 0.0,
+        glowStrength: Number = 0.0,
+        // The second shape this surface fuses with, already in the surface's
+        // own center-relative space — the same origin `local` is measured from,
+        // so it travels to the shader unchanged.
+        morphX: Number = 0.0,
+        morphY: Number = 0.0,
+        morphHalfW: Number = 0.0,
+        morphHalfH: Number = 0.0,
+        morphRadius: Number = 0.0,
+        morphBlend: Number = 0.0,
+        // 0 for a circular corner, 1 for a squircle's continuous superellipse.
+        shapeKind: Number = 0.0,
+        rotCos: Number = 1.0,
+        rotSin: Number = 0.0,
+        // The corner of the rounded box the clip is, and its kind.
+        clipRadius: Number = 0.0,
+        clipShapeKind: Number = 0.0,
+    ) {
+        // Put every CUT between patches on a whole device pixel — see
+        // `glassSnapToDevicePixel` for what goes wrong when one lands on a pixel
+        // center instead. A cut is an edge two patches share, and every one of
+        // them is an inset measured from the shape's own rectangular extent, so
+        // an edge at or beyond that extent is not a cut: it is the outer boundary
+        // of the surface's skirt, which borders nothing, is drawn by one pipeline
+        // and is never cached. Moving it would move the pixels of every glass
+        // surface for no reason at all.
+        //
+        // The clip rectangle bounds a rasterized extent as much as a cut does —
+        // it truncates a patch, and the shader tests fragments against the same
+        // numbers — so it lands on the grid too, and a patch clamped to it is
+        // still snapped.
+        //
+        // The grid is the DRAWABLE's, per axis: a quad's clip position is its
+        // point position over the viewport in points, so what one point is worth
+        // in pixels is drawable over viewport and not the backing scale — those
+        // two differ whenever the drawable is not a whole number of points, and
+        // snapping to the wrong grid snaps to no grid at all.
+        var state = nativeRecover<UiBatchState>(self.storage)
+        let scaleX = Number(state.drawableW) / state.viewportW
+        let scaleY = Number(state.drawableH) / state.viewportH
+        let clipX0 = glassSnapToDevicePixel(clipMinX, scaleX)
+        let clipY0 = glassSnapToDevicePixel(clipMinY, scaleY)
+        let clipX1 = glassSnapToDevicePixel(clipMaxX, scaleX)
+        let clipY1 = glassSnapToDevicePixel(clipMaxY, scaleY)
+        // Clip the patch geometrically. The interior pipelines write with blending
+        // off (an opaque interior replaces its pixel), so a fragment cannot opt
+        // out by returning transparent the way the blended path could — a patch
+        // must simply never rasterize outside its clip. The rectangles are both
+        // axis-aligned, so the intersection is exact; `local` follows because it
+        // is the pixel position minus the center.
+        var px0 = cx + lx0
+        var py0 = cy + ly0
+        var px1 = cx + lx1
+        var py1 = cy + ly1
+        let rotated = rotSin != 0.0 || rotCos != 1.0
+        if !rotated {
+            if lx0 > -halfW { px0 = glassSnapToDevicePixel(px0, scaleX) }
+            if ly0 > -halfH { py0 = glassSnapToDevicePixel(py0, scaleY) }
+            if lx1 < halfW { px1 = glassSnapToDevicePixel(px1, scaleX) }
+            if ly1 < halfH { py1 = glassSnapToDevicePixel(py1, scaleY) }
+            if px0 < clipX0 { px0 = clipX0 }
+            if py0 < clipY0 { py0 = clipY0 }
+            if px1 > clipX1 { px1 = clipX1 }
+            if py1 > clipY1 { py1 = clipY1 }
+        }
+        if px1 <= px0 || py1 <= py0 {
+            return
+        }
+        state.glassStatPatchQuads += 1
+        self.emitQuad(
+            px0,
+            py0,
+            px1,
+            py1,
+            px0 - cx,
+            py0 - cy,
+            px1 - cx,
+            py1 - cy,
+            halfW,
+            halfH,
+            radius,
+            tint.a,
+            mode,
+            edgeRefraction,
+            tint.r,
+            tint.g,
+            tint.b,
+            blur,
+            cx / vw,
+            cy / vh,
+            halfW / vw,
+            halfH / vh,
+            clipX0,
+            clipY0,
+            clipX1,
+            clipY1,
+            material.edgeStrokeStrength,
+            material.edgeStrokeDarken,
+            material.edgeStrokePeak,
+            material.edgeStrokeFade,
+            material.sheenStrength,
+            glassReachFor(material.lensMaxBend, halfW, halfH),
+            glassReachFor(material.refractionReach, halfW, halfH),
+            material.blurNearSplit,
+            // Device pixels, converted. The design document measures the ring at
+            // one pixel and the side edge at two, off a 2x capture; carrying the
+            // point values that happened to produce those on a 2x display made
+            // the border thin with the backing scale, so at 1.25x it came out at
+            // 0.6 of a pixel — a fainter line, not the same one.
+            borderSpread,
+            borderSideOffset,
+            borderSideSpread,
+            material.borderGray,
+            material.borderSideGray,
+            material.innerRimStrength,
+            rimWidth,
+            // The wash: how `fill` blends (the lower layer), then the upper layer whole.
+            material.washBlend,
+            material.washUpperR,
+            material.washUpperG,
+            material.washUpperB,
+            material.washUpperAlpha,
+            material.washUpperBlend,
+            // Spares: the copy patches carry 1/drawable-size in the first two
+            // (UiGlassCopy turns its device position into the cache texel through
+            // them), and a full patch carries in the first how far its surface
+            // has faded; the third is the anti-aliasing band every glass
+            // pipeline ramps its coverage over.
+            spare0,
+            spare1,
+            edgeBand,
+            glowX - cx,
+            glowY - cy,
+            glowStrength,
+            material.edgeLightDodge,
+            material.edgeLightBurn,
+            morphX,
+            morphY,
+            morphHalfW,
+            morphHalfH,
+            morphRadius,
+            morphBlend,
+            shapeKind,
+            rotCos,
+            rotSin,
+            clipRadius,
+            clipShapeKind
+        )
+    }
+}

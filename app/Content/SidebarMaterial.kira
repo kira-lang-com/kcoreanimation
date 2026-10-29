@@ -1,0 +1,64 @@
+import Foundation
+
+// The material a desktop window's sidebar is cut from: the kit's "BG", under
+// every one of its windows with a sidebar. It is not Liquid Glass. What is
+// behind the window is blurred 80, set at a near-black's luminance in the dark
+// and a pale blue-gray's in the light, and drained of most of its color by a
+// mid gray at saturation, so the sidebar reads as a quiet tone of the window
+// rather than a pane laid on it.
+//
+//   Active:    #141517 dark, #DAE6F2 light, luminosity 92%;  #808080 saturation 85%
+//   Inactive:  #131414 dark, #EDF4FA light, luminosity 97%;  #808080 saturation 85%
+
+// Whether a window is the one in front, which its sidebar's tone follows.
+public enum FoundationWindowActivity {
+    Active
+    Inactive
+}
+
+public function foundationSidebarTint(
+    scheme: borrow FoundationScheme,
+    activity: borrow FoundationWindowActivity
+) -> FoundationTintStack {
+    return FoundationTintStack {
+        lower: FoundationTintLayer {
+            color: sidebarTone(scheme, activity),
+            alpha: sidebarToneOpacity(activity),
+            blend: .Luminosity
+        },
+        upper: FoundationTintLayer {
+            color: foundationGray(128.0),
+            alpha: 0.85,
+            blend: .Saturation
+        },
+        backgroundBlurRadius: 80.0
+    }
+}
+
+function sidebarTone(
+    scheme: borrow FoundationScheme,
+    activity: borrow FoundationWindowActivity
+) -> RGBAColor {
+    return match activity {
+        Active -> match scheme {
+            Light -> sidebarInk(218.0, 230.0, 242.0)
+            Dark -> sidebarInk(20.0, 21.0, 23.0)
+        }
+        Inactive -> match scheme {
+            Light -> sidebarInk(237.0, 244.0, 250.0)
+            Dark -> sidebarInk(19.0, 20.0, 20.0)
+        }
+    }
+}
+
+function sidebarToneOpacity(activity: borrow FoundationWindowActivity) -> Number {
+    return match activity {
+        Active -> 0.92
+        Inactive -> 0.97
+    }
+}
+
+// A color written as the kit writes it: three 0-255 channels.
+function sidebarInk(red: Number, green: Number, blue: Number) -> RGBAColor {
+    return RGBAColor { r: red / 255.0, g: green / 255.0, b: blue / 255.0, a: 1.0 }
+}

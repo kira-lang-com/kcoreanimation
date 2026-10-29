@@ -1,0 +1,584 @@
+import Foundation
+import Ember
+import KiraLayout
+
+// The submit adapter: a render plan (or the flat presentation list) turned into
+// draw calls on the extracted batched backend.
+//
+// This is the one place that touches the FFI batch, so it is also the one place
+// the package cannot run on the VM; the plan it consumes and the core that builds
+// it are proven there on their own.
+//
+// Fills, gradients and glass draw as EXACT oriented quads (`pushLayerQuad`), so a
+// rotated or scaled layer is drawn turned rather than as a bounding box. A
+// command carries the clip it was planned under, so subtree clipping needs no
+// push/pop bracket. Glass draws through the backend's real backdrop-capture path,
+// which stacks in the batch. A COMPOSITE command draws another pass's texture at
+// the group's alpha — the isolated result of `CALayerTree.plan`'s offscreen group-opacity
+// and render-target passes; the runner renders those passes into `passTextures`
+// (indexed by pass id) and hands them here.
+
+extend CAColor {
+    function toFoundation(opacity: Number) -> RGBAColor {
+        return RGBAColor { r: self.r, g: self.g, b: self.b, a: self.a * opacity }
+    }
+}
+
+// The inverse seam: a foundation (graphics) color as the compositor's own model
+// color. A toolkit lowers a widget's `FoundationColor` into layer content
+// through this, so the model tree carries `CAColor` and never the graphics type.
+public function colorFromFoundation(color: borrow FoundationColor) -> CAColor {
+    return CAColor { r: color.r, g: color.g, b: color.b, a: color.a }
+}
+
+extend CAContent {
+    // A gradient command's far color and axis; a flat fill returns a clear far.
+    function gradientFar() -> RGBAColor {
+        match self {
+            Gradient(g) -> return RGBAColor { r: g.end.r, g: g.end.g, b: g.end.b, a: g.end.a }
+            Empty -> return RGBAColor { a: 0.0 }
+            Solid(s) -> return RGBAColor { a: 0.0 }
+            Text(t) -> return RGBAColor { a: 0.0 }
+            Texture(x) -> return RGBAColor { a: 0.0 }
+            Icon(i) -> return RGBAColor { a: 0.0 }
+            Glass(gl) -> return RGBAColor { a: 0.0 }
+        }
+    }
+
+    function gradientAxis() -> Number {
+        match self {
+            Gradient(g) -> return Number(g.axis)
+            Empty -> return 0.0
+            Solid(s) -> return 0.0
+            Text(t) -> return 0.0
+            Texture(x) -> return 0.0
+            Icon(i) -> return 0.0
+            Glass(gl) -> return 0.0
+        }
+    }
+}
+
+extend CAOrientedQuad {
+    // Draw a fill/gradient/glass surface as an oriented quad through the batch.
+    function drawSurface(
+        radius: Number,
+        borderWidth: Number,
+        fill: borrow RGBAColor,
+        border: borrow RGBAColor,
+        clipMinX: Number,
+        clipMinY: Number,
+        clipMaxX: Number,
+        clipMaxY: Number,
+        clipRadius: Number,
+        clipShapeKind: Number,
+        shapeKind: Number,
+        gradient: borrow RGBAColor,
+        gradientAxis: Number,
+        backend: borrow mut EmberFoundationBackend,
+        blend: CABlendMode = .Normal
+    ) {
+        backend.batch.pushLayerQuad(
+            self.centerX,
+            self.centerY,
+            self.halfW,
+            self.halfH,
+            self.rotCos,
+            self.rotSin,
+            radius,
+            borderWidth,
+            fill,
+            border,
+            clipMinX,
+            clipMinY,
+            clipMaxX,
+            clipMaxY,
+            clipRadius,
+            clipShapeKind,
+            shapeKind,
+            gradient,
+            gradientAxis,
+            copy blend
+        )
+    }
+}
+
+public function shiftRect(rect: borrow Rect, originX: Number, originY: Number) -> Rect {
+    return Rect { x: rect.x - originX, y: rect.y - originY, width: rect.width, height: rect.height }
+}
+
+extend CAOrientedQuad {
+    function shift(originX: Number, originY: Number) -> CAOrientedQuad {
+        return CAOrientedQuad {
+            centerX: self.centerX - originX,
+            centerY: self.centerY - originY,
+            halfW: self.halfW,
+            halfH: self.halfH,
+            rotCos: self.rotCos,
+            rotSin: self.rotSin
+        }
+    }
+
+    function frame() -> Rect {
+        return Rect {
+            x: self.centerX - self.halfW,
+            y: self.centerY - self.halfH,
+            width: self.halfW * 2.0,
+            height: self.halfH * 2.0
+        }
+    }
+}
+
+extend EmberFoundationBackend {
+    // Draw a text layer: its run in its bounds, or — when it wraps and its bounds
+    // are narrower than the run — each line in a line box of its own, one under the
+    // last down the layer's own axis, so a turned layer's lines turn with it.
+    //
+    // The lines break where the run's stated weight breaks them, as layout measured
+    // it, while the glyphs are drawn at `weight`, wherever the layer's weight is on
+    // its way there: a label thickening never reflows under itself.
+    function drawText(
+        borrow mut self,
+        text: borrow CAText,
+        quad: borrow CAOrientedQuad,
+        // The width lines break in, in the layer's own space.
+        layoutWidth: Number,
+        textScale: Number,
+        weight: Number,
+        fill: borrow RGBAColor,
+        clipMinX: Number,
+        clipMinY: Number,
+        clipMaxX: Number,
+        clipMaxY: Number,
+        wash: Number,
+        washLuma: Number,
+        opacity: Number,
+        // Draws the run's shadow, in `fill` under a `shadowBlur` blur, in
+        // place of the run: the shape of its letters, not of its box.
+        shadow: Bool = false,
+        shadowBlur: Number = 0.0,
+        // The corner of the rounded box the clip is, zero for a plain one.
+        clipRadius: Number = 0.0,
+        clipShapeKind: Number = 0.0
+    ) {
+        let frame = quad.frame()
+        self.drewVisibleUi = true
+        let ink = shadow ? copy fill : text.blend.ink(fill)
+        let adaptive = text.adaptiveInk && !shadow
+        let before = self.batch.quadCount()
+        if text.wraps && (
+            foundationTextBreaks(text.content) || foundationTextRunWidth(
+                content: text.content,
+                size: text.size,
+                weight: text.weight,
+                design: text.design
+            ) > layoutWidth + 0.5
+        ) {
+            let lines = foundationTextLines(
+                text.content,
+                text.size,
+                text.weight,
+                layoutWidth,
+                text.design,
+                text.lineLimit
+            )
+            let pitch = foundationTextLineBox(text.size, text.weight, text.design) * textScale
+            for (index, line) in lines.enumerated() {
+                // The line box's center, down the layer's axis from its top edge and
+                // across it by what the line leaves of the layer's width.
+                let along = (pitch + text.lineSpacing * textScale) * Number(
+                    index
+                ) + pitch / 2.0 - frame.height / 2.0
+                let across = (
+                    frame.width - foundationTextRunWidth(
+                        content: line,
+                        size: text.size,
+                        weight: text.weight,
+                        design: text.design
+                    ) * textScale
+                ) * text.alignment
+                let centerX = quad.centerX + quad.rotCos * across - quad.rotSin * along
+                let centerY = quad.centerY + quad.rotSin * across + quad.rotCos * along
+                self.batch.pushText(
+                    self.graphics,
+                    line,
+                    centerX - frame.width / 2.0,
+                    centerY - pitch / 2.0,
+                    frame.width,
+                    pitch,
+                    ink,
+                    text.size * textScale,
+                    weight,
+                    clipMinX,
+                    clipMinY,
+                    clipMaxX,
+                    clipMaxY,
+                    adaptive,
+                    wash,
+                    washLuma,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    quad.rotCos,
+                    quad.rotSin,
+                    textScale,
+                    text.design,
+                    [],
+                    1.0,
+                    shadow,
+                    shadowBlur,
+                    clipRadius: clipRadius,
+                    clipShapeKind: clipShapeKind,
+                    labelMetrics: text.labelMetrics
+                )
+            }
+            if !shadow { self.batch.routeBlendRange(before, text.blend) }
+            return
+        }
+        // The run is placed by its ink, which the description measured at the
+        // stated weight. Drawn at another, on its way there, the glyphs' bearings
+        // are that weight's, and so must the ink be, or the label slides by the
+        // difference until the weight arrives.
+        var inkLeft = text.inkLeft
+        var inkRight = text.inkRight
+        var inkTop = text.inkTop
+        var inkBottom = text.inkBottom
+        if abs(weight - text.weight) > 0.5 {
+            let ink = foundationTextRunInkEdges(
+                content: text.content,
+                size: text.size,
+                weight: weight,
+                design: text.design
+            )
+            inkLeft = ink.left
+            inkRight = ink.right
+            inkTop = ink.top
+            inkBottom = ink.bottom
+        }
+        self.batch.pushText(
+            self.graphics,
+            text.content,
+            frame.x,
+            frame.y,
+            frame.width,
+            frame.height,
+            ink,
+            text.size * textScale,
+            weight,
+            clipMinX,
+            clipMinY,
+            clipMaxX,
+            clipMaxY,
+            adaptive,
+            wash,
+            washLuma,
+            inkLeft * textScale,
+            inkRight * textScale,
+            inkTop * textScale,
+            inkBottom * textScale,
+            quad.rotCos,
+            quad.rotSin,
+            textScale,
+            text.design,
+            shadow ? [] : text.spans,
+            opacity,
+            shadow,
+            shadowBlur,
+            clipRadius: clipRadius,
+            clipShapeKind: clipShapeKind,
+            labelMetrics: text.labelMetrics
+        )
+        if !shadow { self.batch.routeBlendRange(before, text.blend) }
+    }
+}
+
+extend CADrawCmd {
+    // One plan command. `passTextures[passId]` is the sampled view of the texture a
+    // composite draws. `origin` is the world-space top-left of the pass target.
+    function submitAt(
+        passTextures: borrow [TextureHandle],
+        originX: Number,
+        originY: Number,
+        backend: borrow mut EmberFoundationBackend
+    ) -> Number {
+        if self.opacity <= 0.0 {
+            return 0
+        }
+        let bounds = shiftRect(self.worldBounds, originX, originY)
+        if self.kind == DrawKind.composite {
+            return match self.sourcePass {
+                None -> 0
+                Some(sourcePass) -> {
+                    if sourcePass.raw >= passTextures.count { return 0 }
+                    let texId = passTextures[sourcePass.raw]
+                    if texId.raw <= 0 { return 0 }
+                    // Drawn inside whatever clips the tree it came from, as the
+                    // tree itself would have been.
+                    let clip = Rect {
+                        x: max(bounds.x, self.clipMinX - originX),
+                        y: max(bounds.y, self.clipMinY - originY),
+                        width: min(bounds.x + bounds.width, self.clipMaxX - originX) - max(
+                            bounds.x,
+                            self.clipMinX - originX
+                        ),
+                        height: min(bounds.y + bounds.height, self.clipMaxY - originY) - max(
+                            bounds.y,
+                            self.clipMinY - originY
+                        )
+                    }
+                    var element = copy self.element
+                    element.centerX -= originX
+                    element.centerY -= originY
+                    backend.drawTextureFields(
+                        bounds,
+                        texId,
+                        TextureHandle(0),
+                        0.0,
+                        self.opacity,
+                        0.0,
+                        self.blur,
+                        move clip,
+                        self.clipRadius,
+                        Number(self.clipShapeKind),
+                        self.displacement,
+                        move element,
+                        self.elementRadius,
+                        self.elementScale,
+                        self.blurOpaque
+                    )
+                    1
+                }
+            }
+        }
+        let fill = self.fill.toFoundation(self.opacity)
+        let border = self.border.toFoundation(self.opacity)
+        let quad = self.quad.shift(originX, originY)
+        let clipMinX = self.clipMinX - originX
+        let clipMinY = self.clipMinY - originY
+        let clipMaxX = self.clipMaxX - originX
+        let clipMaxY = self.clipMaxY - originY
+        if self.kind == DrawKind.shadow {
+            // A run of text casts the shape of its letters, as SwiftUI's
+            // `.shadow` on a `Text` does; every other layer casts its box.
+            match self.content {
+                Text(text) -> {
+                    backend.drawText(
+                        text,
+                        quad,
+                        self.layoutWidth,
+                        self.textScale,
+                        self.textWeight,
+                        fill,
+                        clipMinX,
+                        clipMinY,
+                        clipMaxX,
+                        clipMaxY,
+                        0.0,
+                        1.0,
+                        self.opacity,
+                        shadow: true,
+                        shadowBlur: self.shadowRadius
+                    )
+                    return 1
+                }
+                Empty, Solid, Texture, Icon, Glass, Gradient -> {}
+            }
+            backend.drewVisibleUi = true
+            backend.batch.pushLayerShadowQuad(
+                quad.centerX,
+                quad.centerY,
+                quad.halfW,
+                quad.halfH,
+                quad.rotCos,
+                quad.rotSin,
+                self.cornerRadius,
+                self.shadowRadius,
+                self.shadowOffset,
+                self.shadowKnockout,
+                self.shadowInverts,
+                fill,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                self.shapeKind
+            )
+            return 1
+        }
+        if self.seedsGroup {
+            backend.beginGroupSeed(bounds)
+        } else if self.capturesBackdrop {
+            backend.beginRetainedBackdrop(bounds)
+        }
+        var drawn = 0
+        match self.content {
+            Empty -> {}
+            Solid(s) -> {
+                quad.drawSurface(
+                    self.cornerRadius,
+                    self.borderWidth,
+                    fill,
+                    border,
+                    clipMinX,
+                    clipMinY,
+                    clipMaxX,
+                    clipMaxY,
+                    self.clipRadius,
+                    self.clipShapeKind,
+                    s.shapeKind,
+                    RGBAColor { a: 0.0 },
+                    0.0,
+                    backend,
+                    s.blend
+                )
+                drawn = 1
+            }
+            Gradient(g) -> {
+                let far = g.end.toFoundation(self.opacity)
+                quad.drawSurface(
+                    self.cornerRadius,
+                    self.borderWidth,
+                    fill,
+                    border,
+                    clipMinX,
+                    clipMinY,
+                    clipMaxX,
+                    clipMaxY,
+                    self.clipRadius,
+                    self.clipShapeKind,
+                    g.shapeKind,
+                    far,
+                    Number(g.axis),
+                    backend
+                )
+                drawn = 1
+            }
+            Glass(g) -> {
+                // Glass fades as a whole, not by its tint: the tint's alpha is how
+                // much of the blur shows, and thinning it with the layer drew a
+                // fading piece of glass as a sharp, unwashed gray.
+                backend.drawRetainedGlass(
+                    quad,
+                    self.localWidth,
+                    self.localHeight,
+                    self.cornerRadius,
+                    self.fill.toFoundation(1.0),
+                    g,
+                    clipMinX,
+                    clipMinY,
+                    clipMaxX,
+                    clipMaxY,
+                    self.opacity,
+                    self.clipRadius,
+                    self.clipShapeKind
+                )
+                drawn = 1
+            }
+            Text(t) -> {
+                backend.drawText(
+                    t,
+                    quad,
+                    self.layoutWidth,
+                    self.textScale,
+                    self.textWeight,
+                    fill,
+                    clipMinX,
+                    clipMinY,
+                    clipMaxX,
+                    clipMaxY,
+                    self.glassWash,
+                    self.glassWashLuma,
+                    self.opacity,
+                    clipRadius: self.clipRadius,
+                    clipShapeKind: Number(self.clipShapeKind)
+                )
+                drawn = 1
+            }
+            Texture(x) -> {
+                let drew = backend.drawTextureLayer(
+                    x,
+                    quad,
+                    self.opacity,
+                    self.cornerRadius,
+                    clipMinX,
+                    clipMinY,
+                    clipMaxX,
+                    clipMaxY,
+                    self.clipRadius,
+                    Number(self.clipShapeKind)
+                )
+                if drew { drawn = 1 }
+            }
+            Icon(i) -> {
+                let frame = quad.frame()
+                backend.drewVisibleUi = true
+                backend.batch.pushIcon(
+                    backend.graphics,
+                    i.svg,
+                    frame.x,
+                    frame.y,
+                    frame.width,
+                    frame.height,
+                    fill,
+                    clipMinX,
+                    clipMinY,
+                    clipMaxX,
+                    clipMaxY,
+                    i.weightGrowth * self.lengthScale,
+                    quad.rotCos,
+                    quad.rotSin,
+                    i.blend,
+                    self.localHeight > 0.0 ? self.localWidth / self.localHeight : 0.0,
+                    clipRadius: self.clipRadius,
+                    clipShapeKind: Number(self.clipShapeKind),
+                    wholeCanvas: i.wholeCanvas
+                )
+                drawn = 1
+            }
+        }
+        if self.capturesBackdrop {
+            backend.endBackdrop(bounds)
+        }
+        return drawn
+    }
+}
+
+extend CADrawCmd {
+    function submit(
+        passTextures: borrow [TextureHandle],
+        backend: borrow mut EmberFoundationBackend
+    ) -> Number {
+        return self.submitAt(passTextures, 0.0, 0.0, backend)
+    }
+}
+
+extend CARenderPlan {
+    // Submit one whole pass in order. Offscreen passes shift their world-space
+    // commands by the pass bounds origin; the root uses (0,0).
+    function submitPassAt(
+        passIndex: RenderPassId,
+        passTextures: borrow [TextureHandle],
+        originX: Number,
+        originY: Number,
+        backend: borrow mut EmberFoundationBackend
+    ) -> Number {
+        if passIndex.raw < 0 || passIndex.raw >= self.passes.count {
+            return 0
+        }
+        var drawn = 0
+        for cmd in self.passes[passIndex.raw].cmds {
+            drawn += cmd.submitAt(passTextures, originX, originY, backend)
+        }
+        return drawn
+    }
+}
+
+extend CARenderPlan {
+    function submitPass(
+        passIndex: RenderPassId,
+        passTextures: borrow [TextureHandle],
+        backend: borrow mut EmberFoundationBackend
+    ) -> Number {
+        return self.submitPassAt(passIndex, passTextures, 0.0, 0.0, backend)
+    }
+}

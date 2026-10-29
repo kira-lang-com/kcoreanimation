@@ -1,0 +1,90 @@
+import Foundation
+import Ember
+
+public struct CARegisteredRenderTarget {
+    var id: RenderTargetId = RenderTargetId(0)
+    var texture: GraphicsTexture = GraphicsTexture {}
+}
+
+public struct CACachedPassTarget {
+    var owner: LayerId = LayerId(0)
+    var targetId: RenderTargetId = RenderTargetId(0)
+    var texture: GraphicsTexture = GraphicsTexture {}
+    var deviceWidth: Number = 0
+    var deviceHeight: Number = 0
+    var signature: Number = 0
+    var external: Bool = false
+    var valid: Bool = false
+}
+
+public class CAPassBatchSlot {
+    var batch: UiBatch
+}
+
+public struct Compositor {
+    var tree: CALayerTree = CALayerTree {}
+    var registeredTargets: [CARegisteredRenderTarget] = []
+    var cachedTargets: [CACachedPassTarget] = []
+    var passBatches: [CAPassBatchSlot] = []
+    // Pass targets destroyed since the root batch last heard; see
+    // `retireTexture`.
+    var retiredTextures: [TextureHandle] = []
+    // The image files texture layers named, decoded and uploaded once each;
+    // lent to each frame's backend.
+    var fileTextures: [FileTexture] = []
+    // Textures of files replaced on disk, waiting out the frames that may
+    // still sample them.
+    var agingTextures: [AgingTexture] = []
+
+    function registerRenderTarget(id: RenderTargetId, texture: GraphicsTexture) {
+        for index in 0..self.registeredTargets.count {
+            if self.registeredTargets[index].id == id {
+                self.registeredTargets[index] = CARegisteredRenderTarget {
+                    id: id,
+                    texture: move texture
+                }
+                self.invalidateTarget(id)
+                return
+            }
+        }
+        self.registeredTargets.append(CARegisteredRenderTarget { id: id, texture: move texture })
+        self.invalidateTarget(id)
+    }
+
+    function invalidateTarget(id: RenderTargetId) {
+        for index in 0..self.cachedTargets.count {
+            if self.cachedTargets[index].targetId == id {
+                self.cachedTargets[index].valid = false
+            }
+        }
+    }
+
+    function unregisterRenderTarget(id: RenderTargetId) {
+        var kept: [CARegisteredRenderTarget] = []
+        for target in self.registeredTargets {
+            if target.id != id {
+                kept.append(copy target)
+            }
+        }
+        self.registeredTargets = move kept
+        self.invalidateTarget(id)
+    }
+
+    function renderTarget(id: RenderTargetId) -> GraphicsTexture? {
+        for target in self.registeredTargets {
+            if target.id == id {
+                return .Some(target.texture)
+            }
+        }
+        return .None
+    }
+
+    function cachedTargetIndex(owner: LayerId) -> Number {
+        for index in 0..self.cachedTargets.count {
+            if self.cachedTargets[index].owner == owner {
+                return index
+            }
+        }
+        return -1
+    }
+}

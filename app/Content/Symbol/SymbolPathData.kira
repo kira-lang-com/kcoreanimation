@@ -1,0 +1,172 @@
+import Foundation
+
+// Reading the numbers and commands of SVG text: a path's `d`, a polygon's
+// `points`, a `viewBox`.
+
+// The ASCII codes SVG's number and list grammar is written in.
+namespace SymbolCharacter {
+    let tab: UN8 = 9
+    let newline: UN8 = 10
+    let carriageReturn: UN8 = 13
+    let space: UN8 = 32
+    let doubleQuote: UN8 = 34
+    let singleQuote: UN8 = 39
+    let plus: UN8 = 43
+    let comma: UN8 = 44
+    let minus: UN8 = 45
+    let point: UN8 = 46
+    let slash: UN8 = 47
+    let zero: UN8 = 48
+    let nine: UN8 = 57
+    let equals: UN8 = 61
+    let upperA: UN8 = 65
+    let upperE: UN8 = 69
+    let upperZ: UN8 = 90
+    let lowerA: UN8 = 97
+    let lowerE: UN8 = 101
+    let lowerZ: UN8 = 122
+}
+
+struct SymbolScanner {
+    let text: String
+    var at: Number = 0
+
+    function atEnd(borrow self) -> Bool {
+        return at >= text.count
+    }
+
+    function peek(borrow self) -> UN8? {
+        if atEnd() { return .None }
+        return .Some(UN8(text.byteAt(at)))
+    }
+
+    // Steps past the whitespace and commas between values.
+    function skipSeparators(borrow mut self) {
+        while true {
+            match peek() {
+                Some(byte) -> {
+                    if !isSeparator(byte) { return }
+                    at++
+                }
+                None -> return
+            }
+        }
+    }
+
+    // The command letter next in the text, when a letter is next.
+    function letter(borrow mut self) -> String? {
+        skipSeparators()
+        match peek() {
+            Some(byte) -> {
+                if !isLetter(byte) { return .None }
+                at++
+                return .Some(text.substring(at - 1, at))
+            }
+            None -> return .None
+        }
+    }
+
+    // The number next in the text, when one is: an optional sign, digits with
+    // an optional fraction, and an optional exponent.
+    function number(borrow mut self) -> Float? {
+        skipSeparators()
+        let start = at
+        var negative = false
+        match peek() {
+            Some(byte) -> {
+                if byte == SymbolCharacter.minus { negative = true }
+                if byte == SymbolCharacter.minus || byte == SymbolCharacter.plus { at++ }
+            }
+            None -> return .None
+        }
+        var (value, counted) = digits()
+        if peek() == .Some(SymbolCharacter.point) {
+            at++
+            let (fraction, places) = digits()
+            value += fraction / pow(SymbolNumber.radix, Float(places))
+            counted += places
+        }
+        if counted == 0 {
+            at = start
+            return .None
+        }
+        value *= pow(SymbolNumber.radix, exponent())
+        return .Some(negative ? -value : value)
+    }
+
+    // The run of decimal digits next in the text, and how many there were.
+    function digits(borrow mut self) -> (Float, Number) {
+        var value: Float = 0.0
+        var count = 0
+        while true {
+            match peek() {
+                Some(byte) -> {
+                    if !isDigit(byte) { return (value, count) }
+                    value = value * SymbolNumber.radix + Float(byte - SymbolCharacter.zero)
+                    count++
+                    at++
+                }
+                None -> return (value, count)
+            }
+        }
+    }
+
+    // A number's exponent, or none when no `e` with digits follows.
+    function exponent(borrow mut self) -> Float {
+        match peek() {
+            Some(byte) -> {
+                if byte != SymbolCharacter.lowerE && byte != SymbolCharacter.upperE { return 0.0 }
+            }
+            None -> return 0.0
+        }
+        let start = at
+        at++
+        var negative = false
+        match peek() {
+            Some(byte) -> {
+                if byte == SymbolCharacter.minus { negative = true }
+                if byte == SymbolCharacter.minus || byte == SymbolCharacter.plus { at++ }
+            }
+            None -> {}
+        }
+        let (power, places) = digits()
+        if places == 0 {
+            // An `e` with no digits after it ends the number before it.
+            at = start
+            return 0.0
+        }
+        return negative ? -power : power
+    }
+}
+
+// Symbol path numbers are decimal.
+namespace SymbolNumber {
+    let radix: Float = 10.0
+}
+
+function isSeparator(byte: UN8) -> Bool {
+    return byte == SymbolCharacter.space || byte == SymbolCharacter.comma
+        || byte == SymbolCharacter.tab || byte == SymbolCharacter.newline
+        || byte == SymbolCharacter.carriageReturn
+}
+
+function isDigit(byte: UN8) -> Bool {
+    return byte >= SymbolCharacter.zero && byte <= SymbolCharacter.nine
+}
+
+function isLetter(byte: UN8) -> Bool {
+    return (byte >= SymbolCharacter.upperA && byte <= SymbolCharacter.upperZ)
+        || (byte >= SymbolCharacter.lowerA && byte <= SymbolCharacter.lowerZ)
+}
+
+// Every number in `text`, in order, up to the first thing that is not one.
+function symbolNumbers(text: borrow String) -> [Float] {
+    var scanner = SymbolScanner { text: copy text }
+    var numbers: [Float] = []
+    while true {
+        match scanner.number() {
+            Some(value) -> numbers.append(value)
+            None -> return numbers
+        }
+    }
+}

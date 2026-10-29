@@ -1,0 +1,256 @@
+import KiraLayout
+import Ember
+import Foundation
+// The ambient input snapshot, split out of FoundationInput.kira.
+//
+// Dispatch (the other file) OWNS the events; this file is the read side of
+// them: camera and tool code in any package asks the ambient slot store for the
+// held pointer button, the fly-key mask, the modifiers, the pointer position
+// and the viewport, with no path to the app state and no borrow of it.
+
+// --- Ambient input snapshot: camera/tool code (any package) reads the held
+// pointer button, fly-key mask and modifiers through the ambient slot store,
+// without a path to the app state. ---
+
+public struct FoundationInputSnapshot {
+    var button: Number = 0
+    var keysMask: Number = 0
+    var shift: Bool = false
+    var alt: Bool = false
+    var command: Bool = false
+    var clickCount: Number = 0
+    // Live logical viewport size (written once per frame by the interactive
+    // runner) — layout-aware code (viewport camera aspect) reads it ambiently.
+    var viewW: Number = 0.0
+    var viewH: Number = 0.0
+    // Latest pointer position and current hovered region. Pointer moves publish this
+    // snapshot so hover-driven widgets update immediately. Press-specific anchoring
+    // is kept separately in pressBounds below.
+    var pointerX: Number = 0.0
+    var pointerY: Number = 0.0
+    var hoveredKey: Number = 0
+    // Screen bounds of the region a click fired on (written by foundationEndPress
+    // just before onPress). A dropdown button reads these to anchor its popup to
+    // itself (bottom-left by default) instead of the cursor.
+    var pressBoundsX: Number = 0.0
+    var pressBoundsY: Number = 0.0
+    var pressBoundsW: Number = 0.0
+    var pressBoundsH: Number = 0.0
+}
+
+public namespace FoundationSlot {
+    let input: PersistentStateKey = PersistentStateKey { name: "foundation.input" }
+    let menuSettings: PersistentStateKey = PersistentStateKey { name: "foundation.menu.settings" }
+}
+
+public function foundationWriteInputSnapshot(ui: borrow FoundationUiContext) {
+    if !ambientStateHas(FoundationSlot.input) {
+        ambientStatePut(
+            FoundationSlot.input,
+            nativeUserData(nativeState(FoundationInputSnapshot {}))
+        )
+    }
+    var snapshot = nativeRecover<FoundationInputSnapshot>(ambientStateGet(FoundationSlot.input))
+    snapshot.button = ui.pressButton
+    snapshot.keysMask = ui.keysMask
+    snapshot.shift = ui.modShift
+    snapshot.alt = ui.modAlt
+    snapshot.command = ui.modCommand
+    snapshot.clickCount = ui.clickCount
+    snapshot.pointerX = ui.pointerX
+    snapshot.pointerY = ui.pointerY
+    snapshot.hoveredKey = ui.hoveredKey
+}
+
+// Held pointer button: 0 none, 1 left, 2 right, 3 middle.
+public function foundationInputButton() -> Number {
+    if !ambientStateHas(FoundationSlot.input) {
+        return 0
+    }
+    let snapshot = nativeRecover<FoundationInputSnapshot>(ambientStateGet(FoundationSlot.input))
+    return snapshot.button
+}
+
+// True while the given fly key is held (bit from foundationKeyBit).
+public function foundationInputKeyHeld(bit: Number) -> Bool {
+    if bit <= 0 {
+        return false
+    }
+    if !ambientStateHas(FoundationSlot.input) {
+        return false
+    }
+    let snapshot = nativeRecover<FoundationInputSnapshot>(ambientStateGet(FoundationSlot.input))
+    let mask = snapshot.keysMask
+    return trunc(mask / bit) % 2 == 1
+}
+
+public function foundationInputShift() -> Bool {
+    if !ambientStateHas(FoundationSlot.input) {
+        return false
+    }
+    let snapshot = nativeRecover<FoundationInputSnapshot>(ambientStateGet(FoundationSlot.input))
+    return snapshot.shift
+}
+
+// Whether the platform's command key is held: Command on Apple's systems,
+// Control elsewhere.
+public function foundationInputCommand() -> Bool {
+    if !ambientStateHas(FoundationSlot.input) {
+        return false
+    }
+    let snapshot = nativeRecover<FoundationInputSnapshot>(ambientStateGet(FoundationSlot.input))
+    return snapshot.command
+}
+
+// How many presses in quick succession the latest click ends: 2 for a
+// double-click.
+public function foundationInputClickCount() -> Number {
+    if !ambientStateHas(FoundationSlot.input) {
+        return 0
+    }
+    let snapshot = nativeRecover<FoundationInputSnapshot>(ambientStateGet(FoundationSlot.input))
+    return snapshot.clickCount
+}
+
+// Record the bounds of the region a click just fired on (see foundationEndPress).
+public function foundationWritePressBounds(ui: borrow FoundationUiContext, bounds: borrow Rect) {
+    if !ambientStateHas(FoundationSlot.input) {
+        ambientStatePut(
+            FoundationSlot.input,
+            nativeUserData(nativeState(FoundationInputSnapshot {}))
+        )
+    }
+    var snapshot = nativeRecover<FoundationInputSnapshot>(ambientStateGet(FoundationSlot.input))
+    snapshot.pressBoundsX = bounds.x
+    snapshot.pressBoundsY = bounds.y
+    snapshot.pressBoundsW = bounds.width
+    snapshot.pressBoundsH = bounds.height
+}
+
+// Bounds of the button the last left-click fired on (for anchoring popups).
+public function foundationPressBoundsX() -> Number {
+    if !ambientStateHas(FoundationSlot.input) {
+        return 0.0
+    }
+    let snapshot = nativeRecover<FoundationInputSnapshot>(ambientStateGet(FoundationSlot.input))
+    return snapshot.pressBoundsX
+}
+
+public function foundationPressBoundsY() -> Number {
+    if !ambientStateHas(FoundationSlot.input) {
+        return 0.0
+    }
+    let snapshot = nativeRecover<FoundationInputSnapshot>(ambientStateGet(FoundationSlot.input))
+    return snapshot.pressBoundsY
+}
+
+public function foundationPressBoundsW() -> Number {
+    if !ambientStateHas(FoundationSlot.input) {
+        return 0.0
+    }
+    let snapshot = nativeRecover<FoundationInputSnapshot>(ambientStateGet(FoundationSlot.input))
+    return snapshot.pressBoundsW
+}
+
+public function foundationPressBoundsH() -> Number {
+    if !ambientStateHas(FoundationSlot.input) {
+        return 0.0
+    }
+    let snapshot = nativeRecover<FoundationInputSnapshot>(ambientStateGet(FoundationSlot.input))
+    return snapshot.pressBoundsH
+}
+
+// True when `key` is the region currently under the pointer — the primitive the
+// widget layer uses to give every button a default hover state.
+public function foundationHovered(key: Number) -> Bool {
+    if key == 0 {
+        return false
+    }
+    return foundationHoveredKey() == key
+}
+
+// --- Menu placement setting ---
+// How dropdown popups anchor to their button. A simple app-wide KiraUI setting
+// so an app flips it once instead of threading it through every dropdown.
+//   0 = below, left-aligned (default)   1 = below, right-aligned
+//   2 = above, left-aligned             3 = above, right-aligned
+public struct FoundationMenuSettings {
+    var placement: Number = 0
+}
+
+public function foundationSetMenuPlacement(placement: Number) {
+    if !ambientStateHas(FoundationSlot.menuSettings) {
+        ambientStatePut(
+            FoundationSlot.menuSettings,
+            nativeUserData(nativeState(FoundationMenuSettings {}))
+        )
+    }
+    var settings = nativeRecover<FoundationMenuSettings>(
+        ambientStateGet(FoundationSlot.menuSettings)
+    )
+    settings.placement = placement
+}
+
+public function foundationMenuPlacement() -> Number {
+    if !ambientStateHas(FoundationSlot.menuSettings) {
+        return 0
+    }
+    let settings = nativeRecover<FoundationMenuSettings>(
+        ambientStateGet(FoundationSlot.menuSettings)
+    )
+    return settings.placement
+}
+
+// Latest published pointer position (logical pixels).
+public function foundationPointerX() -> Number {
+    if !ambientStateHas(FoundationSlot.input) {
+        return 0.0
+    }
+    let snapshot = nativeRecover<FoundationInputSnapshot>(ambientStateGet(FoundationSlot.input))
+    return snapshot.pointerX
+}
+
+public function foundationPointerY() -> Number {
+    if !ambientStateHas(FoundationSlot.input) {
+        return 0.0
+    }
+    let snapshot = nativeRecover<FoundationInputSnapshot>(ambientStateGet(FoundationSlot.input))
+    return snapshot.pointerY
+}
+
+// Region currently under the pointer (0 = none). Pointer moves update it.
+public function foundationHoveredKey() -> Number {
+    if !ambientStateHas(FoundationSlot.input) {
+        return 0
+    }
+    let snapshot = nativeRecover<FoundationInputSnapshot>(ambientStateGet(FoundationSlot.input))
+    return snapshot.hoveredKey
+}
+
+public function foundationWriteViewportSnapshot(width: Number, height: Number) {
+    if !ambientStateHas(FoundationSlot.input) {
+        ambientStatePut(
+            FoundationSlot.input,
+            nativeUserData(nativeState(FoundationInputSnapshot {}))
+        )
+    }
+    var snapshot = nativeRecover<FoundationInputSnapshot>(ambientStateGet(FoundationSlot.input))
+    snapshot.viewW = width
+    snapshot.viewH = height
+}
+
+public function foundationViewportWidth() -> Number {
+    if !ambientStateHas(FoundationSlot.input) {
+        return 0.0
+    }
+    let snapshot = nativeRecover<FoundationInputSnapshot>(ambientStateGet(FoundationSlot.input))
+    return snapshot.viewW
+}
+
+public function foundationViewportHeight() -> Number {
+    if !ambientStateHas(FoundationSlot.input) {
+        return 0.0
+    }
+    let snapshot = nativeRecover<FoundationInputSnapshot>(ambientStateGet(FoundationSlot.input))
+    return snapshot.viewH
+}

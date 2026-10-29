@@ -1,0 +1,649 @@
+import Foundation
+
+// Flex: what interactive Liquid Glass does under a press, as the platform does
+// it.
+//
+// A port of SwiftUICore's `FlexInteraction` -- the implementation UIKit's flex
+// defers to on macOS and AppKit drives -- read out of the shipping framework
+// rather than fitted by eye: the same parameter sets, the same resolution of a
+// set from an element's size, the same per-frame targets and the same springs.
+// Nothing here is tuned; a number that differs from the framework's is a bug.
+//
+// Under a press the element lifts by a fixed number of points on its longer
+// side, and a drag away from where it went down stretches it along the drag
+// and narrows it across, sliding it after the pointer by the same share of its
+// size. Two lights come up in it: a little glow under the pointer that follows
+// it, halves and opens out once the pointer has gone far enough, and a big
+// glow over the whole element. Let go, everything springs back and the little
+// glow opens out to four times its size as it fades.
+
+// Which family of parameters an element answers with. `Automatic` picks
+// between small and large by size, and below `MotionFlexLimit.ultraSmall`
+// points on its longer side takes `UltraSmall`.
+public enum MotionFlexVariant {
+    Automatic
+    UltraSmall
+    Small
+    Large
+    SmallLoupe
+    Loupe
+    LiquidLens
+    Menu
+    WindowControl
+}
+
+// The pointer kind the press came from. A cursor gets its own set: it lifts
+// far less and stretches far less than a finger does.
+public enum MotionFlexInput {
+    Touch
+    Cursor
+}
+
+// One input's parameters, field for field the framework's `ParameterSet`.
+public struct MotionFlexParameters {
+    // The size, in points, the set was written for; resolution of an
+    // automatic set interpolates between the small and large sets' sizes.
+    var associatedDimension: Number = 0.0
+    var bigGlowOpacity: Number = 0.0
+    var littleGlowOpacity: Number = 0.0
+    // How far the pointer goes from where it went down before the little glow
+    // halves and opens out.
+    var littleGlowDissipationDistance: Number = 0.0
+    // How many points the press lifts the longer side by.
+    var liftScalePoints: Number = 20.0
+    // How far a drag has to go to stretch the element by its whole size.
+    var scaleDistanceThreshold: Number = 100.0
+    // The movement stretch: how the element squashes and stretches as it
+    // speeds up and slows down. Only the loupes give it scale points; every
+    // other set's range is [1, 1].
+    var movementNormalizationFactor: Number = 10000.0
+    var movementScalePoints: Number = 0.0
+    var movementMinScale: Number = 0.9
+    var movementMaxScale: Number = 1.1
+    // The pulse a menu gives as the pointer crosses it; carried, not applied.
+    var interactionPulseNormalizationFactor: Number = 1.0
+    var interactionPulseScalePointsX: Number = 0.0
+    var interactionPulseScalePointsY: Number = 0.0
+    var interactionPulseDriftRatio: Number = 0.0
+    // The spring scale and drift follow their targets on.
+    var scaleSpringResponse: Number = 0.531
+    var scaleSpringDamping: Number = 0.845
+    // The tracking spring. SwiftUI's flex never reads it; UIKit's does.
+    var scaleSpringTrackingResponse: Number = 0.15
+    var scaleSpringTrackingDamping: Number = 0.86
+}
+
+public namespace MotionFlexLimit {
+    // An automatic element whose longer side is under this is ultra-small.
+    let ultraSmall = 120.0
+    // The little glow is one and a half times the shorter side, up to this.
+    let glowShare = 1.5
+    let glowSize = 160.0
+}
+
+// The parameters a variant and input start from, before the size refines them.
+public function motionFlexPreset(
+    variant: MotionFlexVariant,
+    input: MotionFlexInput
+) -> MotionFlexParameters {
+    let cursor = input == .Cursor
+    match variant {
+        Large -> {
+            if cursor {
+                return MotionFlexParameters {
+                    associatedDimension: 160.0,
+                    littleGlowOpacity: 0.05,
+                    littleGlowDissipationDistance: 25.0,
+                    liftScalePoints: 2.0,
+                    scaleDistanceThreshold: 70000.0,
+                    scaleSpringResponse: 0.25,
+                    scaleSpringDamping: 0.6,
+                    scaleSpringTrackingResponse: 0.314,
+                    scaleSpringTrackingDamping: 0.625
+                }
+            }
+            return MotionFlexParameters {
+                associatedDimension: 160.0,
+                littleGlowOpacity: 0.2,
+                littleGlowDissipationDistance: 50.0,
+                liftScalePoints: 4.0,
+                scaleDistanceThreshold: 24000.0,
+                scaleSpringResponse: 0.36,
+                scaleSpringDamping: 0.6,
+                scaleSpringTrackingResponse: 0.314,
+                scaleSpringTrackingDamping: 0.625
+            }
+        }
+        Loupe -> return MotionFlexParameters {
+            associatedDimension: 70.0,
+            liftScalePoints: 0.0,
+            scaleDistanceThreshold: 0.0,
+            movementNormalizationFactor: 2500.0,
+            movementScalePoints: 100.0,
+            movementMinScale: 0.75,
+            movementMaxScale: 1.15,
+            scaleSpringResponse: 0.5,
+            scaleSpringDamping: 1.0,
+            scaleSpringTrackingResponse: 0.5,
+            scaleSpringTrackingDamping: 0.9
+        }
+        SmallLoupe -> return MotionFlexParameters {
+            associatedDimension: 37.0,
+            liftScalePoints: 0.0,
+            scaleDistanceThreshold: 0.0,
+            movementNormalizationFactor: 2000.0,
+            movementScalePoints: 10.0,
+            scaleSpringResponse: 0.444,
+            scaleSpringDamping: 0.56,
+            scaleSpringTrackingResponse: 0.444,
+            scaleSpringTrackingDamping: 0.56
+        }
+        Menu -> return MotionFlexParameters {
+            associatedDimension: 160.0,
+            littleGlowOpacity: cursor ? 0.05 : 0.5,
+            littleGlowDissipationDistance: cursor ? 25.0 : 50.0,
+            liftScalePoints: 0.0,
+            scaleDistanceThreshold: cursor ? 70000.0 : 24000.0,
+            interactionPulseNormalizationFactor: 8000.0,
+            interactionPulseScalePointsX: 50.0,
+            interactionPulseScalePointsY: 32.0,
+            interactionPulseDriftRatio: 0.7,
+            scaleSpringResponse: cursor ? 0.25 : 0.36,
+            scaleSpringDamping: 0.6,
+            scaleSpringTrackingResponse: 0.15,
+            scaleSpringTrackingDamping: 0.5
+        }
+        WindowControl -> return MotionFlexParameters {
+            associatedDimension: 14.0,
+            liftScalePoints: 2.0,
+            scaleDistanceThreshold: 3825.649,
+            scaleSpringResponse: 0.355,
+            scaleSpringDamping: 0.4,
+            scaleSpringTrackingResponse: 0.1,
+            scaleSpringTrackingDamping: 1.0
+        }
+        LiquidLens -> return motionFlexLens(0.0)
+        Automatic -> return motionFlexSmall(cursor)
+        UltraSmall -> return motionFlexUltraSmall(cursor)
+        Small -> return motionFlexSmall(cursor)
+    }
+}
+
+function motionFlexSmall(cursor: Bool) -> MotionFlexParameters {
+    return MotionFlexParameters {
+        associatedDimension: cursor ? 80.0 : 44.0,
+        bigGlowOpacity: 1.0,
+        littleGlowOpacity: cursor ? 1.0 : 0.3,
+        littleGlowDissipationDistance: 50.0,
+        liftScalePoints: cursor ? 2.25 : 16.0,
+        scaleDistanceThreshold: cursor ? 60000.0 : 6000.0,
+        scaleSpringResponse: cursor ? 0.25 : 0.4,
+        scaleSpringDamping: 0.375,
+        scaleSpringTrackingResponse: 0.262,
+        scaleSpringTrackingDamping: 0.625
+    }
+}
+
+function motionFlexUltraSmall(cursor: Bool) -> MotionFlexParameters {
+    var set = motionFlexSmall(cursor)
+    if cursor {
+        set.littleGlowOpacity = 0.35
+        set.liftScalePoints = 2.5
+        set.scaleDistanceThreshold = 60000.0
+        set.scaleSpringResponse = 0.25
+        set.scaleSpringDamping = 0.629
+    } else {
+        // `_UIFlexInteractionUltraSmallVariantSpec`: the small set with the
+        // little glow at full strength and a shorter stretch.
+        set.littleGlowOpacity = 1.0
+        set.scaleDistanceThreshold = 2000.0
+    }
+    return set
+}
+
+// The liquid lens, `t` of the way from its smallest (37 points) to its
+// largest (70). Both inputs read the same set. How far movement may stretch
+// it, `movementScalePts`, is UIKit's `_UIFlexInteractionSmallLoupeVariantSpec`
+// and `_UIFlexInteractionLoupeVariantSpec`: 10 points and 100.
+function motionFlexLens(t: Number) -> MotionFlexParameters {
+    let response = 0.444 + 0.056 * t
+    return MotionFlexParameters {
+        associatedDimension: 37.0,
+        liftScalePoints: 0.0,
+        scaleDistanceThreshold: 0.0,
+        movementNormalizationFactor: 2000.0 + 500.0 * t,
+        movementScalePoints: 10.0 + 90.0 * t,
+        movementMinScale: 0.9 - 0.15 * t,
+        movementMaxScale: 1.1 + 0.05 * t,
+        scaleSpringResponse: response,
+        scaleSpringDamping: 0.56 + 0.44 * t,
+        scaleSpringTrackingResponse: response,
+        scaleSpringTrackingDamping: 0.56 + 0.34 * t
+    }
+}
+
+function flexMix(from: Number, to: Number, t: Number) -> Number {
+    return from + (to - from) * t
+}
+
+// How far `dimension` is from `low` to `high`, held to 0…1; a NaN is none.
+function flexShare(dimension: Number, low: Number, high: Number) -> Number {
+    let t = (dimension - low) / (high - low)
+    if t != t || t <= 0.0 {
+        return 0.0
+    }
+    return min(t, 1.0)
+}
+
+// The parameters an element `width` by `height` answers `input` with: the
+// framework's `Settings.init(variant:size:)`.
+public function motionFlexParameters(
+    variant: MotionFlexVariant,
+    input: MotionFlexInput,
+    width: Number,
+    height: Number
+) -> MotionFlexParameters {
+    let shorter = min(width, height)
+    let longer = max(width, height)
+    if variant == .LiquidLens {
+        return motionFlexLens(flexShare(shorter, 37.0, 70.0))
+    }
+    if variant == .Automatic && longer < MotionFlexLimit.ultraSmall {
+        return motionFlexUltraSmall(input == .Cursor)
+    }
+    if variant != .Automatic {
+        return motionFlexPreset(variant, input)
+    }
+    let small = motionFlexPreset(.Small, input)
+    let large = motionFlexPreset(.Large, input)
+    let low = small.associatedDimension
+    let high = large.associatedDimension
+    let tMin = flexShare(shorter, low, high)
+    let tMax = flexShare(longer, low, high)
+    // As `_UIFlexInteractionSpec dynamicWithSize:`: the glows, the lift and
+    // how far a drag stretches follow the shorter side, the springs the
+    // longer. A bar 274 by 62 is near the small set for its glows, and its
+    // big glow, all but full, lights the whole bar while it is held.
+    return MotionFlexParameters {
+        associatedDimension: low,
+        bigGlowOpacity: flexMix(small.bigGlowOpacity, large.bigGlowOpacity, tMin),
+        littleGlowOpacity: flexMix(small.littleGlowOpacity, large.littleGlowOpacity, tMin),
+        littleGlowDissipationDistance: flexMix(
+            small.littleGlowDissipationDistance,
+            large.littleGlowDissipationDistance,
+            tMin
+        ),
+        liftScalePoints: flexMix(small.liftScalePoints, large.liftScalePoints, tMin),
+        scaleDistanceThreshold: flexMix(
+            small.scaleDistanceThreshold,
+            large.scaleDistanceThreshold,
+            tMin
+        ),
+        movementNormalizationFactor: flexMix(
+            small.movementNormalizationFactor,
+            large.movementNormalizationFactor,
+            tMin
+        ),
+        movementScalePoints: flexMix(small.movementScalePoints, large.movementScalePoints, tMax),
+        movementMinScale: flexMix(small.movementMinScale, large.movementMinScale, tMax),
+        movementMaxScale: flexMix(small.movementMaxScale, large.movementMaxScale, tMax),
+        interactionPulseNormalizationFactor: flexMix(
+            small.interactionPulseNormalizationFactor,
+            large.interactionPulseNormalizationFactor,
+            tMax
+        ),
+        interactionPulseScalePointsX: flexMix(
+            small.interactionPulseScalePointsX,
+            large.interactionPulseScalePointsX,
+            tMax
+        ),
+        interactionPulseScalePointsY: flexMix(
+            small.interactionPulseScalePointsY,
+            large.interactionPulseScalePointsY,
+            tMax
+        ),
+        interactionPulseDriftRatio: flexMix(
+            small.interactionPulseDriftRatio,
+            large.interactionPulseDriftRatio,
+            tMax
+        ),
+        scaleSpringResponse: flexMix(small.scaleSpringResponse, large.scaleSpringResponse, tMax),
+        scaleSpringDamping: flexMix(small.scaleSpringDamping, large.scaleSpringDamping, tMax),
+        scaleSpringTrackingResponse: flexMix(
+            small.scaleSpringTrackingResponse,
+            large.scaleSpringTrackingResponse,
+            tMax
+        ),
+        scaleSpringTrackingDamping: flexMix(
+            small.scaleSpringTrackingDamping,
+            large.scaleSpringTrackingDamping,
+            tMax
+        )
+    }
+}
+
+// One element's flex in flight. The press is given in the element's own
+// coordinates, as where it went down and where the pointer is now.
+public struct MotionFlexState {
+    var parameters: MotionFlexParameters = MotionFlexParameters {}
+    var width: Number = 0.0
+    var height: Number = 0.0
+    // Whether the element lifts under a press, and whether a drag stretches
+    // it: the framework's `lift` and `flex` behaviors.
+    var lifts: Bool = true
+    var flexes: Bool = true
+    // Whether it lights at all; a reduced-transparency or reduced-motion
+    // element keeps its flex and loses its glow.
+    var glows: Bool = true
+    // Whether it follows the scale spring's tracking pair while pressed, as
+    // UIKit's `_UIFlexInteraction` does; SwiftUI's flex never reads it.
+    var tracking: Bool = false
+    var active: Bool = false
+    var startX: Number = 0.0
+    var startY: Number = 0.0
+    var x: Number = 0.0
+    var y: Number = 0.0
+    var started: Bool = false
+    var scaleX: MotionSpringState = MotionSpringState {}
+    var scaleY: MotionSpringState = MotionSpringState {}
+    var driftX: MotionSpringState = MotionSpringState {}
+    var driftY: MotionSpringState = MotionSpringState {}
+    var bigGlow: MotionSpringState = MotionSpringState {}
+    var littleGlow: MotionSpringState = MotionSpringState {}
+    var glowScale: MotionSpringState = MotionSpringState {}
+    var glowX: MotionSpringState = MotionSpringState {}
+    var glowY: MotionSpringState = MotionSpringState {}
+    // Whether the last advance found everything at rest, unpressed. Nothing
+    // moves it again but a press, a move, a release or a new fit, so until
+    // one the next advance is the same still frame.
+    var settled: Bool = false
+}
+
+// What the flex comes to this frame. The transform is the framework's effect
+// value: scaled by `scaleX`, `scaleY` about the element's center, then moved
+// by `driftX`, `driftY`. The little glow is `glowSize` across before
+// `glowScale`, centered at `glowX`, `glowY` in the element's own coordinates.
+public struct MotionFlexFrame {
+    let scaleX: Number = 1.0
+    let scaleY: Number = 1.0
+    let driftX: Number = 0.0
+    let driftY: Number = 0.0
+    let bigGlow: Number = 0.0
+    let littleGlow: Number = 0.0
+    let glowScale: Number = 1.0
+    let glowX: Number = 0.0
+    let glowY: Number = 0.0
+    let glowSize: Number = 0.0
+    let moving: Bool = false
+}
+
+// Sizes the flex for an element `width` by `height` under `parameters`.
+public function motionFlexFit(
+    state: borrow mut MotionFlexState,
+    parameters: MotionFlexParameters,
+    width: Number,
+    height: Number
+) {
+    state.parameters = parameters
+    state.width = width
+    state.height = height
+    state.settled = false
+}
+
+// A press going down at `x`, `y`.
+public function motionFlexPress(state: borrow mut MotionFlexState, x: Number, y: Number) {
+    flexStart(state)
+    state.settled = false
+    state.active = true
+    state.startX = x
+    state.startY = y
+    state.x = x
+    state.y = y
+    // A new press brings the little glow up at the pointer at its own size.
+    flexJump(state.glowScale, 1.0)
+    flexJump(state.glowX, flexClampedX(state))
+    flexJump(state.glowY, flexClampedY(state))
+}
+
+public function motionFlexMove(state: borrow mut MotionFlexState, x: Number, y: Number) {
+    state.x = x
+    state.y = y
+    state.settled = false
+}
+
+public function motionFlexRelease(state: borrow mut MotionFlexState) {
+    state.active = false
+    state.settled = false
+}
+
+function flexStart(state: borrow mut MotionFlexState) {
+    if state.started {
+        return
+    }
+    state.started = true
+    flexJump(state.scaleX, 1.0)
+    flexJump(state.scaleY, 1.0)
+    flexJump(state.glowScale, 4.0)
+}
+
+// A spring put at `value` and left there, still.
+function flexJump(state: borrow mut MotionSpringState, value: Number) {
+    state.spring = MotionSpring {
+        response: state.spring.response,
+        damping: state.spring.damping,
+        target: value
+    }
+    state.origin = value
+    state.velocity = 0.0
+    state.elapsed = 0.0
+}
+
+// The pointer held to the element: the framework's `clampedLocation`.
+function flexClampedX(state: borrow MotionFlexState) -> Number {
+    return clamp(state.x, 0.0, max(state.width, 0.0))
+}
+
+function flexClampedY(state: borrow MotionFlexState) -> Number {
+    return clamp(state.y, 0.0, max(state.height, 0.0))
+}
+
+// One axis's stretch for a drag of `translation`, of which `inside` stayed on
+// the element: the part off it stretches four times as fast as the part on it.
+function flexStretch(translation: Number, inside: Number, threshold: Number) -> Number {
+    if threshold <= 0.0 {
+        return 0.0
+    }
+    let total = abs(translation)
+    let within = abs(inside)
+    return (total - within) / threshold + within / (4.0 * threshold)
+}
+
+function flexSign(value: Number) -> Number {
+    return value < 0.0 ? -1.0 : 1.0
+}
+
+// Follows `target` on a spring of `response` and `damping`, keeping the
+// velocity it has when either changes.
+function flexFollow(
+    state: borrow mut MotionSpringState,
+    response: Number,
+    damping: Number,
+    target: Number,
+    delta: Number
+) -> Number {
+    let spring = state.spring
+    if spring.target != target || spring.response != response || spring.damping != damping {
+        let now = motionSpringSample(state, state.elapsed)
+        state.spring = MotionSpring { response: response, damping: damping, target: target }
+        state.origin = now.value
+        state.velocity = now.velocity
+        state.elapsed = 0.0
+    }
+    return motionSpringAdvance(state, delta).value
+}
+
+function flexResting(state: borrow MotionSpringState) -> Bool {
+    let now = motionSpringSample(state, state.elapsed)
+    return motionSpringSettled(state, now, MotionSpringLimit.epsilon)
+}
+
+// Advances the flex by a frame of `delta` seconds: the framework's
+// `updateFlexEffect`, its glow update, and their springs.
+public function motionFlexAdvance(
+    state: borrow mut MotionFlexState,
+    delta: Number
+) -> MotionFlexFrame {
+    let w = state.width
+    let h = state.height
+    if state.settled {
+        return MotionFlexFrame {
+            glowScale: 4.0,
+            glowSize: min(MotionFlexLimit.glowShare * min(w, h), MotionFlexLimit.glowSize),
+            moving: false
+        }
+    }
+    flexStart(state)
+    let set = state.parameters
+    var response = set.scaleSpringResponse
+    var damping = set.scaleSpringDamping
+    var scaleX = 1.0
+    var scaleY = 1.0
+    var driftX = 0.0
+    var driftY = 0.0
+    if w <= 0.0 || h <= 0.0 {
+        response = 0.5
+        damping = 0.5
+    } else if state.active {
+        // UIKit's `updateFlex` animates on `scaleSpring` with the animation
+        // context's `tracking` flag, which is set while the gesture is live:
+        // the spring's tracking pair then, its own once let go.
+        if state.tracking {
+            response = set.scaleSpringTrackingResponse
+            damping = set.scaleSpringTrackingDamping
+        }
+        // The points are added to the longer side, as `_UIFlexInteraction`'s
+        // `updateFlex` does: a bar 257 points across grows by 14.65 of them,
+        // under 6 %, where a button of 44 grows by its whole 16.
+        let longer = max(w, h)
+        let lift = state.lifts ? (longer + set.liftScalePoints) / longer : 1.0
+        scaleX = lift
+        scaleY = lift
+        if state.flexes {
+            let tx = state.x - state.startX
+            let ty = state.y - state.startY
+            let ix = flexClampedX(state) - state.startX
+            let iy = flexClampedY(state) - state.startY
+            if tx != 0.0 {
+                let k = flexStretch(tx, ix, set.scaleDistanceThreshold)
+                scaleX = lift + k
+                scaleY = lift - k
+                driftX = w * flexSign(tx) * k
+            }
+            if ty != 0.0 {
+                let k = flexStretch(ty, iy, set.scaleDistanceThreshold)
+                scaleX -= k
+                scaleY += k
+                driftY = h * flexSign(ty) * k
+            }
+        }
+    }
+    let sx = flexFollow(state.scaleX, response, damping, scaleX, delta)
+    let sy = flexFollow(state.scaleY, response, damping, scaleY, delta)
+    let dx = flexFollow(state.driftX, response, damping, driftX, delta)
+    let dy = flexFollow(state.driftY, response, damping, driftY, delta)
+
+    var big = 0.0
+    var little = 0.0
+    var glowScale = 4.0
+    var gx = 0.0
+    var gy = 0.0
+    if state.active {
+        big = set.bigGlowOpacity
+        little = set.littleGlowOpacity
+        glowScale = 1.0
+        gx = flexClampedX(state)
+        gy = flexClampedY(state)
+        if hypot(
+            state.x - state.startX,
+            state.y - state.startY
+        ) > set.littleGlowDissipationDistance {
+            little *= 0.5
+            glowScale = 2.0
+        }
+    }
+    if !state.glows {
+        big = 0.0
+        little = 0.0
+    }
+    let bigNow = flexFollow(state.bigGlow, 0.1, 1.0, big, delta)
+    let littleNow = flexFollow(state.littleGlow, 0.3, 1.0, little, delta)
+    let scaleNow = flexFollow(state.glowScale, 0.3, 1.0, glowScale, delta)
+    let gxNow = flexFollow(state.glowX, 0.15, 1.0, gx, delta)
+    let gyNow = flexFollow(state.glowY, 0.15, 1.0, gy, delta)
+
+    let shapeResting = flexResting(state.scaleX) && flexResting(state.scaleY)
+    let driftResting = flexResting(state.driftX) && flexResting(state.driftY)
+    let shapeMoving = !(shapeResting && driftResting)
+    let lit = abs(bigNow) > 0.0005 || abs(littleNow) > 0.0005
+    state.settled = !(state.active || shapeMoving || lit)
+    return MotionFlexFrame {
+        scaleX: sx,
+        scaleY: sy,
+        driftX: dx,
+        driftY: dy,
+        bigGlow: max(bigNow, 0.0),
+        littleGlow: max(littleNow, 0.0),
+        glowScale: scaleNow,
+        glowX: gxNow,
+        glowY: gyNow,
+        glowSize: min(MotionFlexLimit.glowShare * min(w, h), MotionFlexLimit.glowSize),
+        moving: state.active || shapeMoving || lit
+    }
+}
+
+// The little glow's strength `distance` from its center, as a share of what
+// the glow is given, for a glow drawn `radius` points out. The glow is a white
+// disc a quarter of that radius across the middle under a shadow blurred by
+// the same quarter -- the framework's glow layer, a square `glowSize` across
+// with a white shadow of radius `glowSize / 2`, opacity one and its bounds for
+// a path -- so it is the disc under a two-dimensional Gaussian whose sigma is
+// the disc's radius: 1 - e^(-1/2) = 0.39 in the middle, and within 0.0004 of
+// 0.3935 e^(-u^2 / 2.56) at u disc radii out. The rim is four of those radii
+// out, where it has fallen to nothing. `glowFalloff` in the shaders computes
+// the same; the two must move together.
+public function motionFlexGlowFalloff(distance: Number, radius: Number) -> Number {
+    let reach = max(radius, 0.0001)
+    if distance >= reach {
+        return 0.0
+    }
+    let u = max(distance, 0.0) / (reach * 0.25)
+    return 0.3935 * exp(-u * u / 2.56)
+}
+
+// The touch lights as they are drawn this frame: the little glow centered at
+// `x`, `y` in the element's own coordinates, `radius` points out to nothing,
+// `strength` of it at its center; and `wash` of the big glow over the whole
+// element.
+public struct MotionLight {
+    let x: Number = 0.0
+    let y: Number = 0.0
+    let radius: Number = 0.0
+    let strength: Number = 0.0
+    let wash: Number = 0.0
+}
+
+// The flex's two glows as lights to draw, in the element's own coordinates.
+public function motionFlexLight(frame: borrow MotionFlexFrame) -> MotionLight {
+    let little = frame.littleGlow > 0.0005 ? frame.littleGlow : 0.0
+    let wash = frame.bigGlow > 0.0005 ? frame.bigGlow : 0.0
+    if (little <= 0.0 && wash <= 0.0) || frame.glowSize <= 0.0 {
+        return MotionLight {}
+    }
+    return MotionLight {
+        x: frame.glowX,
+        y: frame.glowY,
+        radius: 4.0 * frame.glowSize * 0.5 * frame.glowScale,
+        strength: little,
+        wash: wash
+    }
+}

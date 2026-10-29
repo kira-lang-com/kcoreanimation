@@ -1,0 +1,431 @@
+import Foundation
+
+// A glyph's outline out of its Type 2 charstring (Adobe technical note
+// 5177): the program a `CFF ` face draws each glyph with, run against a pen.
+// Its curves are cubic, and each is cut into as many quadratic ones as keep
+// it within a fraction of a font unit of where the designer put it, since
+// that is what the rest of the engine draws. Hints are skipped, as the
+// engine draws unhinted. A `CFF2` charstring also blends its numbers: each
+// carries a delta for every region of the face's design space, which the
+// instance's coordinates weigh.
+
+namespace CharstringLayout {
+    // Subroutine calls nest no deeper than this, and the argument stack
+    // holds no more, as `CFF2` allows (`CFF ` allows 48).
+    let callDepth: Number = 10
+    let stackSize: Number = 513
+    // A cubic cut into quadratics is within this fraction of the em of the
+    // true curve, and is cut into at most this many.
+    let flatness: Float = 4096
+    let pieces: Number = 16
+    // How far the best quadratic strays from a cubic, for each unit of the
+    // cubic's third difference: sqrt(3) / 36.
+    let stray: Float = 0.0481
+}
+
+// The pen a charstring draws with, the argument stack it computes on, and
+// how many stem hints it has declared, which a hint mask's length follows.
+struct CharstringPen {
+    var shape: GlyphPoints = GlyphPoints {}
+    var contour: [OutlinePoint] = []
+    var stack: [Float] = []
+    var count: Number = 0
+    // The first argument of the next operator: 1 where the stack's bottom is
+    // the glyph's width, which the face's `hmtx` gives instead.
+    var first: Number = 0
+    var x: Float = 0.0
+    var y: Float = 0.0
+    var stems: Number = 0
+    var widthRead: Bool = false
+    var ended: Bool = false
+    // How much each region of the item variation data the charstring blends
+    // by applies at the instance.
+    var scalars: [Float] = []
+    let tolerance: Float
+
+    function push(borrow mut self, value: Float) {
+        if stack.count < CharstringLayout.stackSize {
+            stack.append(0.0)
+        }
+        if count < stack.count {
+            stack[count] = value
+            count += 1
+        }
+    }
+
+    function pop(borrow mut self) -> Float {
+        if count == 0 { return 0.0 }
+        count -= 1
+        return stack[count]
+    }
+
+    // `blend`: the `count` numbers under their deltas, each moved by its
+    // deltas weighed by the regions' scalars, and the deltas dropped.
+    function blend(borrow mut self) {
+        let blended = Number(trunc(pop()))
+        let regions = scalars.count
+        let base = count - blended * (regions + 1)
+        if blended < 0 || base < first { return }
+        for index in 0..blended {
+            var value = stack[base + index]
+            for region in 0..regions {
+                value += stack[base + blended + index * regions + region] * scalars[region]
+            }
+            stack[base + index] = value
+        }
+        count = base + blended
+    }
+
+    function arg(borrow self, index: Number) -> Float {
+        return stack[first + index]
+    }
+
+    function size(borrow self) -> Number {
+        return count - first
+    }
+
+    // The first stack-clearing operator may carry the width under its own
+    // arguments: `extra` says it has one more than it takes.
+    function readWidth(borrow mut self, extra: Bool) {
+        if !widthRead && extra && count > 0 { first = 1 }
+        widthRead = true
+    }
+
+    function clear(borrow mut self) {
+        count = 0
+        first = 0
+    }
+
+    function stem(borrow mut self) {
+        readWidth(size() % 2 == 1)
+        stems += trunc(size() / 2)
+        clear()
+    }
+
+    function moveTo(borrow mut self, dx: Float, dy: Float) {
+        close()
+        x += dx
+        y += dy
+        contour.append(OutlinePoint { x: x, y: y, onCurve: true })
+    }
+
+    function lineTo(borrow mut self, dx: Float, dy: Float) {
+        x += dx
+        y += dy
+        contour.append(OutlinePoint { x: x, y: y, onCurve: true })
+    }
+
+    // A cubic from the pen through two control points, each relative to the
+    // point before it, cut into quadratics.
+    function curveTo(
+        borrow mut self,
+        dx1: Float,
+        dy1: Float,
+        dx2: Float,
+        dy2: Float,
+        dx3: Float,
+        dy3: Float
+    ) {
+        let x0 = x
+        let y0 = y
+        let x1 = x0 + dx1
+        let y1 = y0 + dy1
+        let x2 = x1 + dx2
+        let y2 = y1 + dy2
+        let x3 = x2 + dx3
+        let y3 = y2 + dy3
+        let bowX = x3 - 3.0 * x2 + 3.0 * x1 - x0
+        let bowY = y3 - 3.0 * y2 + 3.0 * y1 - y0
+        let bow = sqrt(bowX * bowX + bowY * bowY)
+        let wanted = Number(ceil(cbrt(bow * CharstringLayout.stray / tolerance)))
+        let pieces = min(max(wanted, 1), CharstringLayout.pieces)
+        let step = 1.0 / Float(pieces)
+        for piece in 0..pieces {
+            let t0 = Float(piece) * step
+            let t1 = Float(piece + 1) * step
+            // Each end's tangent, carried half the piece in: where the two
+            // meet, near enough, is the quadratic's control point.
+            let startX = cubicAt(x0, x1, x2, x3, t0) + cubicSlope(x0, x1, x2, x3, t0) * step / 2.0
+            let startY = cubicAt(y0, y1, y2, y3, t0) + cubicSlope(y0, y1, y2, y3, t0) * step / 2.0
+            let endX = cubicAt(x0, x1, x2, x3, t1) - cubicSlope(x0, x1, x2, x3, t1) * step / 2.0
+            let endY = cubicAt(y0, y1, y2, y3, t1) - cubicSlope(y0, y1, y2, y3, t1) * step / 2.0
+            contour.append(
+                OutlinePoint { x: (startX + endX) / 2.0, y: (startY + endY) / 2.0, onCurve: false }
+            )
+            let last = piece == pieces - 1
+            contour.append(
+                OutlinePoint {
+                    x: last ? x3 : cubicAt(x0, x1, x2, x3, t1),
+                    y: last ? y3 : cubicAt(y0, y1, y2, y3, t1),
+                    onCurve: true
+                }
+            )
+        }
+        x = x3
+        y = y3
+    }
+
+    // Ends the contour being drawn, which closes itself: a last point on its
+    // first is dropped.
+    function close(borrow mut self) {
+        var points = contour.count
+        if points >= 2 {
+            let start = contour[0]
+            let end = contour[points - 1]
+            if end.onCurve && end.x == start.x && end.y == start.y { points -= 1 }
+        }
+        if points >= 2 {
+            for index in 0..points { shape.points.append(contour[index]) }
+            shape.ends.append(shape.points.count - 1)
+        }
+        contour = []
+    }
+
+    // The operators that draw, by their byte; escaped ones are 1200 + x.
+    function draw(borrow mut self, op: Number) {
+        let n = size()
+        match op {
+            21 -> {
+                readWidth(n > 2)
+                moveTo(arg(0), arg(1))
+            }
+            22 -> {
+                readWidth(n > 1)
+                moveTo(arg(0), 0.0)
+            }
+            4 -> {
+                readWidth(n > 1)
+                moveTo(0.0, arg(0))
+            }
+            5 -> {
+                var at: Number = 0
+                while at + 2 <= n {
+                    lineTo(arg(at), arg(at + 1))
+                    at += 2
+                }
+            }
+            6, 7 -> {
+                var horizontal = op == 6
+                for at in 0..n {
+                    if horizontal { lineTo(arg(at), 0.0) } else { lineTo(0.0, arg(at)) }
+                    horizontal = !horizontal
+                }
+            }
+            8, 24 -> {
+                var at: Number = 0
+                while at + 6 <= n {
+                    curveTo(
+                        arg(at),
+                        arg(at + 1),
+                        arg(at + 2),
+                        arg(at + 3),
+                        arg(at + 4),
+                        arg(at + 5)
+                    )
+                    at += 6
+                }
+                if op == 24 && at + 2 <= n { lineTo(arg(at), arg(at + 1)) }
+            }
+            25 -> {
+                var at: Number = 0
+                while at + 2 <= n - 6 {
+                    lineTo(arg(at), arg(at + 1))
+                    at += 2
+                }
+                if at + 6 <= n {
+                    curveTo(
+                        arg(at),
+                        arg(at + 1),
+                        arg(at + 2),
+                        arg(at + 3),
+                        arg(at + 4),
+                        arg(at + 5)
+                    )
+                }
+            }
+            26, 27 -> {
+                var at: Number = n % 2
+                var lead = at == 1 ? arg(0) : 0.0
+                while at + 4 <= n {
+                    if op == 26 {
+                        curveTo(lead, arg(at), arg(at + 1), arg(at + 2), 0.0, arg(at + 3))
+                    } else {
+                        curveTo(arg(at), lead, arg(at + 1), arg(at + 2), arg(at + 3), 0.0)
+                    }
+                    lead = 0.0
+                    at += 4
+                }
+            }
+            30, 31 -> {
+                var horizontal = op == 31
+                var at: Number = 0
+                while at + 4 <= n {
+                    let tail = at + 5 == n ? arg(at + 4) : 0.0
+                    if horizontal {
+                        curveTo(arg(at), 0.0, arg(at + 1), arg(at + 2), tail, arg(at + 3))
+                    } else {
+                        curveTo(0.0, arg(at), arg(at + 1), arg(at + 2), arg(at + 3), tail)
+                    }
+                    horizontal = !horizontal
+                    at += 4
+                }
+            }
+            1235 -> {
+                if n >= 12 {
+                    curveTo(arg(0), arg(1), arg(2), arg(3), arg(4), arg(5))
+                    curveTo(arg(6), arg(7), arg(8), arg(9), arg(10), arg(11))
+                }
+            }
+            1234 -> {
+                if n >= 7 {
+                    curveTo(arg(0), 0.0, arg(1), arg(2), arg(3), 0.0)
+                    curveTo(arg(4), 0.0, arg(5), -arg(2), arg(6), 0.0)
+                }
+            }
+            1236 -> {
+                if n >= 9 {
+                    curveTo(arg(0), arg(1), arg(2), arg(3), arg(4), 0.0)
+                    curveTo(arg(5), 0.0, arg(6), arg(7), arg(8), -(arg(1) + arg(3) + arg(7)))
+                }
+            }
+            1237 -> {
+                if n >= 11 {
+                    let dx = arg(0) + arg(2) + arg(4) + arg(6) + arg(8)
+                    let dy = arg(1) + arg(3) + arg(5) + arg(7) + arg(9)
+                    let across = abs(dx) > abs(dy)
+                    curveTo(arg(0), arg(1), arg(2), arg(3), arg(4), arg(5))
+                    curveTo(
+                        arg(6),
+                        arg(7),
+                        arg(8),
+                        arg(9),
+                        across ? arg(10) : -dx,
+                        across ? -dy : arg(10)
+                    )
+                }
+            }
+            // Arithmetic and the other escaped operators draw nothing.
+            else -> {}
+        }
+        clear()
+    }
+}
+
+extend FontFile {
+    // `glyph`'s contours out of its charstring, in font units, drawn from
+    // the pen's origin.
+    function compactOutline(
+        compact: borrow CompactOutlines,
+        glyph: GlyphId,
+        coordinates: borrow [Float]
+    ) -> GlyphPoints {
+        let glyphIndex = Number(glyph.raw)
+        let (start, end) = match data.indexEntry(compact.charStrings, glyphIndex, compact.wide) {
+            Some(range) -> range
+            None -> return GlyphPoints {}
+        }
+        let dict = data.fontDict(compact.fontSelect, glyphIndex)
+        let local = dict < compact.localSubrs.count ? compact.localSubrs[dict] : -1
+        // A `CFF2` charstring carries no width.
+        var pen = CharstringPen {
+            widthRead: compact.wide,
+            tolerance: unitsPerEm / CharstringLayout.flatness
+        }
+        if compact.wide && dict < compact.regionSets.count {
+            pen.scalars = storeScalars(
+                compact.variationStore,
+                compact.regionSets[dict],
+                coordinates
+            )
+        }
+        runCharstring(compact, pen, start, end, local, coordinates, 0)
+        pen.close()
+        return copy pen.shape
+    }
+
+    // Runs the charstring between `start` and `end` with `pen`, calling into
+    // the face's subroutines and the glyph's font dict's.
+    function runCharstring(
+        compact: borrow CompactOutlines,
+        pen: borrow mut CharstringPen,
+        start: Number,
+        end: Number,
+        local: Number,
+        coordinates: borrow [Float],
+        depth: Number
+    ) {
+        if depth > CharstringLayout.callDepth { return }
+        var at = start
+        while at < end && !pen.ended {
+            let lead = data.u8(at)
+            if lead >= 32 {
+                let (value, size) = data.compactNumber(at)
+                pen.push(value)
+                at += size
+                continue
+            }
+            if lead == 28 {
+                pen.push(Float(data.i16(at + 1)))
+                at += 3
+                continue
+            }
+            at += 1
+            match lead {
+                // callsubr and callgsubr.
+                10, 29 -> {
+                    let index = lead == 10 ? local : compact.globalSubrs
+                    let called = Number(trunc(pen.pop()))
+                    if index < 0 { return }
+                    let bias = data.subroutineBias(index, compact.wide)
+                    match data.indexEntry(index, called + bias, compact.wide) {
+                        Some(range) -> {
+                            let (from, to) = range
+                            runCharstring(compact, pen, from, to, local, coordinates, depth + 1)
+                        }
+                        None -> return
+                    }
+                }
+                // return.
+                11 -> return
+                // vsindex: the item variation data the rest blends by.
+                15 -> {
+                    let set = Number(trunc(pen.pop()))
+                    pen.scalars = storeScalars(compact.variationStore, set, coordinates)
+                }
+                16 -> pen.blend()
+                // endchar. An accented glyph built with its `seac` arguments
+                // is drawn without its accent.
+                14 -> {
+                    pen.readWidth(pen.size() == 1 || pen.size() == 5)
+                    pen.clear()
+                    pen.ended = true
+                }
+                // The stem hints.
+                1, 3, 18, 23 -> pen.stem()
+                // hintmask and cntrmask: stems before them are vertical ones,
+                // and the mask is one bit for each stem.
+                19, 20 -> {
+                    pen.stem()
+                    at += trunc((pen.stems + 7) / 8)
+                }
+                12 -> {
+                    pen.draw(1200 + data.u8(at))
+                    at += 1
+                }
+                else -> pen.draw(lead)
+            }
+        }
+    }
+}
+
+// The cubic with these four values, at `t`.
+function cubicAt(a: Float, b: Float, c: Float, d: Float, t: Float) -> Float {
+    let u = 1.0 - t
+    return u * u * u * a + 3.0 * u * u * t * b + 3.0 * u * t * t * c + t * t * t * d
+}
+
+// The cubic's derivative at `t`.
+function cubicSlope(a: Float, b: Float, c: Float, d: Float, t: Float) -> Float {
+    let u = 1.0 - t
+    return 3.0 * u * u * (b - a) + 6.0 * u * t * (c - b) + 3.0 * t * t * (d - c)
+}

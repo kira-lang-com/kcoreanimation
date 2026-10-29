@@ -1,0 +1,11 @@
+import Ember
+
+extend Compositor {
+    // Advance presentation state from the graphics frame's absolute monotonic
+    // clock. Animation progress depends on this timestamp, never on how many
+    // frames happened to be submitted between two samples.
+    function advance(borrow mut self, frame: borrow RenderFrame) -> Bool {
+        let now = Number(frame.monotonicNanoseconds()) / 1000000000.0
+        return self.tree.sampleAt(now)
+    }
+}

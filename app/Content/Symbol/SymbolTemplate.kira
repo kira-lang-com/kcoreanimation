@@ -1,0 +1,116 @@
+import Foundation
+
+// A custom symbol exported from SF Symbols: one template holding the symbol
+// drawn at every weight and scale, each in its own group under `Symbols`,
+// named for both, `Medium-L`.
+//
+//     <g id="Symbols">
+//         <g id="Medium-L" transform="matrix(1 0 0 1 1674.31 1556)">
+//             <path d="..."/>
+//         </g>
+//         ...
+//     </g>
+//
+// A group's paths are drawn about its baseline, in points of 100-point type:
+// the template's capline stands 70.459 over each baseline, SF Pro's cap
+// height at 100 points. The group's transform only places it on the sheet,
+// so it is not read.
+
+namespace SymbolTemplateSheet {
+    // The type size the template's drawings are made at.
+    let pointSize: Float = 100
+}
+
+// The scales a template draws its symbol at: its `S`, `M` and `L` rows.
+public enum SymbolTemplateScale {
+    Small
+    Medium
+    Large
+}
+
+// One drawing out of a template, standing alone: `svg` is its paths on a
+// square canvas fitted to its ink, and `em` that canvas's side over the size
+// of the type it stands in.
+public struct SymbolVariant {
+    let svg: String
+    let em: Number
+}
+
+// Whether `source` is an SF Symbols template rather than a drawing.
+public function isSymbolTemplate(source: borrow String) -> Bool {
+    for tag in symbolTags(source) {
+        if tag.name == "g" && tag.says("id", "Symbols") { return true }
+    }
+    return false
+}
+
+// The drawing `source`, a template, makes at `weight` (100 to 900, as a
+// font's weight axis runs) and `scale`, or nothing when it has none.
+public function symbolTemplateVariant(
+    source: borrow String,
+    weight: Number,
+    scale: SymbolTemplateScale
+) -> SymbolVariant? {
+    let wanted = symbolTemplateWeight(weight) + "-" + symbolTemplateRow(scale)
+    var inSymbols = false
+    var inVariant = false
+    var data: [String] = []
+    for tag in symbolTags(source) {
+        if tag.name == "g" {
+            if tag.says("id", "Symbols") { inSymbols = true }
+            if inSymbols && tag.says("id", wanted) { inVariant = true }
+        } else if inVariant {
+            // The group's closing tag, which names nothing.
+            if tag.name == "" { break }
+            if tag.name == "path" {
+                match tag.attribute("d") {
+                    Some(path) -> data.append(path)
+                    None -> {}
+                }
+            }
+        }
+    }
+    var points: [SymbolPoint] = []
+    for path in data {
+        for outline in symbolPathOutlines(path) { points.appendAll(outline.points) }
+    }
+    if points.count == 0 { return .None }
+    var left = points[0].x
+    var top = points[0].y
+    var right = points[0].x
+    var bottom = points[0].y
+    for point in points {
+        left = min(left, point.x)
+        top = min(top, point.y)
+        right = max(right, point.x)
+        bottom = max(bottom, point.y)
+    }
+    let side = max(right - left, bottom - top)
+    if side <= 0.0 { return .None }
+    let x = (left + right - side) / 2.0
+    let y = (top + bottom - side) / 2.0
+    var svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"\(x) \(y) \(side) \(side)\">"
+    for path in data {
+        svg = svg + "<path d=\"" + path + "\"/>"
+    }
+    svg = svg + "</svg>"
+    return .Some(SymbolVariant { svg: svg, em: Number(side / SymbolTemplateSheet.pointSize) })
+}
+
+// The template's name for the weight nearest `weight`.
+function symbolTemplateWeight(weight: Number) -> String {
+    let names = [
+        "Ultralight", "Thin", "Light", "Regular", "Medium",
+        "Semibold", "Bold", "Heavy", "Black"
+    ]
+    let step = round((clamp(weight, 100.0, 900.0) - 100.0) / 100.0)
+    return copy names[step]
+}
+
+function symbolTemplateRow(scale: borrow SymbolTemplateScale) -> String {
+    match scale {
+        Small -> return "S"
+        Medium -> return "M"
+        Large -> return "L"
+    }
+}

@@ -1,0 +1,246 @@
+import Foundation
+
+// Glyph substitution (GSUB): the lookups a face's default features turn on,
+// run over a run's glyphs in the order the lookup list holds them, as
+// HarfBuzz runs them. Single, multiple and ligature substitution, and the
+// contextual and chained contextual rules that call them, in all three of
+// their formats. Alternates are left for features a run asks for by name,
+// and reverse chaining for scripts set right to left.
+
+// A run being shaped: its glyphs, and the byte of the text each came from.
+// A ligature takes the byte of its first glyph.
+struct ShapingBuffer {
+    var glyphs: [Number] = []
+    var clusters: [Number] = []
+}
+
+// How deep a contextual rule may call lookups that are contextual themselves.
+namespace ShapingLimits {
+    let nesting: Number = 8
+}
+
+// How a contextual rule names the glyphs it matches: one by one, by the class
+// a class definition table gives them, or by coverage tables.
+enum SequenceTest {
+    Glyphs
+    Classes(Number)
+    Coverages
+}
+
+// One sequence of a contextual rule: where its entries start, how many there
+// are, and how they name glyphs. Coverage offsets count from `base`.
+struct RuleSequence {
+    let at: Number
+    let count: Number
+    let test: SequenceTest
+    let base: Number
+}
+
+// A contextual rule: the glyphs before the input, the input, whose first
+// entry is the glyph the rule was found by unless `withFirst`, the glyphs
+// after it, and the lookups it calls.
+struct ContextRule {
+    let backtrack: RuleSequence
+    let input: RuleSequence
+    let withFirst: Bool
+    let lookahead: RuleSequence
+    let records: Number
+    let recordCount: Number
+}
+
+extend FontFile {
+    // Runs every substitution `table` turns on over `buffer`.
+    function substitute(buffer: borrow mut ShapingBuffer, table: borrow LayoutTable) {
+        for lookup in table.active {
+            var at: Number = 0
+            while at < buffer.glyphs.count {
+                if skipped(buffer.glyphs[at], lookup) {
+                    at += 1
+                    continue
+                }
+                let consumed = substituteAt(lookup, buffer, at, 0)
+                at += consumed < 0 ? 1 : max(consumed, 1)
+            }
+        }
+    }
+
+    // Runs `table`'s lookups at the glyphs `wanted` names alone, as a form
+    // feature applies only to the letters that take that form.
+    function substituteWhere(
+        buffer: borrow mut ShapingBuffer,
+        table: borrow LayoutTable,
+        wanted: borrow [Bool]
+    ) {
+        for lookup in table.active {
+            var at: Number = 0
+            while at < buffer.glyphs.count {
+                if at >= wanted.count || !wanted[at] || skipped(buffer.glyphs[at], lookup) {
+                    at += 1
+                    continue
+                }
+                let consumed = substituteAt(lookup, buffer, at, 0)
+                at += consumed < 0 ? 1 : max(consumed, 1)
+            }
+        }
+    }
+
+    // Applies the first of `lookup`'s subtables that applies at `at`; how many
+    // glyphs it consumed, or -1 where none applied.
+    function substituteAt(
+        lookup: borrow LayoutLookup,
+        buffer: borrow mut ShapingBuffer,
+        at: Number,
+        depth: Number
+    ) -> Number {
+        let glyph = buffer.glyphs[at]
+        for subtable in lookup.subtables {
+            let consumed = match lookup.kind {
+                1 -> singleSubstitution(subtable, buffer, at, glyph)
+                2 -> multipleSubstitution(subtable, buffer, at, glyph)
+                4 -> ligatureSubstitution(subtable, lookup, buffer, at, glyph)
+                5 -> contextSubstitution(subtable, lookup, buffer, at, depth, false)
+                6 -> contextSubstitution(subtable, lookup, buffer, at, depth, true)
+                // Alternates, and reverse chaining.
+                else -> -1
+            }
+            if consumed >= 0 { return consumed }
+        }
+        return -1
+    }
+
+    function singleSubstitution(
+        subtable: Number,
+        buffer: borrow mut ShapingBuffer,
+        at: Number,
+        glyph: Number
+    ) -> Number {
+        let index = data.coverageIndex(subtable + data.u16(subtable + 2), glyph)
+        if index < 0 { return -1 }
+        match data.u16(subtable) {
+            1 -> buffer.glyphs[at] = (glyph + data.i16(subtable + 4)) & 0xFFFF
+            2 -> {
+                if index >= data.u16(subtable + 4) { return -1 }
+                buffer.glyphs[at] = data.u16(subtable + 6 + index * 2)
+            }
+            else -> return -1
+        }
+        return 1
+    }
+
+    // One glyph for several, each from the first's byte, as `ccmp` takes a
+    // precomposed letter apart.
+    function multipleSubstitution(
+        subtable: Number,
+        buffer: borrow mut ShapingBuffer,
+        at: Number,
+        glyph: Number
+    ) -> Number {
+        let index = data.coverageIndex(subtable + data.u16(subtable + 2), glyph)
+        if index < 0 || index >= data.u16(subtable + 4) { return -1 }
+        let sequence = subtable + data.u16(subtable + 6 + index * 2)
+        let count = data.u16(sequence)
+        if count == 0 { return -1 }
+        let cluster = buffer.clusters[at]
+        var glyphs: [Number] = []
+        var clusters: [Number] = []
+        for position in 0..buffer.glyphs.count {
+            if position == at {
+                for part in 0..count {
+                    glyphs.append(data.u16(sequence + 2 + part * 2))
+                    clusters.append(cluster)
+                }
+            } else {
+                glyphs.append(buffer.glyphs[position])
+                clusters.append(buffer.clusters[position])
+            }
+        }
+        buffer.glyphs = move glyphs
+        buffer.clusters = move clusters
+        return count
+    }
+
+    // Several glyphs for one, as `calt` turns `->` into an arrow. The glyphs
+    // the lookup skips between the components stay, after the ligature.
+    function ligatureSubstitution(
+        subtable: Number,
+        lookup: borrow LayoutLookup,
+        buffer: borrow mut ShapingBuffer,
+        at: Number,
+        glyph: Number
+    ) -> Number {
+        let index = data.coverageIndex(subtable + data.u16(subtable + 2), glyph)
+        if index < 0 || index >= data.u16(subtable + 4) { return -1 }
+        let set = subtable + data.u16(subtable + 6 + index * 2)
+        for ligature in 0..data.u16(set) {
+            let rule = set + data.u16(set + 2 + ligature * 2)
+            let components = data.u16(rule + 2)
+            var positions: [Number] = [at]
+            var position = at
+            var matched = true
+            for component in 1..components {
+                position = nextUnskipped(buffer, position + 1, lookup)
+                if position < 0 || buffer.glyphs[position] != data.u16(
+                    rule + 4 + (component - 1) * 2
+                ) {
+                    matched = false
+                    break
+                }
+                positions.append(position)
+            }
+            if !matched { continue }
+            buffer.glyphs[at] = data.u16(rule)
+            removePositions(buffer, positions, 1)
+            return 1
+        }
+        return -1
+    }
+
+    // The first glyph at or after `from` that `lookup` does not skip, or -1.
+    function nextUnskipped(
+        buffer: borrow ShapingBuffer,
+        from: Number,
+        lookup: borrow LayoutLookup
+    ) -> Number {
+        var position = from
+        while position < buffer.glyphs.count {
+            if !skipped(buffer.glyphs[position], lookup) { return position }
+            position += 1
+        }
+        return -1
+    }
+
+    // The first glyph at or before `from` that `lookup` does not skip, or -1.
+    function previousUnskipped(
+        buffer: borrow ShapingBuffer,
+        from: Number,
+        lookup: borrow LayoutLookup
+    ) -> Number {
+        var position = from
+        while position >= 0 {
+            if !skipped(buffer.glyphs[position], lookup) { return position }
+            position -= 1
+        }
+        return -1
+    }
+}
+
+// Takes the glyphs at `positions`, from the `from`th on, out of `buffer`.
+function removePositions(
+    buffer: borrow mut ShapingBuffer,
+    positions: borrow [Number],
+    from: Number
+) {
+    var glyphs: [Number] = []
+    var clusters: [Number] = []
+    var next = from
+    for position in 0..buffer.glyphs.count {
+        if next < positions.count && positions[next] == position {
+            next += 1
+            continue
+        }
+        glyphs.append(buffer.glyphs[position])
+        clusters.append(buffer.clusters[position])
+    }
+    buffer.glyphs = move glyphs
+    buffer.clusters = move clusters
+}

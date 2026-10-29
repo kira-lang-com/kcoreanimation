@@ -1,0 +1,674 @@
+import Foundation
+import Ember
+// Liquid glass, the emission side: opening a capture, appending a glass surface,
+// and the patch cache that lets an unchanged interior be presented from last
+// frame's pixels instead of shaded again.
+//
+// A glass surface emits as up to four quads rather than one — the outer ring, the
+// lens band, the interior band and the deep core — because the cost of the full
+// material is paid only where the effects it describes actually reach. The cache
+// key is every number that would change any of those pixels; a match means the
+// interior can be copied.
+
+// A LiquidGlass surface is about to draw over `bounds`. The first one of the frame
+// always opens a layer (nothing can refract the stream it is emitted into). A later
+// one opens another only if it sits over content the current layer already drew —
+// that is what makes stacked glass refract the glass beneath it, while chrome that
+// merely coexists (a sidebar, a card, a dock) stays in one layer and one blur chain.
+// A reach the surface can actually afford.
+//
+// The material's point-space reaches — how far the lens bends, how far in from
+// the edge the refraction curve runs — are authored for a surface big enough to
+// have an interior. `refractionReach` is 180pt and `lensMaxBend` 72; a card that
+// is 36pt tall is smaller than either, so EVERY pixel of it is inside the edge
+// falloff and the surface renders as one bright bar instead of a panel with a
+// lit edge.
+//
+// That is not an unusual size. Anything that grows or collapses passes through
+// it — a menu card shrinking back into the row it came from spends the last
+// third of its exit there — and a material that only holds together above some
+// size is one that cannot be animated.
+//
+// So a reach is clamped to what the shorter half-extent leaves room for. Above
+// that the authored figure is untouched, which is every surface at rest; below
+// it the effect narrows with the surface instead of swallowing it.
+public function glassReachFor(authored: Number, halfW: Number, halfH: Number) -> Number {
+    var shorter = halfW
+    if halfH < shorter {
+        shorter = halfH
+    }
+    let affordable = shorter * 0.66
+    if authored < affordable {
+        return authored
+    }
+    return affordable
+}
+
+// How far in from the edge the edge light still moves a pixel: three sigmas
+// of the widest band it draws, which is the burn's when it burns at all. The
+// blurs are `edgeLightDodgeBlur` and `edgeLightBurnBlur` in
+// Shaders/GlassCommon.ksl, and a sigma is half a blur; the two literals here
+// must match them.
+public function glassEdgeLightReach(material: borrow CAGlassMaterial) -> Number {
+    if material.edgeLightBurn < 1.0 {
+        return 40.0 * 1.5
+    }
+    if material.edgeLightDodge > 0.0 {
+        return 10.0 * 1.5
+    }
+    return 0.0
+}
+
+extend UiBatch {
+    function beginGlassCapture(
+        graphics: borrow Graphics,
+        x: Number,
+        y: Number,
+        w: Number,
+        h: Number,
+        // Whether the capture must hold everything drawn before it, glass or
+        // not, rather than only open when glass already stands in the way.
+        fresh: Bool = false
+    ) {
+        self.ensureGlassResources(graphics)
+        var state = nativeRecover<UiBatchState>(self.storage)
+        if !state.glassReady {
+            return
+        }
+        if state.streamIndex.raw == 0 {
+            if state.probeGlassLayerOpen {
+                print(646464)
+                print(0)
+                print(trunc(x))
+                print(trunc(y))
+                print(trunc(w))
+                print(trunc(h))
+                print(1)
+            }
+            openStream(state, graphics)
+            return
+        }
+        let occupied = glassLayerOccupied(state, x, y, x + w, y + h)
+        if state.probeGlassLayerOpen {
+            print(646464)
+            print(state.streamIndex.raw)
+            print(trunc(x))
+            print(trunc(y))
+            print(trunc(w))
+            print(trunc(h))
+            if occupied { print(1) } else { print(0) }
+        }
+        if occupied || fresh {
+            openStream(state, graphics)
+        }
+    }
+}
+
+extend UiBatch {
+    function glassSplitActive() -> Bool {
+        var state = nativeRecover<UiBatchState>(self.storage)
+        return state.streamIndex.raw > 0
+    }
+}
+
+// Emit one liquid-glass quad (mode 3): a rounded-rect region that refracts the
+// backdrop. Field packing: fill.rgb = the wash color, fill.a = the BLUR MIX
+// (0..1, sharp capture vs blurred pyramid), borderWidth = the wash BASE strength
+// (the surface fill's alpha) which the shader scales by backdrop luminance —
+// stronger over dark content, near invisible over light.
+extend UiBatch {
+    function pushGlass(
+        x: Number,
+        y: Number,
+        w: Number,
+        h: Number,
+        radius: Number,
+        tint: borrow RGBAColor,
+        blur: Number,
+        edgeRefraction: Number,
+        clipMinX: Number,
+        clipMinY: Number,
+        clipMaxX: Number,
+        clipMaxY: Number,
+        material: borrow CAGlassMaterial,
+        // The touch highlight, in the same coordinates as `x`/`y`, its radius
+        // and strength packed as `packedGlow` packs them. It rides the
+        // gradient block: the glass pipelines carry that block for stride and
+        // never read it, while all three material spares are already spoken for
+        // (inverse drawable size for the copy pass, and the AA band).
+        glowX: Number = 0.0,
+        glowY: Number = 0.0,
+        glowStrength: Number = 0.0,
+        // The second shape this surface is fusing with, as a rectangle in the
+        // same coordinates as `x`/`y`, and the smooth minimum's reach. A reach
+        // of zero — or a shape with no extent — is a surface that is one shape,
+        // which is every glass surface on screen but the ones in a morph.
+        morphX: Number = 0.0,
+        morphY: Number = 0.0,
+        morphW: Number = 0.0,
+        morphH: Number = 0.0,
+        morphRadius: Number = 0.0,
+        morphBlend: Number = 0.0,
+        // The corner every patch of this surface shades against.
+        shapeKind: Number = 0.0,
+        // Layer rotation. Rotated glass uses one full exact patch; the region
+        // splitter below remains the fast path for the overwhelmingly common
+        // axis-aligned surface.
+        rotCos: Number = 1.0,
+        rotSin: Number = 0.0,
+        // How much of the finished glass shows over what is behind it.
+        opacity: Number = 1.0,
+        // The corner of the rounded box the clip is, and its kind: zero for a
+        // plain box.
+        clipRadius: Number = 0.0,
+        clipShapeKind: Number = 0.0,
+    ) {
+        if w <= 0.0 || h <= 0.0 || opacity <= 0.0 {
+            return
+        }
+        var state = nativeRecover<UiBatchState>(self.storage)
+        if state.streamIndex.raw == 0 {
+            return
+        }
+        state.glassStatSurfaces += 1
+        let vw = state.viewportW
+        let vh = state.viewportH
+        // The anti-aliasing band, and every hairline the border stack draws, in
+        // the quad's own units. `edgeBand` is two device pixels — the width the
+        // coverage ramp and the border silhouettes' own edges occupy — and the
+        // shader reads it rather than assuming one, which is what makes the edge
+        // the same thickness at every backing scale.
+        let edgeBand = glassHairline(2.0, state.scale)
+        let borderSpread = glassHairline(material.borderSpread, state.scale)
+        let borderSideOffset = glassHairline(material.borderSideOffset, state.scale)
+        let borderSideSpread = glassHairline(material.borderSideSpread, state.scale)
+        // The specular's bevel is the kit's, in points, at every backing scale.
+        let rimWidth = material.innerRimWidth
+        // Room for the border shadows the shader draws outside the shape: the
+        // furthest silhouette's reach plus its own edge band, and never under the
+        // 4pt the quad has always carried. The quad does not have to carry a
+        // blurred ambient shadow, which is the disabled fourth effect and would
+        // need ~40.
+        var pad: Number = 4.0
+        let skirt = borderSideOffset + borderSpread + edgeBand + 1.0
+        if skirt > pad {
+            pad = skirt
+        }
+        // Room for the shape this one is fusing with, and for the neck between
+        // them.
+        //
+        // The fused body reaches past the union of the two rectangles by a
+        // quarter of the smooth minimum's reach and no further — that is the
+        // most `smoothUnion` can pull the field down by — so the union inflated
+        // by `k/4` bounds every pixel the surface can cover. `pad` is symmetric
+        // because `lhx`/`lhy` are, so it takes the widest of the four
+        // overhangs; the extra area is quad, not fragments, since everything
+        // outside the fused body leaves on the coverage test.
+        //
+        // Growing `pad` here rather than below is what also grows the CAPTURE:
+        // the backdrop bound is derived from it, and a neck sampling backdrop
+        // texels nobody captured is a neck with a hole in it.
+        var morphActive = false
+        if morphBlend > 0.0 && morphW > 0.0 && morphH > 0.0 {
+            morphActive = true
+            let bulge = morphBlend * 0.25
+            var overhang = x - (min(x, morphX) - bulge)
+            let overRight = (max(x + w, morphX + morphW) + bulge) - (x + w)
+            if overRight > overhang {
+                overhang = overRight
+            }
+            let overTop = y - (min(y, morphY) - bulge)
+            if overTop > overhang {
+                overhang = overTop
+            }
+            let overBottom = (max(y + h, morphY + morphH) + bulge) - (y + h)
+            if overBottom > overhang {
+                overhang = overBottom
+            }
+            if overhang + pad > pad {
+                pad += overhang
+            }
+        }
+        let halfW = w / 2.0
+        let halfH = h / 2.0
+        let cx = x + halfW
+        let cy = y + halfH
+        let lhx = halfW + pad
+        let lhy = halfH + pad
+        let rotated = rotSin != 0.0 || rotCos != 1.0
+
+        // Record the only capture pixels this surface can sample. Rotation changes
+        // the body's world-space AABB, but not the reach of its border/lens/blur,
+        // so rotate the base half extents once and inflate that box by the same
+        // capture pad the axis-aligned path already proves sufficient.
+        let capturePad = pad + material.lensMaxBend + GlassBlur.reach
+        var absCos = rotCos
+        var absSin = rotSin
+        if absCos < 0.0 { absCos = -absCos }
+        if absSin < 0.0 { absSin = -absSin }
+        let captureHalfW = halfW * absCos + halfH * absSin + capturePad
+        let captureHalfH = halfW * absSin + halfH * absCos + capturePad
+        let captureMinX = cx - captureHalfW
+        let captureMinY = cy - captureHalfH
+        let captureMaxX = cx + captureHalfW
+        let captureMaxY = cy + captureHalfH
+        state.recordGlassCapture(captureMinX, captureMinY, captureMaxX, captureMaxY)
+        // A widening corner runs on past the short side to the long one; every
+        // other corner stops at the short side.
+        let widening = shapeKind > 1.5
+        var clampedRadius = radius
+        let reach = widening ? max(halfW, halfH) : min(halfW, halfH)
+        if clampedRadius > reach {
+            clampedRadius = reach
+        }
+        // Morphing, rotated, fading and widening surfaces use one full exact
+        // patch. The optimized region split below relies on axis-aligned
+        // rectangular insets and a corner no deeper than the short side; once
+        // the surface is fused, turned or its corner runs past that, those
+        // rectangles no longer bound regions with the same shader
+        // preconditions. And the
+        // interior pipelines write opaquely, blending off, so only the full
+        // one -- which blends by its coverage -- can let what is behind a
+        // fading surface through. Its first spare carries how far it has faded,
+        // so the zero every other full patch carries is a surface fully there.
+        let fading = opacity < 1.0
+        // Only the full patch blends by its coverage, so only it can leave out
+        // what falls past a rounded clip's corner: a surface that reaches one
+        // is drawn whole by it, and one that does not ignores the corner.
+        let cornered = glassReachesClipCorner(
+            x,
+            y,
+            w,
+            h,
+            clipMinX,
+            clipMinY,
+            clipMaxX,
+            clipMaxY,
+            clipRadius,
+            clipShapeKind
+        )
+        let cornerRadius = cornered ? clipRadius : 0.0
+        if morphActive || rotated || fading || widening || cornered {
+            self.glassEmitPatch(
+                cx,
+                cy,
+                vw,
+                vh,
+                halfW,
+                halfH,
+                clampedRadius,
+                3.0,
+                -lhx,
+                -lhy,
+                lhx,
+                lhy,
+                tint,
+                blur,
+                edgeRefraction,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                material,
+                borderSpread,
+                borderSideOffset,
+                borderSideSpread,
+                rimWidth,
+                edgeBand,
+                1.0 - min(opacity, 1.0),
+                0.0,
+                glowX,
+                glowY,
+                glowStrength,
+                // Center-relative from here down: the shader measures `local`
+                // from the quad's center, and the caller stated a rectangle.
+                (morphX + morphW * 0.5) - cx,
+                (morphY + morphH * 0.5) - cy,
+                morphW * 0.5,
+                morphH * 0.5,
+                morphRadius,
+                morphBlend,
+                shapeKind,
+                rotCos,
+                rotSin,
+                cornerRadius,
+                clipShapeKind,
+            )
+            return
+        }
+
+        // Region split: the shape is drawn as up to nine non-overlapping patches so
+        // each region's pixels run the cheapest shader that is still exact there.
+        // Inset distances are in the quad's local units (authored points), measured
+        // from the shape's rectangular edge; the corner radius is added because the
+        // rounded boundary curves inward — at a rectangular inset t the SDF's
+        // interior distance is at least t - radius, tight on the corner diagonal.
+        //
+        // The outer ring (everything within `bandInset` of the edge) keeps the full
+        // glass shader: coverage, the border-shadow stack and the skirt live there.
+        // The band ring is at least half an edge band inside, where the shadow
+        // stack is exactly zero. The core is past every effect's reach — the
+        // lens's own 72pt limit, the 22pt blur edge fade, the 5pt sheen, the edge
+        // stroke and the inner rim — where the shader provably reduces to taps
+        // plus washes. The shader-side thresholds are named constants in
+        // Shaders/UiBatch.ksl (blurEdgeEnd, sheenEnd); the two literals here must
+        // match them.
+        // What every patch of the split below shares; each states only its
+        // mode, its rectangle and its spares.
+        let common = GlassPatchCommon {
+            cx: cx,
+            cy: cy,
+            vw: vw,
+            vh: vh,
+            halfW: halfW,
+            halfH: halfH,
+            radius: clampedRadius,
+            tint: copy tint,
+            blur: blur,
+            edgeRefraction: edgeRefraction,
+            clipMinX: clipMinX,
+            clipMinY: clipMinY,
+            clipMaxX: clipMaxX,
+            clipMaxY: clipMaxY,
+            material: copy material,
+            borderSpread: borderSpread,
+            borderSideOffset: borderSideOffset,
+            borderSideSpread: borderSideSpread,
+            rimWidth: rimWidth,
+            edgeBand: edgeBand,
+            glowX: glowX,
+            glowY: glowY,
+            glowStrength: glowStrength,
+            shapeKind: shapeKind
+        }
+        let bandGuard = edgeBand * 1.5
+        let bandInset = clampedRadius + bandGuard
+        // The edge effects' reach: the blur-edge fade (22, matching blurEdgeEnd in
+        // Shaders/UiBatch.ksl), the edge stroke, the 5pt sheen and the inner rim.
+        // Past it only the lens is still live; past the lens's own 72pt limit
+        // nothing is. The two bounds delimit the lens ring and the core.
+        var effectReach: Number = 22.0
+        if material.edgeStrokeFade > effectReach {
+            effectReach = material.edgeStrokeFade
+        }
+        if material.edgeStrokePeak + 0.01 > effectReach {
+            effectReach = material.edgeStrokePeak + 0.01
+        }
+        if rimWidth > effectReach {
+            effectReach = rimWidth
+        }
+        if glassEdgeLightReach(material) > effectReach {
+            effectReach = glassEdgeLightReach(material)
+        }
+        let lensInset = clampedRadius + effectReach + 1.0
+        var coreReach: Number = 72.0
+        if effectReach > coreReach {
+            coreReach = effectReach
+        }
+        let coreInset = clampedRadius + coreReach + 1.0
+        // Inner edges of each concentric ring, in local units.
+        let bx = halfW - bandInset
+        let by = halfH - bandInset
+        let lx = halfW - lensInset
+        let ly = halfH - lensInset
+        let kx = halfW - coreInset
+        let ky = halfH - coreInset
+        // Corner-aware full ring: the full shader is only NEEDED within one and a
+        // half edge bands of the boundary (coverage, shadow skirt) — but a rect
+        // ring must add the corner radius everywhere to stay corner-safe, which
+        // put the radius-wide straight edges of every large surface on the
+        // heaviest pipeline. Corner SQUARES take the radius; the straight strips
+        // stay at the guard (+ the skirt pad). The freed area drains to the band
+        // pipeline, whose only precondition — at least half an edge band inside —
+        // every piece below satisfies: away from the corner squares one axis'
+        // rectangular inset bounds the SDF exactly, radius or not.
+        let sxE = halfW - bandGuard
+        let syE = halfH - bandGuard
+        if kx > 4.0 && ky > 4.0 {
+            // Nineteen patches: corner-aware full ring (4 corner squares + 4 thin
+            // strips), band (6), lens ring (4), core.
+            self.glassPatch(common, 3.0, -lhx, -lhy, -bx, -by)
+            self.glassPatch(common, 3.0, bx, -lhy, lhx, -by)
+            self.glassPatch(common, 3.0, -lhx, by, -bx, lhy)
+            self.glassPatch(common, 3.0, bx, by, lhx, lhy)
+            self.glassPatch(common, 3.0, -bx, -lhy, bx, -syE)
+            self.glassPatch(common, 3.0, -bx, syE, bx, lhy)
+            self.glassPatch(common, 3.0, -lhx, -by, -sxE, by)
+            self.glassPatch(common, 3.0, sxE, -by, lhx, by)
+            // The interior. When every input its pixels depend on matches what the
+            // cache pass last rendered (stream 1's static direct backdrop only),
+            // present the cached bytes as texel copies; a dirty surface renders
+            // live and records its interior range for this frame's cache pass.
+            var cacheEligible = false
+            if state.streamIndex.raw == 1 && state.glassCopyPipeline.id != 0 {
+                cacheEligible = true
+            }
+            var cachedInterior = false
+            if cacheEligible {
+                cachedInterior = glassCacheKeyMatch(
+                    state,
+                    GlassSurfaceKey {
+                        glowX: glowX,
+                        glowY: glowY,
+                        glowStrength: glowStrength,
+                        centerX: cx,
+                        centerY: cy,
+                        halfWidth: halfW,
+                        halfHeight: halfH,
+                        radius: clampedRadius,
+                        tintR: tint.r,
+                        tintG: tint.g,
+                        tintB: tint.b,
+                        tintAlpha: tint.a,
+                        blur: blur,
+                        edgeRefraction: edgeRefraction,
+                        clipMinX: clipMinX,
+                        clipMinY: clipMinY,
+                        clipMaxX: clipMaxX,
+                        clipMaxY: clipMaxY,
+                        rimWidth: rimWidth,
+                        washBlend: material.washBlend,
+                        washUpperR: material.washUpperR,
+                        washUpperG: material.washUpperG,
+                        washUpperB: material.washUpperB,
+                        washUpperAlpha: material.washUpperAlpha,
+                        washUpperBlend: material.washUpperBlend,
+                        blurNearSplit: material.blurNearSplit,
+                        edgeLightDodge: material.edgeLightDodge,
+                        edgeLightBurn: material.edgeLightBurn,
+                        lensMaxBend: glassReachFor(material.lensMaxBend, halfW, halfH),
+                        refractionReach: glassReachFor(material.refractionReach, halfW, halfH),
+                        viewportWidth: vw,
+                        viewportHeight: vh,
+                        backdrop: Number(
+                            state.glassBlurSourceId.raw
+                        ) + state.backgroundTransition * 0.5 + Number(
+                            state.glassCacheEpochValue
+                        ) * 16384.0
+                    }
+                )
+            }
+            // Streams are retained: what is emitted here is replayed every frame
+            // until the next rebuild. Eligible interiors therefore always emit as
+            // copy quads — the draw routes them to the live band pipeline until
+            // the cache pass has rendered them (and whenever the backdrop stops
+            // being provably static), so a copy quad is never wrong, only slower.
+            var interiorMode = 3.25
+            var interiorLensMode = 3.35
+            var interiorCoreMode = 3.45
+            var interiorSpare0: Number = 0.0
+            var interiorSpare1: Number = 0.0
+            if cacheEligible {
+                interiorMode = 3.15
+                interiorLensMode = 3.15
+                interiorCoreMode = 3.15
+                // The copy quad turns its device position into a cache texel with
+                // these, so they are 1 / the DRAWABLE — the same extent the cache
+                // texture is created at. Points times the backing scale is a
+                // different number whenever the drawable is not a whole number of
+                // points, and the difference is a black row along the surface's
+                // bottom edge.
+                interiorSpare0 = 1.0 / Number(state.drawableW)
+                interiorSpare1 = 1.0 / Number(state.drawableH)
+            }
+            let interiorStart = state.quadCount
+            self.glassPatch(
+                common,
+                interiorMode,
+                -bx,
+                -syE,
+                bx,
+                -ly,
+                spare0: interiorSpare0,
+                spare1: interiorSpare1
+            )
+            self.glassPatch(
+                common,
+                interiorMode,
+                -bx,
+                ly,
+                bx,
+                syE,
+                spare0: interiorSpare0,
+                spare1: interiorSpare1
+            )
+            self.glassPatch(
+                common,
+                interiorMode,
+                -sxE,
+                -by,
+                -bx,
+                by,
+                spare0: interiorSpare0,
+                spare1: interiorSpare1
+            )
+            self.glassPatch(
+                common,
+                interiorMode,
+                bx,
+                -by,
+                sxE,
+                by,
+                spare0: interiorSpare0,
+                spare1: interiorSpare1
+            )
+            self.glassPatch(
+                common,
+                interiorMode,
+                -bx,
+                -ly,
+                -lx,
+                ly,
+                spare0: interiorSpare0,
+                spare1: interiorSpare1
+            )
+            self.glassPatch(
+                common,
+                interiorMode,
+                lx,
+                -ly,
+                bx,
+                ly,
+                spare0: interiorSpare0,
+                spare1: interiorSpare1
+            )
+            let interiorBandEnd = state.quadCount
+            self.glassPatch(
+                common,
+                interiorLensMode,
+                -lx,
+                -ly,
+                lx,
+                -ky,
+                spare0: interiorSpare0,
+                spare1: interiorSpare1
+            )
+            self.glassPatch(
+                common,
+                interiorLensMode,
+                -lx,
+                ky,
+                lx,
+                ly,
+                spare0: interiorSpare0,
+                spare1: interiorSpare1
+            )
+            self.glassPatch(
+                common,
+                interiorLensMode,
+                -lx,
+                -ky,
+                -kx,
+                ky,
+                spare0: interiorSpare0,
+                spare1: interiorSpare1
+            )
+            self.glassPatch(
+                common,
+                interiorLensMode,
+                kx,
+                -ky,
+                lx,
+                ky,
+                spare0: interiorSpare0,
+                spare1: interiorSpare1
+            )
+            let interiorLensEnd = state.quadCount
+            self.glassPatch(
+                common,
+                interiorCoreMode,
+                -kx,
+                -ky,
+                kx,
+                ky,
+                spare0: interiorSpare0,
+                spare1: interiorSpare1
+            )
+            if cachedInterior {
+                state.glassStatCachedInteriors += 1
+            } else {
+                state.glassStatLiveInteriors += 1
+            }
+            if cacheEligible && !cachedInterior {
+                glassCacheRecordRange(
+                    state,
+                    state.streamIndex,
+                    interiorStart,
+                    interiorBandEnd - interiorStart,
+                    interiorLensEnd - interiorBandEnd,
+                    state.quadCount - interiorLensEnd,
+                )
+            }
+            return
+        }
+        if lx > 4.0 && ly > 4.0 {
+            // Nine patches: full ring, band ring, lens-shaded center (the lens
+            // shader is exact for everything past the effect bands, however deep).
+            // No interior cache below the nineteen-patch split: these interiors
+            // always shade live.
+            state.glassStatLiveInteriors += 1
+            self.glassPatch(common, 3.0, -lhx, -lhy, lhx, -by)
+            self.glassPatch(common, 3.0, -lhx, by, lhx, lhy)
+            self.glassPatch(common, 3.0, -lhx, -by, -bx, by)
+            self.glassPatch(common, 3.0, bx, -by, lhx, by)
+            self.glassPatch(common, 3.25, -bx, -by, bx, -ly)
+            self.glassPatch(common, 3.25, -bx, ly, bx, by)
+            self.glassPatch(common, 3.25, -bx, -ly, -lx, ly)
+            self.glassPatch(common, 3.25, lx, -ly, bx, ly)
+            self.glassPatch(common, 3.35, -lx, -ly, lx, ly)
+            return
+        }
+        if bx > 4.0 && by > 4.0 {
+            // Five patches: outer ring plus a band-shaded center (too small for a core).
+            state.glassStatLiveInteriors += 1
+            self.glassPatch(common, 3.0, -lhx, -lhy, lhx, -by)
+            self.glassPatch(common, 3.0, -lhx, by, lhx, lhy)
+            self.glassPatch(common, 3.0, -lhx, -by, -bx, by)
+            self.glassPatch(common, 3.0, bx, -by, lhx, by)
+            self.glassPatch(common, 3.25, -bx, -by, bx, by)
+            return
+        }
+        state.glassStatLiveInteriors += 1
+        self.glassPatch(common, 3.0, -lhx, -lhy, lhx, lhy)
+    }
+}

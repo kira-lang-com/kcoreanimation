@@ -1,0 +1,97 @@
+import Foundation
+
+public enum CALevel {
+    Inline
+    Overlay(Number)
+}
+
+public struct CALayerNode {
+    var id: LayerId = LayerId(0)
+    var parentId: LayerId = LayerId(0)
+    var key: Number = 0
+    // What made the layer, and where in its parent's content
+    // (`CALayerDescription.kind`, `place`).
+    var kind: Number = 0
+    var place: Number = 0
+    var childIds: [LayerId] = []
+    var content: CAContent = .Empty
+    var contentSignature: Number = 0
+    // Geometry channels, in the PARENT's coordinates.
+    var posX: CAChannel = CAChannel {}
+    var posY: CAChannel = CAChannel {}
+    var boundsW: CAChannel = CAChannel {}
+    var boundsH: CAChannel = CAChannel {}
+    var opacity: CAChannel = CAChannel { model: 1.0, presentation: 1.0 }
+    var scaleX: CAChannel = CAChannel { model: 1.0, presentation: 1.0 }
+    var scaleY: CAChannel = CAChannel { model: 1.0, presentation: 1.0 }
+    var rotation: CAChannel = CAChannel {}
+    // Set every frame by whatever pulls the layer, so it is never animated.
+    var deformation: CADeformation = CADeformation {}
+    // Appearance channels — animatable like geometry. Color is perceptual.
+    var fillColor: CAColorChannel = CAColorChannel {
+        from: CAColor { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
+        model: CAColor { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }
+    }
+    // The fill as it was set, and the wash laid over it while the pointer is
+    // on the layer. `fillColor` animates to one or the other.
+    var restingFill: CAColor = CAColor { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }
+    var hoverColor: CAColor = CAColor { a: 0.0 }
+    var pressColor: CAColor = CAColor { a: 0.0 }
+    // Where the fill is drawn off the layer's own box, as an offset of its
+    // origin and its size: a press that slid here from another layer brings
+    // its platter with it, and these spring back to zero as it lands.
+    var platterX: CAChannel = CAChannel {}
+    var platterY: CAChannel = CAChannel {}
+    var platterW: CAChannel = CAChannel {}
+    var platterH: CAChannel = CAChannel {}
+    var borderColor: CAColorChannel = CAColorChannel {}
+    var cornerRadius: CAChannel = CAChannel {}
+    var borderWidth: CAChannel = CAChannel {}
+    var shadowRadius: CAChannel = CAChannel {}
+    var shadowOpacity: CAChannel = CAChannel {}
+    var shadowX: CAChannel = CAChannel {}
+    var shadowY: CAChannel = CAChannel {}
+    var shadowColor: CAColorChannel = CAColorChannel {}
+    var shadowInverts: Bool = false
+    // The weight a run of text is drawn at, on the variable font's axis, so a
+    // label going from regular to semibold thickens through every weight
+    // between rather than swapping outlines in one frame.
+    var textWeight: CAChannel = CAChannel { model: 400.0, presentation: 400.0 }
+    // Anchor as a fraction of bounds: scale and rotation pivot here.
+    var anchorX: Number = 0.5
+    var anchorY: Number = 0.5
+    var clip: Bool = false
+    // Whether opacity applies to the composited SUBTREE (an offscreen group)
+    // rather than to this layer's own content only.
+    var groupOpacity: Bool = false
+    // This subtree renders into its own texture. A nonzero id names a target
+    // registered with the compositor; zero asks for a compositor-owned cache.
+    var renderTarget: Bool = false
+    // The gaussian blur over the subtree, in points, animated as SwiftUI's
+    // `.blur(radius:)` is when the radius changes in an animated transaction.
+    var blur: CAChannel = CAChannel {}
+    var blurOpaque: Bool = false
+    // The displacement map over the subtree, as the description states it.
+    var displacement: CADisplacement = CADisplacement {}
+    var renderTargetId: RenderTargetId = RenderTargetId(0)
+    // Drawn as a group seeded with what is behind it; see the description's.
+    var blendingGroup: Bool = false
+    // This layer refracts a captured, blurred copy of what is drawn beneath it.
+    var capturesBackdrop: Bool = false
+    var level: CALevel = .Inline
+    var hit: Bool = false
+    var interactive: Bool = false
+    var slidesPress: Bool = false
+    var hitKey: Number = 0
+    var scrolls: Bool = false
+    // Lifted onto the overlay list: skipped by the in-place walk and drawn from
+    // the canvas root instead, so it escapes its parent's clip and order.
+    var hoisted: Bool = false
+    var mounted: Bool = true
+    // How the layer leaves, and, while it is leaving, the clock reading it is
+    // gone at; negative while it is not leaving.
+    var removal: CARemoval = CARemoval {}
+    var leavingUntil: Number = -1.0
+    var damaged: Bool = true
+    var reused: Bool = false
+}

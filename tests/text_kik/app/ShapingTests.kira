@@ -1,0 +1,142 @@
+import Foundation
+import KCoreAnimation
+
+// Shaping, read through the width a run measures (roadmap/09-kira-ui.md, "a
+// line of text, correctly kerned, with a ligature visible"): Inter kerns
+// "AV" tighter than its two letters set apart, and its `calt` sets "->" as
+// one arrow, whose width is not the hyphen's and the bracket's together.
+
+function width(text: borrow String) -> Number {
+    return foundationTextRunWidth(text, 40, 400)
+}
+
+construct KernsAV() extends Test {
+    test {
+        foundationTextUseBundledFace()
+        return width("AV") < width("A") + width("V")
+    }
+    expect { let e: Result<Any, TestFailure> = .Ok(true) return e }
+}
+
+construct ArrowIsOneGlyph() extends Test {
+    test {
+        foundationTextUseBundledFace()
+        return width("->") != width("-") + width(">")
+    }
+    expect { let e: Result<Any, TestFailure> = .Ok(true) return e }
+}
+
+construct PlainRunsAddUp() extends Test {
+    test {
+        foundationTextUseBundledFace()
+        return width("ll") == width("l") * 2
+    }
+    expect { let e: Result<Any, TestFailure> = .Ok(true) return e }
+}
+
+// The arrow is narrower or wider than the two glyphs it stands for by more
+// than any rounding, at Inter's own arrow width.
+construct ArrowMeasures() extends Test {
+    test {
+        foundationTextUseBundledFace()
+        return abs(width("->") - (width("-") + width(">"))) > 1
+    }
+    expect { let e: Result<Any, TestFailure> = .Ok(true) return e }
+}
+
+// A Greek run is shaped under Inter's Greek language system, which kerns
+// Alpha and Upsilon as its Latin one kerns A and V.
+construct KernsGreek() extends Test {
+    test {
+        foundationTextUseBundledFace()
+        return width("ΑΥ") < width("Α") + width("Υ")
+    }
+    expect { let e: Result<Any, TestFailure> = .Ok(true) return e }
+}
+
+// A pair whose kerning moves with weight measures a sane width at every
+// weight the system sets text in.
+construct KernsAcrossWeights() extends Test {
+    test {
+        foundationTextUseBundledFace()
+        var sane = true
+        for weight in [400, 500, 510, 590, 600, 700] {
+            let measured = foundationTextRunWidth("On", 14, weight)
+            if measured <= 0 || measured > 100 { sane = false }
+        }
+        return sane
+    }
+    expect { let e: Result<Any, TestFailure> = .Ok(true) return e }
+}
+
+// A combining acute hangs from the letter before it by their anchors: it
+// takes no room of its own, its ink stays over the letter's, and it stands
+// above the letter's top (the GPOS `mark` feature).
+construct AccentSitsOnItsLetter() extends Test {
+    test {
+        foundationTextUseBundledFace()
+        let accented = foundationStringFromCodepoints([101, 0x301], 0, 2)
+        let size = 40
+        let inside = foundationTextRunInkRight(accented, size, 400)
+            <= foundationTextRunInkRight("e", size, 400) + 1
+        let roomless = width(accented) == width("e")
+        let above = foundationTextRunInkTop(accented, size, 400)
+        > foundationTextRunInkTop("e", size, 400) + 4
+        return inside && roomless && above
+    }
+    expect { let e: Result<Any, TestFailure> = .Ok(true) return e }
+}
+
+// An accent on a capital rises with it: Inter's capital marks hang from the
+// cap height, not the x-height.
+construct AccentRisesOnCapitals() extends Test {
+    test {
+        foundationTextUseBundledFace()
+        let size = 40
+        return foundationTextRunInkTop(foundationStringFromCodepoints([69, 0x301], 0, 2), size, 400)
+        > foundationTextRunInkTop(foundationStringFromCodepoints([101, 0x301], 0, 2), size, 400) + 4
+    }
+    expect { let e: Result<Any, TestFailure> = .Ok(true) return e }
+}
+
+// An accent on a tall letter hangs from the letter's own top anchor, so it
+// clears the ascender rather than sitting at the x-height through the stem.
+construct AccentClearsAnAscender() extends Test {
+    test {
+        foundationTextUseBundledFace()
+        let size = 40
+        let accented = foundationStringFromCodepoints([108, 0x301], 0, 2)
+        return foundationTextRunInkTop(accented, size, 400)
+        > foundationTextRunInkTop("l", size, 400) + 4
+    }
+    expect { let e: Result<Any, TestFailure> = .Ok(true) return e }
+}
+
+// A second accent stacks on the first, mark to mark (the GPOS `mkmk`
+// feature), rather than drawing over it.
+construct AccentsStack() extends Test {
+    test {
+        foundationTextUseBundledFace()
+        let size = 40
+        let one = foundationStringFromCodepoints([101, 0x301], 0, 2)
+        let two = foundationStringFromCodepoints([101, 0x301, 0x301], 0, 3)
+        return foundationTextRunInkTop(two, size, 400)
+        > foundationTextRunInkTop(one, size, 400) + 4
+    }
+    expect { let e: Result<Any, TestFailure> = .Ok(true) return e }
+}
+
+// Monospaced digits set every figure the same width (`tnum`), where Inter's
+// own figures are proportional: a one is narrower than a zero.
+construct DigitsGoTabular() extends Test {
+    test {
+        foundationTextUseBundledFace()
+        let size = 40
+        let proportional = foundationTextRunWidth("111", size, 400)
+        < foundationTextRunWidth("000", size, 400)
+        let ones = foundationTextRunWidth("111", size, 400, .MonospacedDigits)
+        let zeros = foundationTextRunWidth("000", size, 400, .MonospacedDigits)
+        return proportional && ones == zeros
+    }
+    expect { let e: Result<Any, TestFailure> = .Ok(true) return e }
+}

@@ -1,0 +1,398 @@
+import Foundation
+
+// How a layer wants to be arranged and sized, for a toolkit's layout pass to
+// resolve into absolute `position`/`size` before the frame is composited.
+//
+// The compositor STORES this and never acts on it: layout is the toolkit's, and
+// this is the request a widget's lowering records so the toolkit can lay the
+// retained tree out without a second tree beside it. Defaults describe a
+// fill-both leaf, so a description that sets nothing lays out as one.
+public enum CAAxis {
+    None
+    Row
+    Column
+    // Rows of columns, filled leading to trailing and then down, as SwiftUI's
+    // `LazyVGrid` lays out its cells.
+    Grid
+    // The rows a grid's `GridRow`s give, in columns as wide as their widest
+    // cell, as SwiftUI's `Grid` lays them out.
+    GridRows
+}
+
+public struct CALayoutIntent {
+    // For a container, the axis its sublayers stack along.
+    var axis: CAAxis = .None
+    // The gap between sublayers along `axis`.
+    var spacing: Number = 0.0
+    // Whether the layer fills the space offered on each axis, or hugs its
+    // content / fixed size.
+    var widthFill: Bool = true
+    var heightFill: Bool = true
+    // A fixed extent, or negative for none.
+    var fixedWidth: Number = -1.0
+    var fixedHeight: Number = -1.0
+    // A floor under the extent, never a cap: a layer that wants more gets more.
+    var minWidth: Number = 0.0
+    var minHeight: Number = 0.0
+    // A ceiling over the width, or negative for none: a layer that fills stops
+    // here, which is how a column of readable text keeps its measure on a wide
+    // window. The floor still wins where the two cross.
+    var maxWidth: Number = -1.0
+    // The size the layer's own content wants (a run of text, a glyph), when it
+    // neither fills nor is fixed.
+    var intrinsicWidth: Number = 0.0
+    var intrinsicHeight: Number = 0.0
+    // Space held inside the layer's box, before its content or sublayers.
+    var paddingLeading: Number = 0.0
+    var paddingTop: Number = 0.0
+    var paddingTrailing: Number = 0.0
+    var paddingBottom: Number = 0.0
+    // A flex weight for a sublayer that shares leftover main-axis space.
+    var flex: Number = 0
+    // Whether a sublayer also takes a share of what its row has left across
+    // (`expandsWidth`) or its column has left down (`expandsHeight`), on top
+    // of what it measures, as SwiftUI's `.frame(maxWidth: .infinity)` does.
+    // Unlike `flex` these name an axis of the layer's own, so a layer asked to
+    // fill its width never grows down a column; and unlike `widthFill`, which
+    // every layer has unless it hugs, they are only set when asked for.
+    var expandsWidth: Bool = false
+    var expandsHeight: Bool = false
+    // How fully a sublayer stands in its stack, from 0 to 1: the stack spaces
+    // it from what comes before it by this much of its spacing, so one folding
+    // in or out takes its gap with it and the stack closes up exactly.
+    var presence: Number = 1.0
+    // Whether a sublayer has no spacing of its own, as SwiftUI's `Spacer`: a
+    // stack's default spacing leaves no gap on either side of it, so its own
+    // length is the whole of the space it makes. A stack given its spacing
+    // outright spaces it like any other.
+    var flush: Bool = false
+    // Whether a sublayer of a layer with no axis is drawn over or under the
+    // others without counting toward the layer's size, as SwiftUI offers an
+    // overlay or a background the size of the view it decorates.
+    var decorates: Bool = false
+    // Where a sublayer smaller than this layer's inner box sits in it, as a unit
+    // point: (0, 0) is the top-leading corner, (0.5, 0.5) the center. The origin
+    // by default, which is where a layer's sublayers are positioned when nothing
+    // asks otherwise.
+    var alignment: Point = Point { x: 0.0, y: 0.0 }
+    // Where the layer is drawn relative to where it was placed, without moving
+    // anything around it: the space it takes stays where layout put it.
+    var offset: Point = Point { x: 0.0, y: 0.0 }
+    // Where the layer is painted among its siblings, without moving anything:
+    // a higher one is drawn over, and pressed before, a lower one. Siblings
+    // that share it keep their order.
+    var zIndex: Number = 0.0
+    // A horizontal alignment guide this layer answers for whatever encloses
+    // it -- its tag, zero for none, and where it sits: a fraction of the
+    // layer's width plus a length, so it holds whatever width layout gives the
+    // layer -- and one a layer takes its leading edge from: once everything is
+    // placed, a follower's leading edge moves to the guide as the first layer
+    // before it in its parent publishes it, and its trailing edge stays.
+    var guide: Number = 0
+    var guideFraction: Number = 0.0
+    var guidePosition: Number = 0.0
+    var followsGuide: Number = 0
+    // A guide whose publisher's span a layer laid over others keeps inside,
+    // as a navigation bar's title keeps clear of the items either side: the
+    // layer stays where it was placed while it fits, slides along the span to
+    // where it does, and is not drawn when the span is narrower than it is.
+    var staysWithinGuide: Number = 0
+    // A guide whose publisher a layer laid over others covers: once
+    // everything is placed, the layer takes the publisher's leading edge and
+    // width, as a tab bar's selection capsule takes the selected tab's box.
+    // It keeps its own top and height.
+    var spansGuide: Number = 0
+    // Spans it from the middle out, as UIKit moves a floating tab bar's
+    // selection: the layer stands at the box's center with no width, and its
+    // sublayers take the box's width either side of it -- so its position and
+    // their bounds can each animate on a spring of their own.
+    var spansFromCenter: Bool = false
+    // How far past the box the sublayers of a center span reach on every
+    // side, as a lifted lens outgrows the tab it stands on.
+    var spanOutset: Number = 0.0
+    // A span that follows a held pointer across the publishers of its guide
+    // and of `spanTrackGuide`, as UIKit's floating tab bar moves its selection
+    // under a finger: the box under `spanPointerX`, held by the point of the
+    // box under `spanPressX` it was taken by, kept within the publishers'
+    // run. Both in the parent's coordinates.
+    var spanTracks: Bool = false
+    var spanPointerX: Number = 0.0
+    var spanPressX: Number = 0.0
+    var spanTrackGuide: Number = 0
+    // The guide whose publisher the content of a center span's undoing
+    // sublayer is laid over, where it stands: what a lens shows through it.
+    var spanLiftedGuide: Number = 0
+    // In a sublayer of a center span: puts this layer back where the span
+    // started, so what it holds stays put while the span moves.
+    var spanUndoes: Bool = false
+    // On a center span: the key its motion is followed under, as a lens is
+    // while it moves, and whether that motion places it -- each frame, where
+    // the followed springs have it, squashed and stretched as it speeds up
+    // and slows down -- rather than the compositor's springs. 0 for none.
+    var spanFlexKey: Number = 0
+    var spanFlexDrives: Bool = false
+    // In a sublayer of a center span its followed motion drives: drawn
+    // through that motion's flex, as everything a lens view holds is drawn
+    // through the transform its flex interaction gives the view's layer.
+    var spanFlexes: Bool = false
+    // In a sublayer of a center span: takes the side outside the span's box
+    // rather than the box -- -1 before it, 1 after it, `spanReach` long -- as
+    // what stays of a tab bar's row either side of a lifted lens.
+    var spanSide: Number = 0
+    var spanReach: Number = 0.0
+    // For a grid: how many columns it has, or 0 for as many as fit at least
+    // `gridColumnMinimum` wide, as an adaptive `GridItem` asks; the widest a
+    // column grows to, negative for as wide as the grid shares out; and the
+    // gap between columns. `spacing` is the gap between rows.
+    var gridColumns: Number = 0
+    var gridColumnMinimum: Number = 0.0
+    var gridColumnMaximum: Number = -1.0
+    var gridColumnSpacing: Number = 0.0
+    // For a `Grid`'s sublayer: whether it is a `GridRow`, whose sublayers are
+    // the row's cells, rather than a view that spans every column; and for a
+    // cell, how many columns it spans.
+    var gridRow: Bool = false
+    var gridCellColumns: Number = 1
+    // The width over the height the layer keeps, as SwiftUI's
+    // `.aspectRatio(_:contentMode:)` does: the largest box of that shape that
+    // fits the room it is offered, or with `aspectFills` the smallest that
+    // covers it. 0 for a layer that keeps no shape.
+    var aspectRatio: Number = 0.0
+    var aspectFills: Bool = false
+}
+
+// A shadow cast under a layer's outline: its color (the alpha is how dark it
+// is), how far it blurs, and how far it falls from the layer. A clear color
+// casts none.
+//
+// `inverts` turns it inward, as Core Animation's `invertsShadow`: everything
+// outside the outline casts it, so it falls inside the layer's own box from the
+// side its offset points away from, and nothing of it shows past that box.
+public struct CAShadow {
+    var color: CAColor = CAColor { a: 0.0 }
+    var radius: Number = 0.0
+    var offset: Point = Point {}
+    var inverts: Bool = false
+}
+
+// A layer pulled out of shape as a finished picture: moved by `x`, `y` and
+// stretched by `scaleX`, `scaleY` about its center, after everything else
+// places it -- glass leaning after a press. The layer's own content is drawn
+// at the deformed geometry, live; what it holds is drawn once at rest, as
+// layout and the layer's own scale have it, and that picture is deformed, so
+// text and icons stretch with the glass rather than reflowing or slipping
+// across it. The identity deforms nothing and costs nothing.
+public struct CADeformation {
+    var x: Number = 0.0
+    var y: Number = 0.0
+    var scaleX: Number = 1.0
+    var scaleY: Number = 1.0
+}
+
+extend CADeformation {
+    function isIdentity() -> Bool {
+        return self.x == 0.0 && self.y == 0.0 && self.scaleX == 1.0 && self.scaleY == 1.0
+    }
+}
+
+// How a layer leaves once a description no longer has it, as SwiftUI's
+// removal transition: it is kept where it last stood, eased to this scale,
+// opacity and displacement over `duration`, answering nothing, and only then
+// taken out. A zero duration -- the default -- takes it out at once.
+// How a described layer's changes reach the screen.
+//
+// `Inherit` takes whatever transaction the layers around it changed in -- the
+// implicit action, unless something above opened another. `Timed` opens one of
+// its own over the layer's whole subtree, as `CATransaction.begin` does around
+// a batch of sets: a navigation push states where its pages end up, once, and
+// the compositor moves them there on its spring frame by frame, with nothing
+// rebuilt in between.
+public enum CALayerAnimation {
+    Inherit
+    Timed: CATiming
+}
+
+public struct CARemoval {
+    var scale: Number = 1.0
+    var opacity: Number = 0.0
+    var duration: Number = 0.0
+    // Where it goes as it leaves, from where it last stood: `offset` in
+    // points, plus `offsetFraction` of its own size, so a removal that moves a
+    // view off an edge (SwiftUI's `.move(edge:)`) goes exactly its own width or
+    // height whatever size layout gave it.
+    var offset: Point = Point {}
+    var offsetFraction: Point = Point {}
+}
+
+// How a layer arrives the first time a description has it, as SwiftUI's
+// insertion transition: put down displaced by `offset` at `opacity`, then
+// taken to where the description says in the transaction it is described in.
+// A motion that brings a layer in states its end once, rather than a build
+// describing where it starts and a second build where it goes. A layer
+// already on screen ignores it and moves from where it stands.
+public struct CAEntrance {
+    var active: Bool = false
+    var offset: Point = Point {}
+    var opacity: Number = 1.0
+    // The scale it is put down at, about its anchor, before it grows or
+    // shrinks to the description's own (SwiftUI's `.scale` insertion).
+    var scale: Number = 1.0
+    // A displacement of `offsetFraction` of its own size on top of `offset`:
+    // what a `.move(edge:)` insertion states without knowing the size layout
+    // will give the view.
+    var offsetFraction: Point = Point {}
+}
+
+// A displacement map over a layer and everything in it, as Core Animation's
+// `displacementMap` filter reads one off a `CASDFLayer` whose effect is a
+// `CASDFGlassDisplacementEffect` and whose one element is the layer's own
+// rounded box. Each point `height` or less in from the box's edge is drawn
+// from `amount` points along the edge's normal, times one less the profile:
+// a quarter circle at a `curvature` of one, a flat 1 - 1/sqrt 2 at zero, as
+// QuartzCore's `sdf_glass_displacement` mixes them. A negative amount reads
+// inward, drawing what lies further in out to the rim. The normal leans
+// toward the ellipse the box fits in by `ovalization`, the element's
+// `gradientOvalization`. Whatever falls outside the box is not drawn.
+public struct CADisplacement {
+    var amount: Number = 0.0
+    var height: Number = 0.0
+    var curvature: Number = 1.0
+    var ovalization: Number = 0.0
+}
+
+extend CADisplacement {
+    function isNone() -> Bool {
+        return self.amount == 0.0 || self.height <= 0.0
+    }
+
+    function same(other: borrow CADisplacement) -> Bool {
+        return self.amount == other.amount && self.height == other.height
+            && self.curvature == other.curvature && self.ovalization == other.ovalization
+    }
+}
+
+// Declarative layer value consumed by the retained tree reconciler. Identity is
+// the sibling key; the CALayerTree owns the stable LayerId assigned to it.
+public struct CALayerDescription {
+    var key: Number = 0
+    // What made the layer, as SwiftUI's structural identity counts a view's
+    // type: an unkeyed layer is the one an earlier build made only if the
+    // same kind made both, so a view taking the place of another of another
+    // kind -- a sibling before it put in or taken away -- is never moved from
+    // where the other was. None says nothing of the kind.
+    var kind: Number = 0
+    // Where in its parent's content the layer stands, as SwiftUI's structural
+    // identity counts it: the arm of an `if` that put it there, or none
+    // outside every `if`. An unkeyed layer is the one an earlier build made
+    // only at the same place, so the child of one arm never moves from where
+    // the other arm's was, nor a sibling after the `if` from where the arm's
+    // child was.
+    var place: Number = 0
+    var position: Point = Point {}
+    var size: Size = Size {}
+    var anchorPoint: Point = Point { x: 0.5, y: 0.5 }
+    var opacity: Number = 1.0
+    // Whether `opacity` fades the layer and everything in it as one picture,
+    // as Core Animation's `allowsGroupOpacity` does, rather than each sublayer
+    // on its own -- which lets overlapping sublayers show through each other.
+    var allowsGroupOpacity: Bool = false
+    var scaleX: Number = 1.0
+    var scaleY: Number = 1.0
+    var rotation: Number = 0.0
+    // Drawn over everything else, as a picture. See `CADeformation`.
+    var deformation: CADeformation = CADeformation {}
+    var cornerRadius: Number = 0.0
+    var borderWidth: Number = 0.0
+    // The layer's own fill, drawn only when its content carries no color of its
+    // own. Clear unless stated, as a layer's background is.
+    var backgroundColor: CAColor = CAColor { a: 0.0 }
+    var borderColor: CAColor = CAColor {}
+    // The shadow the layer casts under its outline. None unless stated.
+    var shadow: CAShadow = CAShadow {}
+    var clipsChildren: Bool = false
+    var content: CAContent = .Empty
+    var level: CALevel = .Inline
+    var renderTarget: Bool = false
+    // A gaussian blur over the layer and everything in it, its radius in
+    // points, as Core Animation's `gaussianBlur` filter takes `inputRadius`.
+    // Zero blurs nothing and costs nothing; anything more draws the layer's
+    // tree apart and composites it blurred.
+    var blur: Number = 0.0
+    // Whether the blur is SwiftUI's opaque one: it reads the layer's edge
+    // again past it rather than nothing, so the layer stays solid to its
+    // edges and does not spread past them.
+    var blurOpaque: Bool = false
+    // A displacement map over the layer and everything in it. None unless
+    // stated; anything else draws the layer's tree apart and composites it
+    // displaced. See `CADisplacement`.
+    var displacement: CADisplacement = CADisplacement {}
+    // Whether the layer is drawn as a Core Animation group that allows group
+    // blending: a surface of its own that starts out as what is behind the
+    // layer, so the compositing filters of what it holds meet that -- a symbol
+    // dodges into the glass under the group -- and a `destOut` among them takes
+    // the group back to it, not to nothing. UIKit's floating tab bar punches its
+    // row this way: the lens's cut takes the tabs away and leaves the bar.
+    var blendingGroup: Bool = false
+    var capturesBackdrop: Bool = false
+    var hittable: Bool = false
+    // Whether the layer answers a press anywhere on it as a whole, as SwiftUI's
+    // interactive glass does: a press on a control inside it is reported
+    // against this layer too, under its `hitKey`, so the surface can move with
+    // the press while the control takes the action.
+    var interactive: Bool = false
+    // Whether a press held on this interactive layer slides from control to
+    // control in it, as a menu's does: the finger goes down on one row, moves
+    // over the others, and the one it lifts on is the one chosen.
+    var slidesPress: Bool = false
+    var hitKey: Number = 0
+    // The accessibility element this layer is, by the key its toolkit
+    // registered the element under, as `hitKey` names its press: what the
+    // element says and does is the toolkit's, and the compositor stores the
+    // key and never acts on it. `.None` for a layer that is no element.
+    var accessibilityElement: Number? = .None
+    // The axis the layer scrolls its content along, as a `CAScrollLayer`: its
+    // sublayers are laid out as long as they want along it and shown through
+    // the layer's own box, and a hit test reports the innermost scrolling layer
+    // under a point, under its `hitKey`, so a wheel or a pan can be sent to
+    // it. `.None` for a layer that does not scroll.
+    var scrollAxis: CAAxis = .None
+    // The wash the layer lights with while the pointer rests on it, as UIKit's
+    // highlight hover effect: laid over its fill by the tree, which is told
+    // what the pointer is over, so nothing above it rebuilds to show it. Clear
+    // unless stated, which lights nothing.
+    var hoverColor: CAColor = CAColor { a: 0.0 }
+    // The wash it lights with while it is held down and the pointer is still
+    // on it, as a table cell's selection highlight -- known to the tree by
+    // the layer pressed, never by a key that a rebuild may hand to another.
+    var pressColor: CAColor = CAColor { a: 0.0 }
+    // Whether a change to this layer lands at once rather than animating there,
+    // as `CATransaction.setDisableActions` does: for a layer whose values
+    // something already moves every frame, which an animation on top of it
+    // would only drag behind.
+    var disablesActions: Bool = false
+    // The transaction this layer and everything under it change in, as a
+    // `CATransaction` wrapped around them: a motion the caller describes once,
+    // at its end, for the compositor to carry there. See `CALayerAnimation`.
+    var animation: CALayerAnimation = .Inherit
+    // How the layer leaves when it is no longer described. See `CARemoval`.
+    var removal: CARemoval = CARemoval {}
+    // How the layer arrives when a description first has it. See `CAEntrance`.
+    var entrance: CAEntrance = CAEntrance {}
+    // How this layer wants to be sized and how it arranges its sublayers; a
+    // toolkit's layout pass reads this and writes `position`/`size`.
+    var layout: CALayoutIntent = CALayoutIntent {}
+    // The last two sizes a layout pass measured this layer at, by the width
+    // each was asked at: a pass asks one layer again at the widths it already
+    // answered, and every answer is a walk of the whole subtree. Negative
+    // widths answer nothing; the toolkit forgets them before each pass.
+    var measuredAt: Number = -1.0
+    var measured: Size = Size {}
+    var measuredAtLast: Number = -1.0
+    var measuredLast: Size = Size {}
+    var sublayers: [CALayerDescription] = []
+    // The key the toolkit keeps what a layer whose content follows its own
+    // size holds under, as SwiftUI's `GeometryReader`'s does: made by its
+    // layout pass from the size the layer is placed at, in place of
+    // `sublayers`. Zero for a layer whose sublayers are described up front.
+    var sizedContentKey: Number = 0
+}

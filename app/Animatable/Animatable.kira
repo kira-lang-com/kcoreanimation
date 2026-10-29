@@ -1,0 +1,194 @@
+import Foundation
+
+// One animatable scalar: the value you set (model) and the value on screen this
+// frame (presentation), plus the in-flight animation carrying one toward the
+// other. This is the model/presentation split at the grain of a single number.
+//
+// Time is ABSOLUTE. A channel records the clock reading at which its animation
+// began; a sample is taken at an absolute time and computes its own elapsed. An
+// interactive loop that samples at the graphics monotonic clock therefore never
+// drifts: a long or dropped frame lands where the wall clock says it should, not
+// where a sum of per-frame deltas rounded to. `CAChannel.sampleAt` is the source
+// of truth; the delta form (`advance`) is the same thing sampled at clock+dt.
+
+public enum CAAnimMode {
+    Immediate
+    Ease
+    Spring
+}
+
+public struct CAChannel {
+    var model: Number = 0.0
+    var presentation: Number = 0.0
+    var animating: Bool = false
+    var mode: CAAnimMode = .Immediate
+    // Absolute clock reading when this animation began.
+    var startTime: Number = 0.0
+    var easeFrom: Number = 0.0
+    var easeDuration: Number = 0.25
+    var easing: MotionEasing = .EaseOut
+    var spring: MotionSpringState = MotionSpringState {}
+}
+
+public function channel(value: Number) -> CAChannel {
+    return settledChannel(value)
+}
+
+// A channel resting at `value`. `channel` under a name no method shadows, for
+// the methods named `channel` themselves.
+function settledChannel(value: Number) -> CAChannel {
+    return CAChannel { model: value, presentation: value, animating: false, mode: .Immediate }
+}
+
+extend CAChannel {
+    function setImmediate(borrow mut self, target: Number) {
+        self.model = target
+        self.presentation = target
+        self.animating = false
+        self.mode = .Immediate
+    }
+
+    function startEase(
+        borrow mut self,
+        target: Number,
+        duration: Number,
+        easing: MotionEasing,
+        now: Number
+    ) {
+        if target == self.presentation {
+            self.setImmediate(target)
+            return
+        }
+        self.model = target
+        self.easeFrom = self.presentation
+        self.easeDuration = max(duration, 0.0001)
+        self.startTime = now
+        self.easing = move easing
+        self.mode = .Ease
+        self.animating = true
+    }
+
+    // Begin an interruptible spring toward `spring.target`. If the channel is already
+    // springing, the journey is RETARGETED so its current velocity carries into the
+    // new one — a flick caught mid-flight does not restart from rest. The spring's
+    // own elapsed is synced to absolute time first, so the retarget samples the real
+    // current point before it resets.
+    function startSpring(
+        borrow mut self,
+        spring: MotionSpring,
+        now: Number,
+        velocity: Number = 0.0
+    ) {
+        let target = spring.target
+        if self.mode == .Spring && self.animating {
+            self.spring.elapsed = max(now - self.startTime, 0.0)
+            motionSpringRetarget(self.spring, target)
+        } else {
+            self.spring = motionSpringStart(move spring, self.presentation, velocity)
+        }
+        self.model = target
+        self.startTime = now
+        self.mode = .Spring
+        self.animating = true
+    }
+
+    // Sample at absolute time `now`; returns whether the channel is still moving. A
+    // settled channel writes its exact target so nothing drifts short of it.
+    function sampleAt(borrow mut self, now: Number) -> Bool {
+        if !self.animating {
+            return false
+        }
+        let elapsed = max(now - self.startTime, 0.0)
+        match self.mode {
+            Immediate -> {
+                self.animating = false
+                return false
+            }
+            Ease -> {
+                let t = elapsed / self.easeDuration
+                if t >= 1.0 {
+                    self.presentation = self.model
+                    self.animating = false
+                    return false
+                }
+                self.presentation = motionEaseBetween(self.easing, self.easeFrom, self.model, t)
+                return true
+            }
+            Spring -> {
+                self.spring.elapsed = elapsed
+                let sample = motionSpringSample(self.spring, elapsed)
+                self.presentation = sample.value
+                if motionSpringSettled(self.spring, sample, MotionSpringLimit.epsilon) {
+                    self.presentation = self.model
+                    self.animating = false
+                    return false
+                }
+                return true
+            }
+        }
+    }
+
+    function velocity(now: Number) -> Number {
+        if self.mode == .Spring && self.animating {
+            let sample = motionSpringSample(self.spring, max(now - self.startTime, 0.0))
+            return sample.velocity
+        }
+        return 0.0
+    }
+}
+
+// A perceptually-interpolated color property: two endpoints and a 0..1 progress
+// channel that carries the same ease/spring machinery every scalar does. The
+// presentation color is the OKLab mix at the progress value, so a color fade
+// is timed exactly like a position and interrupts the same way.
+public struct CAColorChannel {
+    var from: CAColor = CAColor {}
+    var model: CAColor = CAColor {}
+    var progress: CAChannel = CAChannel { model: 1.0, presentation: 1.0 }
+}
+
+extend CAColor {
+    function channel() -> CAColorChannel {
+        return CAColorChannel { from: self, model: self, progress: settledChannel(1.0) }
+    }
+}
+
+extend CAColorChannel {
+    function presentation() -> CAColor {
+        return self.from.lerp(self.model, self.progress.presentation)
+    }
+
+    // Retarget the color: the current presentation becomes the new origin and the
+    // progress restarts 0->1 toward the new color, so an interrupted fade continues
+    // from where it visibly is rather than snapping to the old endpoint.
+    function set(
+        borrow mut self,
+        target: borrow CAColor,
+        immediate: Bool,
+        timing: borrow CATiming,
+        now: Number
+    ) {
+        if immediate {
+            self.from = target
+            self.model = target
+            self.progress.setImmediate(1.0)
+            return
+        }
+        self.from = self.presentation()
+        self.model = target
+        self.progress.setImmediate(0.0)
+        if timing.mode == .Spring {
+            self.progress.startSpring(timing.spring(1.0), now, timing.velocity)
+        } else {
+            var dur = timing.duration
+            if timing.reducedMotion && dur > 0.2 {
+                dur = 0.2
+            }
+            self.progress.startEase(1.0, dur, timing.easing.easeCopy(), now)
+        }
+    }
+
+    function sampleAt(borrow mut self, now: Number) -> Bool {
+        return self.progress.sampleAt(now)
+    }
+}

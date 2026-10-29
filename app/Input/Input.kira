@@ -1,0 +1,225 @@
+import Foundation
+
+// Transform-aware hit testing over the presentation draw list.
+//
+// The list is in paint order, so the last item that covers a point is the one on
+// top; the walk runs back to front and stops at the first hit. "Covers a point"
+// is asked in the layer's OWN coordinates: the world transform is inverted and
+// the screen point carried back through it, then tested against the layer's
+// untransformed bounds. That is what makes a rotated or scaled layer pressable
+// exactly where it is drawn — an axis-aligned bounds check against the projected
+// box would accept the corners of the bounding rectangle a rotation leaves empty.
+//
+// A press is also reported against the interactive surface it landed on, if
+// any: the topmost `interactive` layer under the point, whatever control is on
+// top of it. The control acts; the surface moves with the press. And it is
+// reported against the innermost scrolling layer the point is in, which is
+// where a wheel or a pan over it goes.
+
+public struct CAHitResult {
+    var hit: Bool = false
+    var layer: LayerId = LayerId(0)
+    var hitKey: Number = 0
+    // Where the point landed in the layer's own coordinates, for a handler that
+    // wants the local position (a slider thumb, a canvas).
+    var localX: Number = 0.0
+    var localY: Number = 0.0
+    // The layer's box in window coordinates, the smallest upright rectangle
+    // holding it however it is transformed: what a control that opens
+    // something anchors that thing to.
+    var boundsX: Number = 0.0
+    var boundsY: Number = 0.0
+    var boundsWidth: Number = 0.0
+    var boundsHeight: Number = 0.0
+    // The interactive surface under the point, zero when there is none: its
+    // layer and key, where the point landed in its own coordinates, and its
+    // size.
+    var surfaceLayer: LayerId = LayerId(0)
+    var surfaceKey: Number = 0
+    var surfaceX: Number = 0.0
+    var surfaceY: Number = 0.0
+    var surfaceWidth: Number = 0.0
+    var surfaceHeight: Number = 0.0
+    // Whether a press held on that surface slides between its controls.
+    var surfaceSlides: Bool = false
+    // The innermost scrolling layer under the point, zero when there is none:
+    // its layer and key.
+    var scrollLayer: LayerId = LayerId(0)
+    var scrollKey: Number = 0
+}
+
+extend CADrawItem {
+    function containsPoint(x: Number, y: Number) -> Bool {
+        if self.opacity <= 0.0 {
+            return false
+        }
+        if x < self.clipMinX || x > self.clipMaxX || y < self.clipMinY || y > self.clipMaxY {
+            return false
+        }
+        let inv = self.transform.invert()
+        return localContains(self.localWidth, self.localHeight, inv.applyX(x, y), inv.applyY(x, y))
+    }
+}
+
+public function hitTest(items: borrow [CADrawItem], x: Number, y: Number) -> CAHitResult {
+    // Back to front: the last item that covers the point is the one on top. The
+    // walk goes on past the control for the surface it sits on, and the
+    // scrolling layer it sits in, which are painted before it. An item drawn
+    // all but transparent takes no touch, as a view under 0.01 alpha takes
+    // none on an iPad.
+    var result = CAHitResult {}
+    var surfaceFound = false
+    var scrollFound = false
+    for k in 0..items.count {
+        let item = items[items.count - 1 - k]
+        let wanted = (item.hit && !result.hit) || (item.interactive && !surfaceFound) || (
+            item.scrolls && !scrollFound
+        )
+        if !wanted || item.opacity < 0.01 || !item.containsPoint(x, y) {
+            continue
+        }
+        let inv = item.transform.invert()
+        if item.hit && !result.hit {
+            result.hit = true
+            result.layer = item.layer
+            result.hitKey = item.hitKey
+            result.localX = inv.applyX(x, y)
+            result.localY = inv.applyY(x, y)
+            result.bounds(item)
+        }
+        if item.interactive && !surfaceFound {
+            surfaceFound = true
+            result.surfaceLayer = item.layer
+            result.surfaceKey = item.hitKey
+            result.surfaceX = inv.applyX(x, y)
+            result.surfaceY = inv.applyY(x, y)
+            result.surfaceWidth = item.localWidth
+            result.surfaceHeight = item.localHeight
+            result.surfaceSlides = item.slidesPress
+        }
+        if item.scrolls && !scrollFound {
+            scrollFound = true
+            result.scrollLayer = item.layer
+            result.scrollKey = item.hitKey
+        }
+        if result.hit && surfaceFound && scrollFound {
+            return result
+        }
+    }
+    return result
+}
+
+extend CAHitResult {
+    // The window-space box of a drawn item: its four corners carried through its
+    // transform, and the upright rectangle around them.
+    function bounds(borrow mut self, item: borrow CADrawItem) {
+        let w = item.localWidth
+        let h = item.localHeight
+        let t = item.transform
+        let xs = [t.applyX(0.0, 0.0), t.applyX(w, 0.0), t.applyX(0.0, h), t.applyX(w, h)]
+        let ys = [t.applyY(0.0, 0.0), t.applyY(w, 0.0), t.applyY(0.0, h), t.applyY(w, h)]
+        var minX = xs[0]
+        var maxX = xs[0]
+        var minY = ys[0]
+        var maxY = ys[0]
+        for i in 1..4 {
+            minX = min(minX, xs[i])
+            maxX = max(maxX, xs[i])
+            minY = min(minY, ys[i])
+            maxY = max(maxY, ys[i])
+        }
+        self.boundsX = minX
+        self.boundsY = minY
+        self.boundsWidth = maxX - minX
+        self.boundsHeight = maxY - minY
+    }
+}
+
+extend CALayerTree {
+    // Hit test straight from the tree: this frame's presentation, as far as it
+    // can take the point, and pick.
+    function hitTestTree(x: Number, y: Number) -> CAHitResult {
+        var items: [CADrawItem] = []
+        if self.rootId == LayerId(0) {
+            return CAHitResult {}
+        }
+        hitSubtree(self, rootFrame(self.rootId), x, y, items)
+        for overlayId in self.orderedOverlays() {
+            hitSubtree(self, rootFrame(overlayId), x, y, items)
+        }
+        return hitTest(items, x, y)
+    }
+}
+
+// `flattenSubtree` for the hit tester: only the layers that take a press, a
+// surface or a scroll, with what it reads of them, and nothing under a layer
+// too faint to touch or clipped away from the point, since all it holds is
+// fainter and inside that clip.
+function hitSubtree(
+    tree: borrow CALayerTree,
+    frame: borrow CAWalkFrame,
+    x: Number,
+    y: Number,
+    out: borrow mut [CADrawItem]
+) {
+    let slot = match tree.nodeSlot(frame.id) {
+        Some(found) -> found
+        None -> return
+    }
+    if tree.nodes[slot.raw].mounted {
+        hitLayer(tree, tree.nodes[slot.raw], frame, x, y, out)
+    }
+}
+
+function hitLayer(
+    tree: borrow CALayerTree,
+    node: borrow CALayerNode,
+    frame: borrow CAWalkFrame,
+    x: Number,
+    y: Number,
+    out: borrow mut [CADrawItem]
+) {
+    let opacity = frame.opacity * node.opacity.presentation
+    if opacity < 0.01 {
+        return
+    }
+    let world = node.placedIn(frame.world)
+    if node.hit || node.interactive || node.scrolls {
+        out.append(
+            CADrawItem {
+                layer: node.id,
+                transform: world,
+                localWidth: node.boundsW.presentation,
+                localHeight: node.boundsH.presentation,
+                opacity: opacity,
+                clipMinX: frame.clipMinX,
+                clipMinY: frame.clipMinY,
+                clipMaxX: frame.clipMaxX,
+                clipMaxY: frame.clipMaxY,
+                hit: node.hit,
+                interactive: node.interactive,
+                slidesPress: node.slidesPress,
+                hitKey: node.hitKey,
+                scrolls: node.scrolls
+            }
+        )
+    }
+    if node.childIds.count == 0 {
+        return
+    }
+    let childFrame = node.childFrame(frame, world, opacity)
+    if x < childFrame.clipMinX || x > childFrame.clipMaxX || y < childFrame.clipMinY || y > childFrame.clipMaxY {
+        return
+    }
+    for childId in node.childIds {
+        let childSlot = match tree.nodeSlot(childId) {
+            Some(found) -> found
+            None -> continue
+        }
+        if tree.nodes[childSlot.raw].mounted && !tree.nodes[childSlot.raw].hoisted {
+            var cf = childFrame
+            cf.id = childId
+            hitSubtree(tree, cf, x, y, out)
+        }
+    }
+}

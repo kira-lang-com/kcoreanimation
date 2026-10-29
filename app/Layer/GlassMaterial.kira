@@ -1,0 +1,79 @@
+// The complete material state a retained Liquid Glass layer shades with.
+//
+// These are per-layer values rather than shader constants: two surfaces in one
+// frame may use different materials, animation may move them, and the retained
+// content signature can account for every shader-visible input without reaching
+// into the legacy paint package.
+public struct CAGlassMaterial {
+    let edgeStrokeStrength: Number = 0.0
+    let edgeStrokeDarken: Number = 0.62
+    let edgeStrokePeak: Number = 0.9
+    let edgeStrokeFade: Number = 2.0
+    let sheenStrength: Number = 0.0
+    let lensMaxBend: Number = 72.0
+    let refractionReach: Number = 180.0
+    let blurNearSplit: Number = 0.25
+
+    // Device-pixel hairlines. The glass emitter converts these into the quad's
+    // local units at the active render scale.
+    let borderSpread: Number = 1.0
+    let borderSideOffset: Number = 2.5
+    let borderSideSpread: Number = 1.5
+    let borderGray: Number = 0.859
+    let borderSideGray: Number = 0.859
+    // The kit's specular: its intensity, over a two-point bevel, which is what
+    // edges the piece in light all round.
+    let innerRimStrength: Number = 0.25
+    let innerRimWidth: Number = 2.0
+
+    // Two-layer material wash. The lower layer's color/alpha is the layer tint;
+    // this carries its blend mode and the complete upper layer.
+    let washBlend: Number = 0.0
+    let washUpperR: Number = 1.0
+    let washUpperG: Number = 1.0
+    let washUpperB: Number = 1.0
+    let washUpperAlpha: Number = 0.0
+    let washUpperBlend: Number = 0.0
+
+    // The light along the top and bottom edges: two soft bands hugging those
+    // edges, added in `edgeLightDodge`'s gray, and a broader one under the top
+    // edge burned in `edgeLightBurn`'s. Black adds nothing and white burns
+    // nothing, so the defaults are glass without it.
+    let edgeLightDodge: Number = 0.0
+    let edgeLightBurn: Number = 1.0
+}
+
+extend CAGlass {
+    // Glass with no edge of its own -- no hairlines along its rim, no inner rim,
+    // no sheen, no light along its top and bottom, and nothing bent at its edge --
+    // for glass whose edges meet something rather than stand free, as a sidebar
+    // meets the column beside it. Its blur and its wash are left as they were.
+    function edgeless() -> CAGlass {
+        var edgeless = self
+        let base = edgeless.material
+        edgeless.edgeRefraction = 0.0
+        edgeless.material = CAGlassMaterial {
+            lensMaxBend: base.lensMaxBend,
+            refractionReach: base.refractionReach,
+            blurNearSplit: base.blurNearSplit,
+            // The lines burn in these grays, and white burns nothing.
+            borderSpread: 0.0,
+            borderSideOffset: 0.0,
+            borderSideSpread: 0.0,
+            borderGray: 1.0,
+            borderSideGray: 1.0,
+            innerRimStrength: 0.0,
+            washBlend: base.washBlend,
+            washUpperR: base.washUpperR,
+            washUpperG: base.washUpperG,
+            washUpperB: base.washUpperB,
+            washUpperAlpha: base.washUpperAlpha,
+            washUpperBlend: base.washUpperBlend
+        }
+        edgeless.sizing.ringTone = CAGlassRamp {}
+        edgeless.sizing.sideTone = CAGlassRamp {}
+        edgeless.sizing.lightDodge = CAGlassRamp {}
+        edgeless.sizing.lightBurn = CAGlassRamp {}
+        return edgeless
+    }
+}

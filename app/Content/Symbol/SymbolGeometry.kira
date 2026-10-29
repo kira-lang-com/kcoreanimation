@@ -1,0 +1,219 @@
+import Foundation
+
+// The geometry a symbol is drawn from: its SVG source's outlines with every
+// curve walked into straight segments, which the fill and the stroke both
+// work on. Coordinates are the document's until `SymbolTransform` takes them
+// to pixels. Floats, as the rasterizer that reads them is.
+
+namespace SymbolCurve {
+    // Segments a Bézier is walked in: at the sizes symbols are drawn at, a
+    // curve never shows a corner.
+    let steps: Number = 18
+    // Segments an arc is walked in per half turn it sweeps, plus `arcBase`
+    // so a short arc still bends.
+    let arcStepsPerHalfTurn: Float = 24
+    let arcBase: Number = 2
+    // Points around a circle or an ellipse.
+    let ellipseSteps: Number = 48
+    // Segments along each rounded corner of a rectangle.
+    let cornerSteps: Number = 12
+}
+
+struct SymbolPoint {
+    let x: Float
+    let y: Float
+}
+
+// Which of the two arcs between its ends an SVG arc takes, and which way
+// round: its large-arc and sweep flags.
+enum ArcSize {
+    Small
+    Large
+}
+
+enum ArcSweep {
+    CounterClockwise
+    Clockwise
+}
+
+struct SymbolArc {
+    let radiusX: Float
+    let radiusY: Float
+    // Degrees, as SVG writes it.
+    let rotation: Float
+    let size: ArcSize
+    let sweep: ArcSweep
+    let to: SymbolPoint
+}
+
+// One run of connected points, open or closed.
+struct SymbolOutline {
+    var points: [SymbolPoint] = []
+    var closed: Bool = false
+
+    // Adds `point` unless it repeats the last one: a segment of no length has
+    // no direction, and would confuse the winding a fill counts.
+    function add(borrow mut self, point: borrow SymbolPoint) {
+        if points.count > 0 {
+            let last = points[points.count - 1]
+            if last.x == point.x && last.y == point.y { return }
+        }
+        points.append(point)
+    }
+
+    function addCubic(
+        borrow mut self,
+        from: borrow SymbolPoint,
+        first: borrow SymbolPoint,
+        second: borrow SymbolPoint,
+        to: borrow SymbolPoint
+    ) {
+        let steps = Float(SymbolCurve.steps)
+        for step in 1..(SymbolCurve.steps + 1) {
+            let t = Float(step) / steps
+            let u: Float = 1.0 - t
+            let a = u * u * u
+            let b = 3.0 * u * u * t
+            let c = 3.0 * u * t * t
+            let d = t * t * t
+            add(
+                SymbolPoint {
+                    x: a * from.x + b * first.x + c * second.x + d * to.x,
+                    y: a * from.y + b * first.y + c * second.y + d * to.y
+                }
+            )
+        }
+    }
+
+    function addQuadratic(
+        borrow mut self,
+        from: borrow SymbolPoint,
+        control: borrow SymbolPoint,
+        to: borrow SymbolPoint
+    ) {
+        let steps = Float(SymbolCurve.steps)
+        for step in 1..(SymbolCurve.steps + 1) {
+            let t = Float(step) / steps
+            let u: Float = 1.0 - t
+            let a = u * u
+            let b = 2.0 * u * t
+            let c = t * t
+            add(
+                SymbolPoint {
+                    x: a * from.x + b * control.x + c * to.x,
+                    y: a * from.y + b * control.y + c * to.y
+                }
+            )
+        }
+    }
+
+    // An SVG arc from `from`, walked by angle around the ellipse its
+    // endpoints and radii give (SVG 1.1, appendix F.6.5).
+    function addArc(borrow mut self, from: borrow SymbolPoint, arc: borrow SymbolArc) {
+        if arc.radiusX == 0.0 || arc.radiusY == 0.0 {
+            add(arc.to)
+            return
+        }
+        let ellipse = arcEllipse(from, arc)
+        let turns = abs(ellipse.sweep) / Float(Angle.pi) * SymbolCurve.arcStepsPerHalfTurn
+        let steps = Number(trunc(turns)) + SymbolCurve.arcBase
+        for step in 1..(steps + 1) {
+            let angle = ellipse.start + ellipse.sweep * Float(step) / Float(steps)
+            add(ellipse.pointAt(angle))
+        }
+    }
+}
+
+// The ellipse an SVG arc runs along, and the angles it covers.
+struct ArcEllipse {
+    let centerX: Float
+    let centerY: Float
+    let radiusX: Float
+    let radiusY: Float
+    let cosine: Float
+    let sine: Float
+    let start: Float
+    let sweep: Float
+
+    function pointAt(borrow self, angle: Float) -> SymbolPoint {
+        let x = radiusX * cos(angle)
+        let y = radiusY * sin(angle)
+        return SymbolPoint {
+            x: centerX + x * cosine - y * sine,
+            y: centerY + x * sine + y * cosine
+        }
+    }
+}
+
+function arcEllipse(from: borrow SymbolPoint, arc: borrow SymbolArc) -> ArcEllipse {
+    let rotation = arc.rotation * Float(Angle.degree)
+    let cosine = cos(rotation)
+    let sine = sin(rotation)
+    let halfX = (from.x - arc.to.x) / 2.0
+    let halfY = (from.y - arc.to.y) / 2.0
+    let x1 = cosine * halfX + sine * halfY
+    let y1 = -sine * halfX + cosine * halfY
+    var radiusX = abs(arc.radiusX)
+    var radiusY = abs(arc.radiusY)
+    // Radii too small to reach between the ends grow until they just do.
+    let reach = (x1 * x1) / (radiusX * radiusX) + (y1 * y1) / (radiusY * radiusY)
+    if reach > 1.0 {
+        radiusX *= sqrt(reach)
+        radiusY *= sqrt(reach)
+    }
+    let numerator = radiusX * radiusX * radiusY * radiusY - radiusX * radiusX * y1 * y1
+        - radiusY * radiusY * x1 * x1
+    let denominator = radiusX * radiusX * y1 * y1 + radiusY * radiusY * x1 * x1
+    var root = denominator == 0.0 ? 0.0 : sqrt(max(numerator / denominator, 0.0))
+    if arcTakesNearCenter(arc) { root = -root }
+    let centerX1 = root * (radiusX * y1 / radiusY)
+    let centerY1 = root * (-radiusY * x1 / radiusX)
+    let ux = (x1 - centerX1) / radiusX
+    let uy = (y1 - centerY1) / radiusY
+    let vx = (-x1 - centerX1) / radiusX
+    let vy = (-y1 - centerY1) / radiusY
+    return ArcEllipse {
+        centerX: cosine * centerX1 - sine * centerY1 + (from.x + arc.to.x) / 2.0,
+        centerY: sine * centerX1 + cosine * centerY1 + (from.y + arc.to.y) / 2.0,
+        radiusX: radiusX,
+        radiusY: radiusY,
+        cosine: cosine,
+        sine: sine,
+        start: atan2(uy, ux),
+        sweep: arcSweepAngle(ux, uy, vx, vy, arc.sweep)
+    }
+}
+
+// Which side of the chord the center lies on: SVG puts it on the negative
+// side when the large-arc and sweep flags agree (F.6.5.2).
+function arcTakesNearCenter(arc: borrow SymbolArc) -> Bool {
+    return match arc.size {
+        Small -> match arc.sweep {
+            CounterClockwise -> true
+            Clockwise -> false
+        }
+        Large -> match arc.sweep {
+            CounterClockwise -> false
+            Clockwise -> true
+        }
+    }
+}
+
+// The signed angle from `u` to `v`, turned the way `sweep` asks.
+function arcSweepAngle(
+    ux: Float,
+    uy: Float,
+    vx: Float,
+    vy: Float,
+    sweep: borrow ArcSweep
+) -> Float {
+    let length = sqrt((ux * ux + uy * uy) * (vx * vx + vy * vy))
+    let cosine = length == 0.0 ? 1.0 : (ux * vx + uy * vy) / length
+    var angle = acos(clamp(cosine, -1.0, 1.0))
+    if ux * vy - uy * vx < 0.0 { angle = -angle }
+    let fullTurn = Float(Angle.fullTurn)
+    return match sweep {
+        CounterClockwise -> angle > 0.0 ? angle - fullTurn : angle
+        Clockwise -> angle < 0.0 ? angle + fullTurn : angle
+    }
+}

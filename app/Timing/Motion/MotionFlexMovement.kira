@@ -1,0 +1,173 @@
+import Foundation
+
+// The flex's movement source: an element squashing and stretching as it speeds
+// up and slows down, as UIKit's liquid lens does while it follows a finger
+// across a tab bar. Read from UIKit:
+//
+// - `_UIFlexInteraction`, per frame: the view's presentation center, in window
+//   coordinates, is handed to a `_UIVelocityIntegrator` with the frame's time,
+//   and the flex is updated from the acceleration it reports.
+// - its integrator: five samples, no minimum movement, no sample window, a
+//   0.05s hysteresis, and an exponential moving average of 0.3 on position,
+//   velocity and acceleration; acceleration is directionless -- how fast each
+//   axis's speed changes, not its velocity.
+// - `-[_UIVelocityIntegrator addSample3D:withTimestamp:]`: a sample under a
+//   ten-thousandth of a second after the last is dropped, and one after a gap
+//   longer than the hysteresis starts over, still.
+// - `updateFlex`: acceleration over `movementNormalizationFactor` stretches the
+//   axis it is on toward `movementMaxScale`, squashes the other toward
+//   `movementMinScale`, and drifts the element back by half what it gained,
+//   against its velocity -- each range further held to `movementScalePts`
+//   either side of the element's size, and held softly: past either end a
+//   scale runs on into a third of the range more, along a hyperbolic tangent
+//   (`flexRubberBand`). Scale and drift then follow on the
+//   set's scale spring, its tracking spring while the interaction is active.
+// - only while it is active (`activateIfPermitted` sets the animation
+//   context's tracking flag, `deactivate` clears it) does `updateFlex` aim
+//   anywhere but rest, and only then does its update link run and sample.
+// - the result is one `transform`: the drift, then the scale, about the
+//   layer's anchor, in an additive `CAPresentationModifier` on the view's
+//   layer -- everything the view holds is drawn through it.
+//
+// Inferred, not read: the moving average's form, `α·x + (1 − α)·previous`.
+
+public namespace MotionFlexMovementLimit {
+    let smoothing = 0.3
+    let hysteresis = 0.05
+    let shortest = 0.0001
+}
+
+// One element's movement flex in flight.
+public struct MotionFlexMovementState {
+    var parameters: MotionFlexParameters = MotionFlexParameters {}
+    var width: Number = 0.0
+    var height: Number = 0.0
+    // Whether the interaction is active: the only time the movement aims
+    // anywhere but rest, and the time scale and drift follow on the tracking
+    // spring.
+    var tracking: Bool = false
+    var sampled: Bool = false
+    var time: Number = 0.0
+    var x: Number = 0.0
+    var y: Number = 0.0
+    var vx: Number = 0.0
+    var vy: Number = 0.0
+    var ax: Number = 0.0
+    var ay: Number = 0.0
+    var scaleX: MotionSpringState = MotionSpringState {}
+    var scaleY: MotionSpringState = MotionSpringState {}
+    var driftX: MotionSpringState = MotionSpringState {}
+    var driftY: MotionSpringState = MotionSpringState {}
+    var started: Bool = false
+}
+
+// The element at `x`, `y` at `time` seconds, as the integrator takes a sample.
+public function motionFlexMovementSample(
+    state: borrow mut MotionFlexMovementState,
+    x: Number,
+    y: Number,
+    time: Number
+) {
+    let a = MotionFlexMovementLimit.smoothing
+    let dt = time - state.time
+    if state.sampled && dt < MotionFlexMovementLimit.shortest {
+        return
+    }
+    if !state.sampled || dt > MotionFlexMovementLimit.hysteresis {
+        state.sampled = true
+        state.time = time
+        state.x = x
+        state.y = y
+        state.vx = 0.0
+        state.vy = 0.0
+        state.ax = 0.0
+        state.ay = 0.0
+        return
+    }
+    let px = a * x + (1.0 - a) * state.x
+    let py = a * y + (1.0 - a) * state.y
+    let vx = a * ((px - state.x) / dt) + (1.0 - a) * state.vx
+    let vy = a * ((py - state.y) / dt) + (1.0 - a) * state.vy
+    let ax = (abs(vx) - abs(state.vx)) / dt
+    let ay = (abs(vy) - abs(state.vy)) / dt
+    state.ax = a * ax + (1.0 - a) * state.ax
+    state.ay = a * ay + (1.0 - a) * state.ay
+    state.vx = vx
+    state.vy = vy
+    state.x = px
+    state.y = py
+    state.time = time
+}
+
+// What the movement comes to after `delta` more seconds: scale about the
+// element's center, then drift, the same transform `MotionFlexFrame` gives.
+public function motionFlexMovementAdvance(
+    state: borrow mut MotionFlexMovementState,
+    delta: Number
+) -> MotionFlexFrame {
+    if !state.started {
+        state.started = true
+        flexJump(state.scaleX, 1.0)
+        flexJump(state.scaleY, 1.0)
+    }
+    let set = state.parameters
+    let w = state.width
+    let h = state.height
+    var scaleX = 1.0
+    var scaleY = 1.0
+    var driftX = 0.0
+    var driftY = 0.0
+    if state.tracking && w > 0.0 && h > 0.0 && set.movementNormalizationFactor > 0.0 {
+        let nx = state.ax / set.movementNormalizationFactor
+        let ny = state.ay / set.movementNormalizationFactor
+        let minX = max(set.movementMinScale, (w - set.movementScalePoints) / w)
+        let maxX = min(set.movementMaxScale, (w + set.movementScalePoints) / w)
+        let minY = max(set.movementMinScale, (h - set.movementScalePoints) / h)
+        let maxY = min(set.movementMaxScale, (h + set.movementScalePoints) / h)
+        if nx != 0.0 {
+            let sx = flexRubberBand(1.0 + (maxX - 1.0) * nx, minX, maxX)
+            scaleX += sx - 1.0
+            driftX += (1.0 - sx) * 0.5 * w * flexSign(state.vx)
+            scaleY += flexRubberBand(1.0 + (minY - 1.0) * nx, minY, maxY) - 1.0
+        }
+        if ny != 0.0 {
+            let sy = flexRubberBand(1.0 + (maxY - 1.0) * ny, minY, maxY)
+            scaleY += sy - 1.0
+            driftY += (1.0 - sy) * 0.5 * h * flexSign(state.vy)
+            scaleX += flexRubberBand(1.0 + (minX - 1.0) * ny, minX, maxX) - 1.0
+        }
+    }
+    let response = state.tracking ? set.scaleSpringTrackingResponse : set.scaleSpringResponse
+    let damping = state.tracking ? set.scaleSpringTrackingDamping : set.scaleSpringDamping
+    let sx = flexFollow(state.scaleX, response, damping, scaleX, delta)
+    let sy = flexFollow(state.scaleY, response, damping, scaleY, delta)
+    let dx = flexFollow(state.driftX, response, damping, driftX, delta)
+    let dy = flexFollow(state.driftY, response, damping, driftY, delta)
+    let resting = flexResting(state.scaleX) && flexResting(state.scaleY)
+        && flexResting(state.driftX) && flexResting(state.driftY)
+    return MotionFlexFrame {
+        scaleX: sx,
+        scaleY: sy,
+        driftX: dx,
+        driftY: dy,
+        moving: !resting || abs(state.ax) > 1.0 || abs(state.ay) > 1.0
+    }
+}
+
+// `value` held softly to `low`...`high`: past either end it runs on into a
+// third of the range more, leaving the end at 0.55 of its rate and slowing
+// along a hyperbolic tangent, as UIKit's flex holds its movement scales.
+function flexRubberBand(value: Number, low: Number, high: Number) -> Number {
+    let reach = (high - low) / 3.0
+    if reach <= 0.0 {
+        return clamp(value, low, high)
+    }
+    if value > high {
+        return high + reach * tanh((value - high) / reach * 0.55)
+    }
+    if value < low {
+        let bottom = low - reach
+        return bottom + reach * (tanh((value - bottom) / reach * 0.55 - 0.55) + 1.0)
+    }
+    return value
+}

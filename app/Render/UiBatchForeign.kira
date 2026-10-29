@@ -1,0 +1,414 @@
+import Foundation
+import Ember
+// Foreign surface for the batched UI compositor.
+//
+// Rendering stays on Ember. Raw staging memory uses Ember' shared
+// runtime-memory helpers, while the text engine uses the package's generated typed
+// bindings so C-layout glyph and metric fields are read through their declared types.
+// Write one quad's record: the thirty floats the KSL `UiQuad` struct reads for
+// every mode, in its field order (see quadFloatCount in UiBatch.kira).
+// `px`/`py` are pixel coordinates, which the fragment stage clips against; `pos`
+// is the same point in clip space, with the y flip a top-left-origin UI needs.
+//
+// The clip position is computed HERE rather than in the vertex stage, so that the
+// stage only ever selects between two stored numbers and the bytes reaching the
+// rasterizer are the ones a per-vertex buffer used to hold.
+//
+// Written in Kira rather than behind a native fast-path symbol. A `kira_ui`
+// library existed for this and no toolchain shipped one, so every call trapped
+// by name on the platform the compositor actually runs on; a UI that needs a
+// native library to draw a rectangle is not portable. The cost is per-float
+// writes through the runtime's raw-memory helpers, which are on every native
+// link line and need no platform to have anything.
+
+// The one place these writes meet the staging buffer: the float at `index`
+// floats past the start of a record, stored as the 32-bit float the KSL
+// `UiQuad` struct reads, at byte offset `index * 4`.
+function storeFloat(ptr: RawPtr, index: Number, value: Float) {
+    heapStore<F32>(ptr, index * 4, F32(value))
+}
+
+public function writeQuadRecord(
+    ptr: RawPtr,
+    baseFloats: Number,
+    px0: Number,
+    py0: Number,
+    px1: Number,
+    py1: Number,
+    lx0: Number,
+    ly0: Number,
+    lx1: Number,
+    ly1: Number,
+    vw: Number,
+    vh: Number,
+    halfW: Number,
+    halfH: Number,
+    radius: Number,
+    borderWidth: Number,
+    mode: Number,
+    edgeRefraction: Number,
+    fr: Number,
+    fg: Number,
+    fb: Number,
+    fa: Number,
+    br: Number,
+    bg: Number,
+    bb: Number,
+    ba: Number,
+    clipMinX: Number,
+    clipMinY: Number,
+    clipMaxX: Number,
+    clipMaxY: Number,
+    // The quad turned about its own center. Written HERE, with the identity as
+    // its default, rather than left to the callers that want it: the buffer is
+    // reused frame to frame, so a field a path forgets is not zero — it is
+    // whatever quad occupied that slot last, and a glyph inherits the angle of
+    // something else that has since gone.
+    rotCos: Number = 1.0,
+    rotSin: Number = 0.0,
+    // Written with the rest for the same reason: a slot keeps the last
+    // quad's clip corner otherwise.
+    clipRadius: Number = 0.0,
+    clipShapeKind: Number = 0.0,
+) {
+    writeQuadRecordFloat(
+        ptr,
+        baseFloats,
+        Float(px0),
+        Float(py0),
+        Float(px1),
+        Float(py1),
+        Float(lx0),
+        Float(ly0),
+        Float(lx1),
+        Float(ly1),
+        Float(vw),
+        Float(vh),
+        Float(halfW),
+        Float(halfH),
+        Float(radius),
+        Float(borderWidth),
+        Float(mode),
+        Float(edgeRefraction),
+        Float(fr),
+        Float(fg),
+        Float(fb),
+        Float(fa),
+        Float(br),
+        Float(bg),
+        Float(bb),
+        Float(ba),
+        Float(clipMinX),
+        Float(clipMinY),
+        Float(clipMaxX),
+        Float(clipMaxY),
+        Float(rotCos),
+        Float(rotSin),
+        Float(clipRadius),
+        Float(clipShapeKind)
+    )
+}
+
+// `writeQuadRecord` in binary floats, for a caller that works in them: a
+// glyph's corners are fractions of a pixel no decimal ends.
+public function writeQuadRecordFloat(
+    ptr: RawPtr,
+    baseFloats: Number,
+    px0: Float,
+    py0: Float,
+    px1: Float,
+    py1: Float,
+    lx0: Float,
+    ly0: Float,
+    lx1: Float,
+    ly1: Float,
+    vw: Float,
+    vh: Float,
+    halfW: Float,
+    halfH: Float,
+    radius: Float,
+    borderWidth: Float,
+    mode: Float,
+    edgeRefraction: Float,
+    fr: Float,
+    fg: Float,
+    fb: Float,
+    fa: Float,
+    br: Float,
+    bg: Float,
+    bb: Float,
+    ba: Float,
+    clipMinX: Float,
+    clipMinY: Float,
+    clipMaxX: Float,
+    clipMaxY: Float,
+    rotCos: Float,
+    rotSin: Float,
+    clipRadius: Float,
+    clipShapeKind: Float,
+) {
+    // The blocks only a surface sets -- its gradient, the shape it fuses with,
+    // its corner -- flat here, and set after this by the surfaces that have
+    // them. A glyph never sets them, so without this it took the last
+    // occupant's: text over a gradient page inherited the page's far color
+    // and went blue past the gradient's diagonal, partway through a word.
+    for at in 54..66 {
+        storeFloat(ptr, baseFloats + at, 0.0)
+    }
+    storeFloat(ptr, baseFloats + 66, rotCos)
+    storeFloat(ptr, baseFloats + 67, rotSin)
+    storeFloat(ptr, baseFloats + 68, clipRadius)
+    storeFloat(ptr, baseFloats + 69, clipShapeKind)
+    let spanX = 2.0 / vw
+    let spanY = 2.0 / vh
+    storeFloat(ptr, baseFloats, px0 * spanX - 1.0)
+    storeFloat(ptr, baseFloats + 1, 1.0 - py0 * spanY)
+    storeFloat(ptr, baseFloats + 2, px1 * spanX - 1.0)
+    storeFloat(ptr, baseFloats + 3, 1.0 - py1 * spanY)
+    storeFloat(ptr, baseFloats + 4, px0)
+    storeFloat(ptr, baseFloats + 5, py0)
+    storeFloat(ptr, baseFloats + 6, px1)
+    storeFloat(ptr, baseFloats + 7, py1)
+    storeFloat(ptr, baseFloats + 8, lx0)
+    storeFloat(ptr, baseFloats + 9, ly0)
+    storeFloat(ptr, baseFloats + 10, lx1)
+    storeFloat(ptr, baseFloats + 11, ly1)
+    storeFloat(ptr, baseFloats + 12, halfW)
+    storeFloat(ptr, baseFloats + 13, halfH)
+    storeFloat(ptr, baseFloats + 14, radius)
+    storeFloat(ptr, baseFloats + 15, borderWidth)
+    storeFloat(ptr, baseFloats + 16, mode)
+    storeFloat(ptr, baseFloats + 17, edgeRefraction)
+    storeFloat(ptr, baseFloats + 18, fr)
+    storeFloat(ptr, baseFloats + 19, fg)
+    storeFloat(ptr, baseFloats + 20, fb)
+    storeFloat(ptr, baseFloats + 21, fa)
+    storeFloat(ptr, baseFloats + 22, br)
+    storeFloat(ptr, baseFloats + 23, bg)
+    storeFloat(ptr, baseFloats + 24, bb)
+    storeFloat(ptr, baseFloats + 25, ba)
+    storeFloat(ptr, baseFloats + 26, clipMinX)
+    storeFloat(ptr, baseFloats + 27, clipMinY)
+    storeFloat(ptr, baseFloats + 28, clipMaxX)
+    storeFloat(ptr, baseFloats + 29, clipMaxY)
+}
+
+// The material block that follows a record: what a liquid-glass surface shades
+// itself with. Mode 3 is the only mode whose shader reads any of it, so it is the
+// only mode that writes it.
+public function writeQuadMaterial(
+    ptr: RawPtr,
+    baseFloats: Number,
+    m0: Number,
+    m1: Number,
+    m2: Number,
+    m3: Number,
+    m4: Number,
+    m5: Number,
+    m6: Number,
+    m7: Number,
+    m8: Number,
+    m9: Number,
+    m10: Number,
+    m11: Number,
+    m12: Number,
+    m13: Number,
+    m14: Number,
+    m15: Number,
+    m16: Number,
+    m17: Number,
+    m18: Number,
+    m19: Number,
+    m20: Number,
+    m21: Number,
+    m22: Number,
+    m23: Number,
+) {
+    storeFloat(ptr, baseFloats + 30, Float(m0))
+    storeFloat(ptr, baseFloats + 31, Float(m1))
+    storeFloat(ptr, baseFloats + 32, Float(m2))
+    storeFloat(ptr, baseFloats + 33, Float(m3))
+    storeFloat(ptr, baseFloats + 34, Float(m4))
+    storeFloat(ptr, baseFloats + 35, Float(m5))
+    storeFloat(ptr, baseFloats + 36, Float(m6))
+    storeFloat(ptr, baseFloats + 37, Float(m7))
+    storeFloat(ptr, baseFloats + 38, Float(m8)) // WTH????
+    storeFloat(ptr, baseFloats + 39, Float(m9))
+    storeFloat(ptr, baseFloats + 40, Float(m10))
+    storeFloat(ptr, baseFloats + 41, Float(m11))
+    storeFloat(ptr, baseFloats + 42, Float(m12))
+    storeFloat(ptr, baseFloats + 43, Float(m13))
+    storeFloat(ptr, baseFloats + 44, Float(m14))
+    storeFloat(ptr, baseFloats + 45, Float(m15))
+    storeFloat(ptr, baseFloats + 46, Float(m16))
+    storeFloat(ptr, baseFloats + 47, Float(m17))
+    storeFloat(ptr, baseFloats + 48, Float(m18))
+    storeFloat(ptr, baseFloats + 49, Float(m19))
+    storeFloat(ptr, baseFloats + 50, Float(m20))
+    storeFloat(ptr, baseFloats + 51, Float(m21))
+    storeFloat(ptr, baseFloats + 52, Float(m22))
+    storeFloat(ptr, baseFloats + 53, Float(m23))
+}
+
+// Load a raw RGBA8 pixel blob into a sampled texture, returning the view a draw
+// call takes — or why there is none.
+//
+// `path` names `width * height * 4` bytes, row-major, no header. The file is
+// read through Foundation, which routes to `kira_rt_fs_*` on every backend, and
+// uploaded through the Ember texture API — so this works wherever a
+// Kira program runs rather than only where Metal did. Reaching into the Metal
+// backend's Objective-C surface directly is what made every non-Apple host
+// report the backdrop as missing whatever path it was handed.
+//
+// The reason travels with the failure. A file that is not there and a device
+// that refused the upload are different problems with different fixes, and
+// answering both with a zero is what hid the first one behind a message about
+// the second.
+public function loadRgbaTexture(
+    graphics: borrow Graphics,
+    path: borrow String,
+    width: Number,
+    height: Number
+) -> Result<Number, ResourceFailure> {
+    let total = width * height * 4
+    var pixels: [UN8] = []
+    match readFileRange(path, 0, total) {
+        Ok(bytes) -> {
+            for byte in bytes {
+                pixels.append(UN8(byte))
+            }
+        }
+        Error(failure) -> {
+            log warn("backdrop unreadable", traceText(failure))
+            return .Error(.AssetUnreadable)
+        }
+    }
+    if pixels.count != total {
+        return .Error(.AssetUnreadable)
+    }
+    attempt {
+        let texture = try graphics.createTextureFromPixels(
+            TextureDescriptor {
+                label: path,
+                width: UN32(width),
+                height: UN32(height),
+                format: .Rgba8Unorm,
+                usage: .Sampled,
+                sampleCount: 1,
+                storage: .Persistent
+            },
+            pixels
+        )
+        return .Ok(Number(texture.viewId.raw))
+    } handle {
+        DeviceRefused { return .Error(.DeviceRefused) }
+        AssetUnreadable { return .Error(.AssetUnreadable) }
+        ShaderRejected { return .Error(.ShaderRejected) }
+    }
+}
+
+// Is `name` present in the environment with an EMPTY value? Loading cannot report
+// this: a missing variable and a variable set to "" both fail to open a file and
+// both return 0. The difference is intent — an empty value is a run saying "no
+// image here", which callers use to skip their fallback paths entirely.
+public function environmentValueIsEmpty(name: borrow String) -> Bool {
+    return environmentIsSet(name) && environmentValue(name).count == 0
+}
+
+// As above, but the path is the VALUE of environment variable `envName` (the
+// image-dump-style hookup for scripted runs).
+public function loadRgbaTextureFromEnvironment(
+    graphics: borrow Graphics,
+    envName: borrow String,
+    width: Number,
+    height: Number
+) -> Result<Number, ResourceFailure> {
+    if !environmentIsSet(envName) {
+        return .Error(.AssetUnreadable)
+    }
+    return loadRgbaTexture(graphics, environmentValue(envName), width, height)
+}
+
+// The gradient block that follows the material one: the color the far end of
+// the quad takes, and which way "far" runs.
+//
+// It is written for EVERY quad, including the flat ones, which write zeros. A
+// record's slot is reused by whatever quad lands in it next, so a block left
+// unwritten carries the last gradient that occupied it — a flat surface would
+// inherit a fade from a quad two frames ago.
+public function writeQuadGradient(
+    ptr: RawPtr,
+    baseFloats: Number,
+    r: Number,
+    g: Number,
+    b: Number,
+    a: Number,
+    axis: Number,
+) {
+    storeFloat(ptr, baseFloats + 54, Float(r))
+    storeFloat(ptr, baseFloats + 55, Float(g))
+    storeFloat(ptr, baseFloats + 56, Float(b))
+    storeFloat(ptr, baseFloats + 57, Float(a))
+    storeFloat(ptr, baseFloats + 58, Float(axis))
+}
+
+// The morph block that ends a record: the SECOND shape a liquid-glass surface
+// is fusing with, and how hard.
+//
+// A glass surface is one rounded rectangle and its quad is sized to it, which
+// is enough right up until two of them are supposed to become one body. The
+// fused surface between them is not inside either rectangle — it is the neck,
+// and it exists in the gap — so the shape that grows it has to travel with the
+// quad that is going to rasterize it. `x`/`y` are its center in the surface's
+// own local space (the quad's center is the origin), `halfW`/`halfH` its half
+// extent and `radius` its corner; `blend` is the smooth minimum's reach in
+// points, and zero there means this surface is a single shape and the shader
+// never looks at the rest.
+//
+// Written for every glass quad rather than only the morphing ones, for the same
+// reason the gradient block is: a ring slot is reused, and an unwritten block
+// carries whatever the last quad to occupy it left there — which for this one
+// would be a phantom second shape.
+public function writeQuadMorph(
+    ptr: RawPtr,
+    baseFloats: Number,
+    x: Number,
+    y: Number,
+    halfW: Number,
+    halfH: Number,
+    radius: Number,
+    blend: Number,
+) {
+    storeFloat(ptr, baseFloats + 59, Float(x))
+    storeFloat(ptr, baseFloats + 60, Float(y))
+    storeFloat(ptr, baseFloats + 61, Float(halfW))
+    storeFloat(ptr, baseFloats + 62, Float(halfH))
+    storeFloat(ptr, baseFloats + 63, Float(radius))
+    storeFloat(ptr, baseFloats + 64, Float(blend))
+}
+
+// The corner kind that ends a record: 0 is a circular rounded rectangle, 1 the
+// continuous superellipse a squircle is.
+//
+// A float and not a flag because that is what a vertex record carries, and its
+// own field rather than a bit stolen from `mode`: the generic pipeline does
+// encode the squircle in `mode` (0.25), but a glass surface's `mode` already
+// says which of the five region pipelines the patch belongs to, and there is no
+// room left in it for what SHAPE the surface is.
+public function writeQuadShapeKind(ptr: RawPtr, baseFloats: Number, kind: Number) {
+    storeFloat(ptr, baseFloats + 65, Float(kind))
+}
+
+// How far the quad is turned about its own center, as the COSINE and SINE of the
+// angle rather than the angle.
+//
+// Resolved on the host because it is one value per quad and would otherwise be
+// two transcendentals per vertex — four times the work for the same number. It
+// also keeps the vertex stage free of a maths library it otherwise never needs.
+//
+// The identity is (1, 0), which is what every quad that is not turned carries,
+// and the rotation below reduces to exactly the unrotated corner for it.
+public function writeQuadRotation(ptr: RawPtr, baseFloats: Number, cosine: Number, sine: Number) {
+    storeFloat(ptr, baseFloats + 66, Float(cosine))
+    storeFloat(ptr, baseFloats + 67, Float(sine))
+}

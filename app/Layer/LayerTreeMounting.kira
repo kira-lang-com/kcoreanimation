@@ -1,0 +1,451 @@
+import Foundation
+
+// The layer tree's clock, its keyed reconcile and its mounting: what a
+// frame does to the tree between building it and drawing it, and what a
+// caller reads back about a layer (see LayerTree.kira).
+
+extend CALayerTree {
+    // Lift a layer onto the overlay list at level 0.
+    function hoist(borrow mut self, id: LayerId) {
+        self.setLevel(id, .Overlay(0))
+    }
+
+    // --- clock and frame sampling ------------------------------------------
+
+    function setClock(borrow mut self, now: Number) {
+        self.clock = now
+    }
+
+    // Sample every channel at the current clock; returns whether anything is
+    // still moving (what a runner passes as `needsRebuild`).
+    function sample(borrow mut self) -> Bool {
+        var anyMoving = false
+        for i in 0..self.nodes.count {
+            if self.nodes[i].mounted && self.nodes[i].sample(self.clock) {
+                self.nodes[i].damaged = true
+                anyMoving = true
+            }
+        }
+        if self.finishLeaving() {
+            anyMoving = true
+        }
+        self.moving = anyMoving
+        return anyMoving
+    }
+
+    // A layer whose removal has run goes on the frame it ends, not at the next
+    // reconcile: it and everything it holds come out of the tree, and the
+    // parent that was still drawing it stops. Whether anything went, so the
+    // frame that shows it gone is drawn.
+    function finishLeaving(borrow mut self) -> Bool {
+        var finished = false
+        for i in 0..self.nodes.count {
+            let until = self.nodes[i].leavingUntil
+            if until >= 0.0 && self.clock >= until && self.nodes[i].mounted && !self.nodes[i].reused {
+                self.dropFromParent(self.nodes[i].parentId, self.nodes[i].id)
+                self.unmountSubtree(self.nodes[i].id)
+                finished = true
+            }
+        }
+        if finished {
+            self.compactUnmounted()
+        }
+        return finished
+    }
+
+    function dropFromParent(borrow mut self, parent: LayerId, id: LayerId) {
+        match self.nodeSlot(parent) {
+            None -> { return }
+            Some(slot) -> {
+                var kept: [LayerId] = []
+                for child in self.nodes[slot.raw].childIds {
+                    if child != id {
+                        kept.append(child)
+                    }
+                }
+                self.nodes[slot.raw].childIds = move kept
+                self.nodes[slot.raw].damaged = true
+            }
+        }
+    }
+
+    // A child the last reconcile described again has moved on to the parent
+    // that holds it now, and stays.
+    function unmountSubtree(borrow mut self, id: LayerId) {
+        match self.nodeSlot(id) {
+            None -> { return }
+            Some(slot) -> {
+                if !self.nodes[slot.raw].mounted || self.nodes[slot.raw].reused {
+                    return
+                }
+                self.nodes[slot.raw].mounted = false
+                self.nodes[slot.raw].leavingUntil = -1.0
+                let children = copy self.nodes[slot.raw].childIds
+                self.teardownCount += 1
+                for child in children {
+                    self.unmountSubtree(child)
+                }
+            }
+        }
+    }
+
+    // Set the absolute clock and sample. Drift-free: the result depends only on
+    // `now`, never on how the frames leading here were spaced.
+    function sampleAt(borrow mut self, now: Number) -> Bool {
+        self.clock = now
+        return self.sample()
+    }
+
+    // Compatibility delta form: advance the clock by dt and sample.
+    function advance(borrow mut self, dt: Number) -> Bool {
+        self.clock += dt
+        return self.sample()
+    }
+
+    function clearDamage(borrow mut self) {
+        for i in 0..self.nodes.count {
+            if self.nodes[i].damaged {
+                self.nodes[i].damaged = false
+            }
+        }
+    }
+
+    // --- keyed reconcile ---------------------------------------------------
+
+    function beginReconcile(borrow mut self) {
+        for i in 0..self.nodes.count {
+            self.nodes[i].reused = false
+        }
+    }
+
+    // A layer described again. One that was leaving stays: it is matched
+    // back, and what the description says now retargets it from wherever its
+    // removal had taken it.
+    function reuse(borrow mut self, id: LayerId) {
+        match self.nodeSlot(id) {
+            None -> { return }
+            Some(slot) -> {
+                self.nodes[slot.raw].reused = true
+                self.nodes[slot.raw].leavingUntil = -1.0
+            }
+        }
+    }
+
+    function setRemoval(borrow mut self, id: LayerId, removal: CARemoval) {
+        match self.nodeSlot(id) {
+            None -> { return }
+            Some(slot) -> {
+                self.nodes[slot.raw].removal = removal
+            }
+        }
+    }
+
+    function matchChild(
+        borrow mut self,
+        parent: LayerId,
+        key: Number,
+        kind: Number = 0,
+        place: Number = 0
+    ) -> LayerId {
+        var pidx = LayerSlot(0)
+        match self.nodeSlot(parent) {
+            None -> { return LayerId(0) }
+            Some(slot) -> { pidx = slot }
+        }
+        // Fields are read where they stand: a node is a large value, and
+        // taking a copy of each sibling made matching a child cost the square
+        // of its parent's width.
+        for childId in self.nodes[pidx.raw].childIds {
+            var c = 0
+            match self.nodeSlot(childId) {
+                None -> { continue }
+                Some(slot) -> { c = slot.raw }
+            }
+            // A leaving layer comes back only to its own key: an unkeyed
+            // sibling matched by order is some other layer. One matched by
+            // order is the same layer only when the same kind made it at the
+            // same place.
+            if self.nodes[c].mounted && !self.nodes[c].reused && self.nodes[c].key == key && (
+                key != 0 || self.nodes[c].leavingUntil < 0.0 && self.nodes[c].kind == kind && self.nodes[c].place == place
+            ) {
+                self.reuse(childId)
+                return childId
+            }
+        }
+        return LayerId(0)
+    }
+
+    // Records what made the layer `id`, and where in its parent's content
+    // (`CALayerDescription.kind`, `place`).
+    function setIdentity(borrow mut self, id: LayerId, kind: Number, place: Number) {
+        match self.nodeSlot(id) {
+            Some(slot) -> {
+                self.nodes[slot.raw].kind = kind
+                self.nodes[slot.raw].place = place
+            }
+            None -> {}
+        }
+    }
+
+    function setChildren(borrow mut self, parent: LayerId, childIds: [LayerId]) {
+        match self.nodeSlot(parent) {
+            None -> { return }
+            Some(slot) -> {
+                if self.nodes[slot.raw].childIds != childIds {
+                    self.nodes[slot.raw].childIds = move childIds
+                    self.nodes[slot.raw].damaged = true
+                }
+            }
+        }
+    }
+
+    // Takes out every layer the description no longer has, unless it leaves
+    // with a removal: then it begins leaving, where it stood under the parent
+    // that still holds it, and goes once its removal has run. Whatever it
+    // holds leaves with it.
+    function endReconcile(borrow mut self) -> Number {
+        for i in 0..self.nodes.count {
+            if self.nodes[i].mounted && !self.nodes[i].reused && self.nodes[i].leavingUntil < 0.0 && self.nodes[i].removal.duration > 0.0 && self.isReused(
+                self.nodes[i].parentId
+            ) {
+                self.beginLeaving(self.nodes[i].id)
+            }
+        }
+        var torn = 0
+        for i in 0..self.nodes.count {
+            if self.nodes[i].mounted && !self.nodes[i].reused && self.nodes[i].id != self.rootId {
+                if self.stillLeaving(self.nodes[i].id) {
+                    if self.nodes[i].leavingUntil >= 0.0 {
+                        self.keepUnder(self.nodes[i].parentId, self.nodes[i].id)
+                    }
+                    continue
+                }
+                self.nodes[i].mounted = false
+                torn += 1
+            }
+        }
+        self.teardownCount += torn
+        if torn > 0 {
+            self.compactUnmounted()
+        }
+        return torn
+    }
+
+    // Unmounted layers never come back, so once they outweigh the live ones
+    // they are dropped and every slot renumbered. Each frame walks `nodes`
+    // whole, and a tree kept every layer it ever made gets slower with every
+    // page it has shown.
+    function compactUnmounted(borrow mut self) {
+        var unmounted = 0
+        for i in 0..self.nodes.count {
+            if !self.nodes[i].mounted {
+                unmounted += 1
+            }
+        }
+        if unmounted < 64 || unmounted * 3 < self.nodes.count {
+            return
+        }
+        var kept: [CALayerNode] = []
+        for i in 0..self.nodes.count {
+            let id = self.nodes[i].id
+            if self.nodes[i].mounted {
+                self.indexOfId[id.raw] = .Some(LayerSlot(kept.count))
+                kept.append(self.nodes[i])
+            } else {
+                self.indexOfId[id.raw] = .None
+            }
+        }
+        self.nodes = move kept
+    }
+
+    function counts(borrow self) -> LayerTreeCounts {
+        var mounted = 0
+        for i in 0..self.nodes.count {
+            if self.nodes[i].mounted { mounted += 1 }
+        }
+        return LayerTreeCounts {
+            total: self.nodes.count,
+            mounted: mounted,
+            unmounted: self.nodes.count - mounted,
+            teardowns: self.teardownCount,
+            lastId: self.nextId.raw,
+            indexed: self.indexOfId.count,
+            transactions: self.txStack.count,
+            overlays: self.overlays.count
+        }
+    }
+
+    function isReused(borrow self, id: LayerId) -> Bool {
+        match self.nodeSlot(id) {
+            None -> return false
+            Some(slot) -> return self.nodes[slot.raw].mounted && self.nodes[slot.raw].reused
+        }
+    }
+
+    // The layer eases to its removal's scale and opacity and stops answering
+    // presses.
+    function beginLeaving(borrow mut self, id: LayerId) {
+        var idx = LayerSlot(0)
+        match self.nodeSlot(id) {
+            None -> { return }
+            Some(slot) -> { idx = slot }
+        }
+        let removal = self.nodes[idx.raw].removal
+        self.nodes[idx.raw].leavingUntil = self.clock + removal.duration
+        self.nodes[idx.raw].hit = false
+        self.nodes[idx.raw].interactive = false
+        self.nodes[idx.raw].slidesPress = false
+        self.nodes[idx.raw].scrolls = false
+        let width = self.nodes[idx.raw].boundsW.model
+        let height = self.nodes[idx.raw].boundsH.model
+        let x = self.nodes[idx.raw].posX.model + removal.offset.x + removal.offsetFraction.x * width
+        let y = self.nodes[idx.raw].posY.model + removal.offset.y + removal.offsetFraction.y * height
+        self.beginTransaction(easeTiming(removal.duration, .EaseOut))
+        self.setOpacity(id, removal.opacity)
+        self.setScale(id, removal.scale, removal.scale)
+        self.setPosition(id, x, y)
+        self.commitTransaction()
+    }
+
+    // Whether this layer, or one it sits in, is leaving and not yet gone.
+    function stillLeaving(borrow self, id: LayerId) -> Bool {
+        var current = id
+        while current != Layers.none {
+            var idx = LayerSlot(0)
+            match self.nodeSlot(current) {
+                None -> { return false }
+                Some(slot) -> { idx = slot }
+            }
+            let i = idx.raw
+            if self.nodes[i].reused {
+                return false
+            }
+            if self.nodes[i].leavingUntil >= 0.0 {
+                return self.clock < self.nodes[i].leavingUntil
+            }
+            current = self.nodes[i].parentId
+        }
+        return false
+    }
+
+    // A leaving layer is no longer among the children its parent was just
+    // given, so it is put back, last, to be drawn until it is gone.
+    function keepUnder(borrow mut self, parent: LayerId, id: LayerId) {
+        match self.nodeSlot(parent) {
+            None -> { return }
+            Some(slot) -> {
+                for child in self.nodes[slot.raw].childIds {
+                    if child == id {
+                        return
+                    }
+                }
+                self.nodes[slot.raw].childIds.append(id)
+                self.nodes[slot.raw].damaged = true
+            }
+        }
+    }
+
+    // --- queries (presentation is what is on screen this frame) ------------
+
+    function presentationOpacity(borrow self, id: LayerId) -> Number {
+        match self.nodeSlot(id) {
+            None -> { return 0.0 } Some(idx) -> { return self.nodes[idx.raw].opacity.presentation }
+        }
+    }
+
+    function presentationX(borrow self, id: LayerId) -> Number {
+        match self.nodeSlot(id) {
+            None -> { return 0.0 } Some(idx) -> { return self.nodes[idx.raw].posX.presentation }
+        }
+    }
+
+    function presentationBoundsW(borrow self, id: LayerId) -> Number {
+        match self.nodeSlot(id) {
+            None -> { return 0.0 } Some(idx) -> { return self.nodes[idx.raw].boundsW.presentation }
+        }
+    }
+
+    function presentationCornerRadius(borrow self, id: LayerId) -> Number {
+        match self.nodeSlot(id) {
+            None -> { return 0.0 } Some(idx) -> {
+                return self.nodes[idx.raw].cornerRadius.presentation
+            }
+        }
+    }
+
+    function presentationFillColor(borrow self, id: LayerId) -> CAColor {
+        match self.nodeSlot(id) {
+            None -> { return CAColor {} } Some(idx) -> {
+                return self.nodes[idx.raw].fillColor.presentation()
+            }
+        }
+    }
+
+    function modelOpacity(borrow self, id: LayerId) -> Number {
+        match self.nodeSlot(id) {
+            None -> { return 0.0 } Some(idx) -> { return self.nodes[idx.raw].opacity.model }
+        }
+    }
+
+    function opacityVelocity(borrow self, id: LayerId) -> Number {
+        match self.nodeSlot(id) {
+            None -> { return 0.0 } Some(idx) -> {
+                return self.nodes[idx.raw].opacity.velocity(self.clock)
+            }
+        }
+    }
+
+    function isAnimating(borrow self, id: LayerId) -> Bool {
+        match self.nodeSlot(id) {
+            None -> return false
+            Some(idx) -> {
+                let i = idx.raw
+                return self.nodes[i].posX.animating || self.nodes[i].posY.animating || self.nodes[i].boundsW.animating
+                    || self.nodes[i].boundsH.animating || self.nodes[i].opacity.animating || self.nodes[i].scaleX.animating
+                    || self.nodes[i].scaleY.animating || self.nodes[i].rotation.animating || self.nodes[i].cornerRadius.animating
+                    || self.nodes[i].borderWidth.animating || self.nodes[i].textWeight.animating || self.nodes[i].blur.animating || self.nodes[i].fillColor.progress.animating
+                    || self.nodes[i].platterX.animating || self.nodes[i].platterY.animating || self.nodes[i].platterW.animating || self.nodes[i].platterH.animating
+            }
+        }
+    }
+
+    function isDamaged(borrow self, id: LayerId) -> Bool {
+        match self.nodeSlot(id) {
+            None -> { return false } Some(idx) -> { return self.nodes[idx.raw].damaged }
+        }
+    }
+
+    function childCount(borrow self, id: LayerId) -> Number {
+        match self.nodeSlot(id) {
+            None -> { return 0 } Some(idx) -> { return self.nodes[idx.raw].childIds.count }
+        }
+    }
+
+    function isMounted(borrow self, id: LayerId) -> Bool {
+        match self.nodeSlot(id) {
+            None -> { return false } Some(idx) -> { return self.nodes[idx.raw].mounted }
+        }
+    }
+
+    // The key a layer answers presses under as the tree stands now: zero for a
+    // layer that is gone or answers none.
+    // The key a layer answers presses under, or 0 for none. A layer leaving,
+    // or in one that is, answers none: the key it was described with is a
+    // number the next build has handed to some other control, and a press it
+    // still held would light that control up.
+    function hitKeyOf(borrow self, id: LayerId) -> Number {
+        match self.nodeSlot(id) {
+            None -> { return 0 }
+            Some(idx) -> {
+                if !self.nodes[idx.raw].mounted || self.stillLeaving(id) {
+                    return 0
+                }
+                return self.nodes[idx.raw].hitKey
+            }
+        }
+    }
+
+    function pressed(borrow self) -> LayerId {
+        return self.pressedId
+    }
+}

@@ -1,0 +1,51 @@
+import Foundation
+
+// Liquid Glass by the platform's own recipes.
+//
+// A recipe is what the platform's design library resolves a named glass to:
+// every input of the glass filter, the highlight layer drawn over it and the
+// matrix that layer blends through. The values were measured from the platform
+// and live in GlassRecipes/*.klist, one file per recipe. Each recipe holds a
+// variant per size and appearance; the size is the one the caller asks for, as
+// the platform's is, not the surface's measured extent.
+//
+// A surface whose `CAGlass.style` names a recipe is drawn by
+// `Shaders/UiGlassRecipe.ksl` in one pass, reading its variant from a table every
+// recipe is uploaded into once.
+
+// The sizes a recipe is resolved at. The platform's minimum, medium and maximum.
+public enum CAGlassSize {
+    Small
+    Medium
+    Large
+}
+
+// Which recipe a surface is made of, at which size, in which appearance.
+public @Derive(Copy)
+struct CAGlassStyle {
+    var recipe: CAGlassRecipe = .Regular
+    var size: CAGlassSize = .Small
+    var dark: Bool = false
+}
+
+public namespace GlassRecipeTable {
+    // Numbers in one variant's record: `GlassRecipeField`'s count.
+    let recordFloats: Number = 108
+    // Variants per recipe: three sizes, two appearances.
+    let variants: Number = 6
+}
+
+// The record `style` reads in the recipe table.
+public function glassRecipeRecord(style: borrow CAGlassStyle) -> Number {
+    let appearance = style.dark ? 1 : 0
+    return code(style.recipe) * GlassRecipeTable.variants + code(style.size) * 2 + appearance
+}
+
+// One value of the variant `style` names.
+public function glassRecipeValue(
+    table: borrow [Number],
+    style: borrow CAGlassStyle,
+    field: Number
+) -> Number {
+    return table[glassRecipeRecord(style) * GlassRecipeTable.recordFloats + field]
+}

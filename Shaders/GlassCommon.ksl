@@ -1,0 +1,582 @@
+// The glass shaders' shared arithmetic.
+//
+// `UiGlassCore`, `UiGlassFull`, `UiGlassLens` and `UiGlassBand` are four
+// specializations of one material, split for cost rather than for behaviour:
+// each does a subset of the work so a surface pays only for what it asks for.
+// That makes their *differences* the interesting part of each file — and until
+// this module existed, the lines they agreed on byte-for-byte sat in all four,
+// where a fix to one was a fix to one.
+//
+// Everything here is arithmetic with no state and no bindings, which is exactly
+// what survives being shared: a change to `blendChannel` is a change to how the
+// platform's materials composite, and it should never be true in three files
+// and false in the fourth.
+//
+// The scalar helpers the four used to carry — `minimum`, `maximum`,
+// `absolute` — are gone rather than moved. KSL has `min`, `max` and `abs`
+// builtins, and hand-rolling them cost a call for something the language
+// already says.
+
+// The wash ceiling — how opaque a frost step may ever make the surface.
+const washCeiling: Float = 0.9
+
+// The light along the inside of the rim: the kit's specular, one light in both
+// appearances, ADDED where the rim faces it -- full along the top and bottom
+// edges, a fifth of that down the sides, as the platform's dark menu measures
+// (+65 against +13). On light glass it has nowhere to go; on dark glass it is
+// the thin highlight that edges the whole piece, sides included: lit only top
+// and bottom, the sides are left to the dark burn line and the piece reads as
+// outlined. It is not a gray the rim is mixed toward: mixed toward the edge's
+// burn gray, a dark panel gets a flat gray outline.
+const specularSideShare: Float = 0.2
+
+function specular(rgb: Float3, inside: Float, width: Float, intensity: Float, normal: Float2) -> Float3 {
+    if inside >= width {
+        return rgb
+    }
+    let facing = specularSideShare + (1.0 - specularSideShare) * abs(normal.y)
+    let lit = clamp(width - inside, 0.0, 1.0) * intensity * facing
+    return rgb + Float3(lit, lit, lit)
+}
+
+// The band inside the stroke over which the sheen falls off, and the band at
+// the edge over which blur fades in (the rim stays crisp). Shape, not amount:
+// how much sheen and how much blur are per-surface numbers a control can move,
+// carried in the vertex.
+const sheenStart: Float = 2.0
+const sheenEnd: Float = 5.0
+const blurEdgeStart: Float = 2.0
+const blurEdgeEnd: Float = 3.0
+
+// The edge light, as Apple's kit draws it on every Liquid Glass surface: inner
+// shadows the shape casts on itself, grown by `edgeLightSpread` and pushed
+// `edgeLightOffset` toward the opposite edge, so the hole each leaves lines up
+// with the near edge and only its blur reaches in — a soft band under the top
+// edge and another over the bottom. How bright and how dark are per-surface
+// grays carried in the vertex; this is the shape. `UiBatchGlass.kira`'s
+// `glassEdgeLightReach` mirrors the two blurs.
+const edgeLightOffset: Float = 40.0
+const edgeLightSpread: Float = 40.0
+const edgeLightDodgeBlur: Float = 10.0
+const edgeLightBurnBlur: Float = 40.0
+const edgeLightTopShare: Float = 0.5
+const edgeLightBottomShare: Float = 1.25
+
+// The sharp backdrop under a glass fragment.
+//
+// Two images and a weight, because the backdrop a scheme change presents IS a
+// crossfade between two photographs and the compositor no longer renders that
+// crossfade into a full-resolution capture for the glass to read back. At rest
+// the second image is not read at all, on the same threshold
+// `UiBackground.ksl` settles on — so the tap is one fetch except during the
+// 350ms a scheme takes to arrive, and it is the same color the background pass
+// writes beside it.
+function backdropTap(first: Texture2d, firstSmp: Sampler, second: Texture2d, secondSmp: Sampler, uv: Float2, blend: Float) -> Float4 {
+    if blend <= 0.001 {
+        return sample(first, firstSmp, uv)
+    }
+    if blend >= 0.999 {
+        return sample(second, secondSmp, uv)
+    }
+    return mix(sample(first, firstSmp, uv), sample(second, secondSmp, uv), blend)
+}
+
+// A premultiplied backdrop texel over the material a host lays in a hole cut
+// out of the frame -- a window's sidebar, filled by the window server: where
+// the cut took the texel away, the hole's material shows in its place, as it
+// does on the screen. With no hole the material is black and the texel is
+// itself.
+function overHole(tap: Float4, hole: Float3) -> Float4 {
+    let missing = 1.0 - clamp(tap.w, 0.0, 1.0)
+    return Float4(tap.x + hole.x * missing, tap.y + hole.y * missing, tap.z + hole.z * missing, 1.0)
+}
+
+// How much of an inner shadow lands `distance` outside the hole it leaves,
+// blurred by `blur` the way a design tool blurs one: a Gaussian whose sigma is
+// half the blur, integrated across the hole's edge — in the logistic form,
+// since there is no `erf` to call.
+function innerShadow(distance: Float, blur: Float) -> Float {
+    let sigma = max(blur * 0.5, 0.0001)
+    return 1.0 / (1.0 + pow(2.718281828, -1.702 * distance / sigma))
+}
+
+// `rgb` lit along its top and bottom edges, given the distances to the holes
+// the light's two inner shadows leave: both bands added in `dodge`'s gray, and
+// the top one, wider, burned in `burn`'s.
+//
+// The kit gives both dodges one gray, but the platform's own renders light
+// the bottom band at five quarters of it and the top at half, and burn the
+// top over a blur of 40 rather than the kit's 30; these are the platform's.
+function edgeLight(rgb: Float3, topHole: Float, bottomHole: Float, dodge: Float, burn: Float) -> Float3 {
+    let lit = dodge * (edgeLightTopShare * innerShadow(topHole, edgeLightDodgeBlur) + edgeLightBottomShare * innerShadow(bottomHole, edgeLightDodgeBlur))
+    let burned = (1.0 - burn) * innerShadow(topHole, edgeLightBurnBlur)
+    return rgb + Float3(lit - burned, lit - burned, lit - burned)
+}
+
+function blendChannel(base: Float, layer: Float, mode: Float) -> Float {
+    if mode < 0.5 { return layer }
+    if mode < 1.5 { return clamp(base + layer, 0.0, 1.0) }
+    if mode < 2.5 {
+        if layer >= 1.0 {
+            if base > 0.0 { return 1.0 }
+            return 0.0
+        }
+        return min(1.0, base / (1.0 - layer))
+    }
+    if mode < 3.5 {
+        if layer <= 0.5 { return 2.0 * base * layer }
+        return 1.0 - 2.0 * (1.0 - base) * (1.0 - layer)
+    }
+    if mode < 4.5 {
+        if base <= 0.5 { return 2.0 * base * layer }
+        return 1.0 - 2.0 * (1.0 - base) * (1.0 - layer)
+    }
+    if mode < 5.5 { return max(base, layer) }
+    if mode < 6.5 { return min(base, layer) }
+    return base * layer
+}
+
+// Luminosity: the backdrop's hue and saturation at the layer's luminance --
+// the W3C `SetLum`, with its clip back into gamut. It is not separable per
+// channel, so it is its own function rather than a case of `blendChannel`. Dark
+// glass is this: a dark gray at luminosity darkens what is behind it without
+// draining its color, where the same gray at Normal is a neutral slab.
+function luminance(color: Float3) -> Float {
+    return 0.3 * color.x + 0.59 * color.y + 0.11 * color.z
+}
+
+function luminosity(base: Float3, layer: Float3) -> Float3 {
+    let target = luminance(layer)
+    let moved = base + Float3(target - luminance(base), target - luminance(base), target - luminance(base))
+    let lum = luminance(moved)
+    let low = min(min(moved.x, moved.y), moved.z)
+    let high = max(max(moved.x, moved.y), moved.z)
+    let clipped = moved
+    if low < 0.0 {
+        clipped = Float3(lum, lum, lum) + (moved - Float3(lum, lum, lum)) * (lum / max(lum - low, 0.000001))
+    }
+    if high > 1.0 {
+        clipped = Float3(lum, lum, lum) + (clipped - Float3(lum, lum, lum)) * ((1.0 - lum) / max(high - lum, 0.000001))
+    }
+    return clipped
+}
+
+// Saturation: the backdrop's hue and luminance at the layer's saturation --
+// the W3C `SetSat`, then `SetLum` back to the backdrop's luminance. A gray at
+// saturation drains what is behind it to the gray of its own luminance, which
+// is how the platform's sidebar takes the color out of what it blurs.
+function saturation(base: Float3, layer: Float3) -> Float3 {
+    let low = min(min(base.x, base.y), base.z)
+    let high = max(max(base.x, base.y), base.z)
+    let target = max(max(layer.x, layer.y), layer.z) - min(min(layer.x, layer.y), layer.z)
+    let saturated = Float3(0.0, 0.0, 0.0)
+    if high > low {
+        saturated = (base - Float3(low, low, low)) * (target / (high - low))
+    }
+    return luminosity(saturated, base)
+}
+
+// What is behind darkened by how far `gray` is from white, floored at black.
+function linearBurn(behind: Float3, gray: Float) -> Float3 {
+    return Float3(
+        max(behind.x + gray - 1.0, 0.0),
+        max(behind.y + gray - 1.0, 0.0),
+        max(behind.z + gray - 1.0, 0.0)
+    )
+}
+
+function blendLayer(base: Float3, layer: Float3, alpha: Float, mode: Float) -> Float3 {
+    if alpha <= 0.0 { return base }
+    if mode < 0.5 { return mix(base, layer, alpha) }
+    if mode > 7.5 && mode < 8.5 { return mix(base, luminosity(base, layer), alpha) }
+    if mode > 8.5 && mode < 9.5 { return mix(base, saturation(base, layer), alpha) }
+    if mode < 1.5 {
+        let added = Float3(
+            clamp(base.x + layer.x, 0.0, 1.0),
+            clamp(base.y + layer.y, 0.0, 1.0),
+            clamp(base.z + layer.z, 0.0, 1.0)
+        )
+        return mix(base, added, alpha)
+    }
+    if mode >= 4.5 {
+        if mode < 5.5 {
+            let lightened = Float3(
+                max(base.x, layer.x),
+                max(base.y, layer.y),
+                max(base.z, layer.z)
+            )
+            return mix(base, lightened, alpha)
+        }
+        if mode < 6.5 {
+            let darkened = Float3(
+                min(base.x, layer.x),
+                min(base.y, layer.y),
+                min(base.z, layer.z)
+            )
+            return mix(base, darkened, alpha)
+        }
+        return mix(base, base * layer, alpha)
+    }
+    let blended = Float3(
+        blendChannel(base.x, layer.x, mode),
+        blendChannel(base.y, layer.y, mode),
+        blendChannel(base.z, layer.z, mode)
+    )
+    return mix(base, blended, alpha)
+}
+
+function sdRound(point: Float2, halfSize: Float2, radius: Float) -> Float {
+    let q = Float2(
+        abs(point.x) - halfSize.x + radius,
+        abs(point.y) - halfSize.y + radius
+    )
+    let outside = Float2(max(q.x, 0.0), max(q.y, 0.0))
+    return min(max(q.x, q.y), 0.0) + length(outside) - radius
+}
+
+// The continuous corner Apple draws (CALayer `cornerCurve = .continuous`).
+//
+// Its curve leaves the straight edge `continuousReach` times the radius from
+// the corner, not at the radius, and bends in so its curvature grows from zero
+// at the edge to the peak at the diagonal; on the diagonal it sits where a
+// circle of the radius would. It is measured in the corner's own box, `reach`
+// on a side: `unit` is how far into that box the point is along each axis,
+// zero to one. A circle's level set there is the length of `unit`; the
+// continuous one pulls it out by a term that is nothing along the axes and
+// largest across the diagonal, shaped by a quartic in how diagonal the point
+// is (`slant`). These are Apple's numbers, read off QuartzCore's shader
+// (see apple-ref/GLASS.md); the code is our own.
+//
+// A box too short for the whole curve -- its half side under the reach --
+// turns circular as the half side falls from the reach to the radius, each
+// axis on its own, which is how a continuous pill ends as a capsule.
+const continuousReach: Float = 1.5286649
+const continuousReachLess: Float = 0.5286649
+
+function sdContinuous(point: Float2, halfSize: Float2, radius: Float) -> Float {
+    let r = min(radius, min(halfSize.x, halfSize.y))
+    if r <= 0.0 {
+        return sdRound(point, halfSize, 0.0)
+    }
+    // How far each axis has gone from continuous to circular.
+    let blendX = clamp((continuousReach - halfSize.x / r) / continuousReachLess, 0.0, 1.0)
+    let blendY = clamp((continuousReach - halfSize.y / r) / continuousReachLess, 0.0, 1.0)
+    let reach = r * continuousReach
+    let corner = mix(reach, r, max(blendX, blendY))
+    let q = abs(point) - halfSize
+    let unit = Float2(max((q.x + reach) / reach, 0.0), max((q.y + reach) / reach, 0.0))
+    let span = length(unit)
+    let high = max(unit.x, unit.y)
+    let slant = 0.0
+    if high > 0.0 {
+        slant = clamp(min(unit.x, unit.y) / high, 0.0, 1.0)
+    }
+    let shape = (((3.15602 - 0.92605 * slant) * slant - 3.64124) * slant + 1.26807) * slant + 0.26853
+    let pull = slant * slant * clamp(span, 0.0, 1.0) * shape
+    let continuous = span + 1.0 - 1.0 / (1.0 - pull)
+    // The circle of the radius in the same box and units.
+    let ring = Float2(
+        max(unit.x * continuousReach - continuousReachLess, 0.0),
+        max(unit.y * continuousReach - continuousReachLess, 0.0)
+    )
+    let circular = length(ring) / continuousReach + continuousReachLess / continuousReach
+    let alongX = mix(continuous, circular, blendX)
+    let alongY = mix(continuous, circular, blendY)
+    // Which axis's blend counts, eased across the diagonal.
+    let side = -1.0
+    if unit.y > unit.x { side = 1.0 }
+    let weight = clamp(0.5 - side + side * slant, 0.0, 1.0)
+    let level = mix(alongX, alongY, weight)
+    let inside = min(max(q.x + corner, q.y + corner), 0.0)
+    return reach * (level - 1.0) + inside
+}
+
+// A box whose corner is `radius` along each side, as far as that side allows.
+//
+// Up to the short side it is the continuous corner, which has turned circular
+// by the time the radius reaches the short side. Past it the corner stays as
+// tall as the short side and keeps widening, a quarter ellipse wider than it is
+// tall; past the long side too it is the ellipse the box holds, and a square's
+// full radius its circle. One radius runs the whole way from the card to the
+// ellipse, which is what lets a surface turn from one into the other as one
+// shape.
+function sdWideCorner(point: Float2, halfSize: Float2, radius: Float) -> Float {
+    let shortSide = min(halfSize.x, halfSize.y)
+    if radius <= shortSide {
+        return sdContinuous(point, halfSize, radius)
+    }
+    let corner = Float2(max(min(radius, halfSize.x), 0.001), max(min(radius, halfSize.y), 0.001))
+    let q = abs(point) - (halfSize - corner)
+    let edge = abs(point) - halfSize
+    if q.x <= 0.0 || q.y <= 0.0 {
+        return min(max(edge.x, edge.y), 0.0) + length(max(edge, Float2(0.0, 0.0)))
+    }
+    // The ellipse's implicit value over its gradient: a distance near the
+    // outline, floored past it by the box's own distance so a wide blur does
+    // not read the corner as touching the shape.
+    let nx = q.x / corner.x
+    let ny = q.y / corner.y
+    let radial = max(sqrt(nx * nx + ny * ny), 0.000001)
+    let gradient = max(length(Float2(nx / corner.x, ny / corner.y)) / radial, 0.000001)
+    let estimate = (radial - 1.0) / gradient
+    if estimate > 0.0 {
+        return max(estimate, length(max(edge, Float2(0.0, 0.0))))
+    }
+    return estimate
+}
+
+// How much of a fragment at `px` a clip leaves: all of it inside a plain box
+// (`corner.x` zero), and inside a rounded one all but what falls past its
+// corner, eased across a pixel as a surface's own edge is. `clip` is the box
+// as min and max corners; `corner` its radius and its kind, as a surface's.
+function clipShapeCoverage(px: Float2, clip: Float4, corner: Float2) -> Float {
+    if corner.x <= 0.0 {
+        return 1.0
+    }
+    let extent = Float2((clip.z - clip.x) * 0.5, (clip.w - clip.y) * 0.5)
+    let center = Float2((clip.x + clip.z) * 0.5, (clip.y + clip.w) * 0.5)
+    let point = px - center
+    // The shape is the corner's kind plus four times a mask of the corners
+    // left square (ClipShape.kira): top leading 1, top trailing 2, bottom
+    // leading 4, bottom trailing 8.
+    let square = floor(corner.y / 4.0)
+    let kind = corner.y - square * 4.0
+    // Beyond the corner's reach, at least one point inside both edges, the
+    // distance is already below the coverage clamp. Avoid evaluating the
+    // corner field for the fully covered interior of a large clipped window.
+    let inset = extent - abs(point)
+    let safeReach = min(corner.x, min(extent.x, extent.y)) * continuousReach + 1.0
+    if kind <= 1.5 && min(inset.x, inset.y) >= 1.0 && max(inset.x, inset.y) >= safeReach {
+        return 1.0
+    }
+    let bit = 1.0
+    if point.x >= 0.0 { bit = 2.0 }
+    if point.y >= 0.0 { bit = bit * 4.0 }
+    let shifted = floor(square / bit)
+    if shifted - floor(shifted * 0.5) * 2.0 > 0.5 {
+        return 1.0
+    }
+    if kind > 1.5 {
+        return clamp(0.5 - sdWideCorner(point, extent, corner.x), 0.0, 1.0)
+    }
+    let radius = min(corner.x, min(extent.x, extent.y))
+    if kind > 0.5 {
+        return clamp(0.5 - sdContinuous(point, extent, radius), 0.0, 1.0)
+    }
+    return clamp(0.5 - sdRound(point, extent, radius), 0.0, 1.0)
+}
+
+function sdRoundNormal(point: Float2, halfSize: Float2, radius: Float) -> Float2 {
+    let sx = -1.0
+    if point.x >= 0.0 { sx = 1.0 }
+    let sy = -1.0
+    if point.y >= 0.0 { sy = 1.0 }
+    let q = Float2(
+        abs(point.x) - halfSize.x + radius,
+        abs(point.y) - halfSize.y + radius
+    )
+    let ox = max(q.x, 0.0)
+    let oy = max(q.y, 0.0)
+    if ox > 0.0 {
+        if oy > 0.0 {
+            return normalize(Float2(ox * sx, oy * sy) + Float2(0.0001, 0.0))
+        }
+        return Float2(sx, 0.0)
+    }
+    if oy > 0.0 {
+        return Float2(0.0, sy)
+    }
+    if q.x > q.y {
+        return Float2(sx, 0.0)
+    }
+    return Float2(0.0, sy)
+}
+
+function refractionCurve(value: Float) -> Float {
+    let e = 2.718281828459045
+    return 1.0 - 2.3 * pow(5.2 * e, -6.9 * value - 0.7)
+}
+
+// The touch highlight's falloff -- `motionFlexGlowFalloff` on the Kira side;
+// the two must move together. The platform's glow is a white disc a quarter
+// of the radius across under a shadow blurred by the same quarter (UIKit's
+// `_UIFlexInteractionLittleGlowView`: shadow radius half its width, opacity
+// one, path its bounds), so it is that disc under a two-dimensional Gaussian
+// whose sigma is the disc's own radius: 1 - e^(-1/2) = 0.39 at the middle, and
+// within 0.0004 of 0.3935 e^(-u^2 / 2.56) at u disc radii out. Nothing four
+// disc radii out at the rim.
+function glowFalloff(distance: Float, radius: Float) -> Float {
+    let reach = max(radius, 0.0001)
+    if distance >= reach {
+        return 0.0
+    }
+    let u = distance / (reach * 0.25)
+    return 0.3935 * exp(0.0 - u * u / 2.56)
+}
+
+// The platform's touch lights over a finished color `rgb` at `local`. `glow`
+// carries the little glow's center in the quad's own space (xy), and in one
+// number (z) its reach, its strength and the big glow's -- see `packedGlow`.
+//
+// Both are color matrices over what is beneath them, in Rec. 709 YCbCr on
+// encoded values, as SwiftUI's `_ColorMatrix` builds them. The big glow lifts
+// luma by 0.05 and saturates by 1.2, over the whole surface; the little glow
+// saturates by 1.5 and then color-dodges by a gray, UIKit's `dodgeWhiteLight`
+// 0.4 and `dodgeWhiteDark` 0.75, under its blurred disc, the dodge saturating
+// at white as the blend does. No light costs one comparison.
+function glowLuma() -> Float3 { return Float3(0.2126, 0.7152, 0.0722) }
+
+function touchLit(rgb: Float3, local: Float2, glow: Float3) -> Float3 {
+    if glow.z == 0.0 {
+        return rgb
+    }
+    let packed = abs(glow.z)
+    let radius = floor(packed)
+    let code = floor((packed - radius) * 8192.0)
+    let littleSteps = floor(code / 32.0)
+    let little = littleSteps / 255.0
+    let big = (code - littleSteps * 32.0) / 31.0
+    let lit = rgb
+    if big > 0.0 {
+        let luma = dot(rgb, glowLuma())
+        let gray = Float3(luma, luma, luma)
+        let lifted = rgb + Float3(0.05, 0.05, 0.05) + (rgb - gray) * 0.2
+        lit = mix(rgb, lifted, big)
+    }
+    let offset = Float2(local.x - glow.x, local.y - glow.y)
+    let reach = little * glowFalloff(length(offset), radius)
+    if reach > 0.0 {
+        let luma = dot(lit, glowLuma())
+        let gray = Float3(luma, luma, luma)
+        let saturated = gray + (lit - gray) * 1.5
+        let dodge = 1.0 / (1.0 - 0.4)
+        if glow.z < 0.0 {
+            dodge = 1.0 / (1.0 - 0.75)
+        }
+        lit = mix(lit, min(saturated * dodge, Float3(1.0, 1.0, 1.0)), reach)
+    }
+    return clamp(lit, Float3(0.0, 0.0, 0.0), Float3(1.0, 1.0, 1.0))
+}
+
+// The quadratic smooth minimum: two distance fields fused so the surface grows
+// a NECK between them as they approach, instead of the two simply overlapping.
+// This is what makes a menu collapsing into its button read as one liquid mass.
+// `k` is the reach in points — at zero this is a plain union, and the field can
+// be pulled down by at most `k/4`, so two surfaces fuse over a point only when
+// each is nearer than that.
+function smoothUnion(first: Float, second: Float, k: Float) -> Float {
+    if k <= 0.0 {
+        return min(first, second)
+    }
+    let e = max(k - abs(first - second), 0.0)
+    return min(first, second) - e * e * 0.25 / k
+}
+
+// The fused surface: this quad's own rounded rectangle smooth-unioned with the
+// second shape it is morphing into.
+//
+// `morph` carries that shape's center in the quad's own space (xy) and its half
+// extent (zw); `morphRadius` its corner and `k` the reach. At zero reach the
+// second shape is not evaluated at all, which is every glass surface on screen
+// but the one or two in a morph.
+//
+// `inflate` grows BOTH shapes by the same amount, which is how the border stack
+// asks for its silhouettes: the ring is the shape spread outward and the side
+// bands are the shape pulled inward, and a morphing surface has to cast those
+// off the fused body rather than off one half of it.
+// One rounded rectangle, with the corner the surface asked for.
+//
+// `kind` at zero is a circular corner; one is Apple's continuous corner -- the
+// curvature runs into the straight edges instead of meeting them at a point
+// where it jumps, which is the difference between a rounded rectangle and the
+// shape Apple's panels actually are (see `sdContinuous`); two is the
+// continuous corner that keeps widening past the short side into the ellipse
+// the box holds -- see `sdWideCorner`.
+function shapeDistance(point: Float2, halfSize: Float2, radius: Float, kind: Float) -> Float {
+    if kind > 1.5 {
+        return sdWideCorner(point, halfSize, radius)
+    }
+    if kind > 0.5 {
+        return sdContinuous(point, halfSize, radius)
+    }
+    return sdRound(point, halfSize, radius)
+}
+
+// Which way a single shape's surface faces.
+//
+// The closed-form normal is the circular rounded rectangle's and describes
+// nothing else, so a squircle or an ellipse takes central differences of its
+// own field. Four extra distance evaluations, paid only by a surface that
+// asked for one.
+function shapeNormal(point: Float2, halfSize: Float2, radius: Float, kind: Float) -> Float2 {
+    if kind <= 0.5 {
+        return sdRoundNormal(point, halfSize, radius)
+    }
+    let e = 0.75
+    let dx = shapeDistance(point + Float2(e, 0.0), halfSize, radius, kind) - shapeDistance(point - Float2(e, 0.0), halfSize, radius, kind)
+    let dy = shapeDistance(point + Float2(0.0, e), halfSize, radius, kind) - shapeDistance(point - Float2(0.0, e), halfSize, radius, kind)
+    let gradient = Float2(dx, dy)
+    if length(gradient) < 0.00001 {
+        return Float2(0.0, -1.0)
+    }
+    return normalize(gradient)
+}
+
+function morphedDistanceInflated(
+    local: Float2,
+    hsize: Float2,
+    radius: Float,
+    morph: Float4,
+    morphRadius: Float,
+    k: Float,
+    inflate: Float,
+    kind: Float,
+) -> Float {
+    let grow = Float2(inflate, inflate)
+    let own = shapeDistance(local, hsize + grow, max(radius + inflate, 0.0), kind)
+    if k <= 0.0 {
+        return own
+    }
+    let other = shapeDistance(
+        local - Float2(morph.x, morph.y),
+        Float2(morph.z, morph.w) + grow,
+        max(morphRadius + inflate, 0.0),
+        kind
+    )
+    return smoothUnion(own, other, k)
+}
+
+function morphedDistance(local: Float2, hsize: Float2, radius: Float, morph: Float4, morphRadius: Float, k: Float, kind: Float) -> Float {
+    return morphedDistanceInflated(local, hsize, radius, morph, morphRadius, k, 0.0, kind)
+}
+
+// Which way the fused surface faces.
+//
+// Central differences rather than the rounded rectangle's own analytic normal,
+// because the whole point of the neck is that its surface belongs to NEITHER
+// shape: the direction that lights it, bends the lens through it and catches
+// the sheen along it has to come from the fused field or the join goes flat.
+// Four extra distance evaluations, paid only where a morph is live.
+function morphedNormal(local: Float2, hsize: Float2, radius: Float, morph: Float4, morphRadius: Float, k: Float, kind: Float) -> Float2 {
+    // The closed-form normal belongs to the circular rounded rectangle and to
+    // nothing else. A squircle's corner and a fused neck are both surfaces it
+    // does not describe, so both fall to differences below.
+    if k <= 0.0 && kind <= 0.5 {
+        return sdRoundNormal(local, hsize, radius)
+    }
+    // Three quarters of a point: wide enough that the difference is not noise
+    // in a 32-bit field, narrow enough to still resolve the corner of a shape
+    // whose radius is a few points.
+    let e = 0.75
+    let dx = morphedDistance(local + Float2(e, 0.0), hsize, radius, morph, morphRadius, k, kind)
+        - morphedDistance(local - Float2(e, 0.0), hsize, radius, morph, morphRadius, k, kind)
+    let dy = morphedDistance(local + Float2(0.0, e), hsize, radius, morph, morphRadius, k, kind)
+        - morphedDistance(local - Float2(0.0, e), hsize, radius, morph, morphRadius, k, kind)
+    let gradient = Float2(dx, dy)
+    // Dead center of a shape the field is flat, and a normalized zero is a NaN
+    // that shows up as a black pixel. Nothing is lit there anyway.
+    if length(gradient) < 0.00001 {
+        return Float2(0.0, -1.0)
+    }
+    return normalize(gradient)
+}

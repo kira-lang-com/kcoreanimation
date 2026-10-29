@@ -1,0 +1,592 @@
+import Foundation
+
+// What a layer is filled with, as a CLOSED enum rather than an open family.
+//
+// A closed set is what the compositor exhaustively matches on when it turns a
+// layer into a draw command: every arm maps to one extracted UiBatch primitive,
+// and a new kind is a new arm the compiler forces every reader to answer. The
+// payloads are plain value structs, so a content value clones with the node it
+// rides on (the retained tree reads nodes by value).
+public enum CAContent {
+    // A layer that only groups, clips, or transforms its children.
+    Empty
+    // A rounded rectangle / squircle fill with an optional border. Maps to the
+    // batch's SDF surface quad (mode 0).
+    Solid(CASolid)
+    // A run of text. Maps to the glyph path (mode 1); the runs are resolved to
+    // the atlas at submit, never here.
+    Text(CAText)
+    // An external Ember texture (an engine viewport, a shared surface).
+    // Maps to the external-texture quad (mode 2).
+    Texture(CATexture)
+    // A vector icon rasterized into the glyph atlas and tinted (mode 1).
+    Icon(CAIcon)
+    // A refracting glass surface (mode 3). The layer's `capturesBackdrop`
+    // directive decides whether the compositor opens a backdrop capture for it.
+    Glass(CAGlass)
+    // A linear gradient fill across the layer's bounds (mode 0 with a far
+    // color and an axis).
+    Gradient(CAGradient)
+}
+
+// Color as four unit channels. Its own type rather than Ember' `Color`
+// so the model tree, the animation maths and the tests do not pull the graphics
+// package in; the compositor converts to the backend color at the submit seam.
+public @Derive(Copy)
+struct CAColor {
+    var r: Number = 0.0
+    var g: Number = 0.0
+    var b: Number = 0.0
+    var a: Number = 1.0
+}
+
+public function blendChannel(base: Number, layer: Number, mode: Number) -> Number {
+    if mode < 0.5 { return layer }
+    if mode < 1.5 { return min(base + layer, 1.0) }
+    if mode < 2.5 {
+        if layer >= 1.0 { return base > 0.0 ? 1.0 : 0.0 }
+        return min(base / (1.0 - layer), 1.0)
+    }
+    if mode < 3.5 {
+        if layer <= 0.5 { return 2.0 * base * layer }
+        return 1.0 - 2.0 * (1.0 - base) * (1.0 - layer)
+    }
+    if mode < 4.5 {
+        if base <= 0.5 { return 2.0 * base * layer }
+        return 1.0 - 2.0 * (1.0 - base) * (1.0 - layer)
+    }
+    if mode < 5.5 { return max(base, layer) }
+    if mode < 6.5 { return min(base, layer) }
+    return base * layer
+}
+
+public function glassApplyLayer(
+    base: Number,
+    color: Number,
+    alpha: Number,
+    mode: Number
+) -> Number {
+    if alpha <= 0.0 { return base }
+    let blended = blendChannel(base, color, mode)
+    return base + (blended - base) * alpha
+}
+
+public function glassApplyStackChannel(
+    base: Number,
+    lower: Number,
+    upper: Number,
+    lowerAlpha: Number,
+    material: borrow CAGlassMaterial
+) -> Number {
+    let first = glassApplyLayer(base, lower, lowerAlpha, material.washBlend)
+    return glassApplyLayer(first, upper, material.washUpperAlpha, material.washUpperBlend)
+}
+
+extend CAColor {
+    // How opaque the colour's wash over the glass is, and the wash's luma.
+    function glassWash(material: borrow CAGlassMaterial) -> (Number, Number) {
+        let blackR = glassApplyStackChannel(0.0, self.r, material.washUpperR, self.a, material)
+        let blackG = glassApplyStackChannel(0.0, self.g, material.washUpperG, self.a, material)
+        let blackB = glassApplyStackChannel(0.0, self.b, material.washUpperB, self.a, material)
+        let whiteR = glassApplyStackChannel(1.0, self.r, material.washUpperR, self.a, material)
+        let whiteG = glassApplyStackChannel(1.0, self.g, material.washUpperG, self.a, material)
+        let whiteB = glassApplyStackChannel(1.0, self.b, material.washUpperB, self.a, material)
+        let alpha = clamp(
+            1.0 - ((whiteR - blackR) + (whiteG - blackG) + (whiteB - blackB)) / 3.0,
+            0.0,
+            1.0
+        )
+        if alpha <= 0.0001 {
+            return (0.0, 1.0)
+        }
+        let r = clamp(blackR / alpha, 0.0, 1.0)
+        let g = clamp(blackG / alpha, 0.0, 1.0)
+        let b = clamp(blackB / alpha, 0.0, 1.0)
+        return (alpha, r * 0.299 + g * 0.587 + b * 0.114)
+    }
+}
+
+// 0 = rounded rectangle, 1 = continuous squircle. An Number on the wire between
+// here and the batch, which reads the same code off its quad.
+public struct CASolid {
+    var fill: CAColor = CAColor {}
+    var border: CAColor = CAColor { a: 0.0 }
+    var borderWidth: Number = 0.0
+    var cornerRadius: Number = 0.0
+    var shapeKind: Number = 0
+    // How the fill meets what is under it: laid over it, or burned or dodged
+    // into it, as a platform selection is into the glass it sits on.
+    var blend: CABlendMode = .Normal
+}
+
+// The face a run is set in, in SwiftUI's spelling: the system's own, or its
+// monospaced cut, where every character takes the same advance.
+public enum CAFontDesign {
+    Default
+    Monospaced
+    // The default face with every figure the same width, so a count or a
+    // clock does not shift as its digits change, as SwiftUI's
+    // `monospacedDigit()` sets it.
+    MonospacedDigits
+}
+
+public struct CAText {
+    var content: String = ""
+    var color: CAColor = CAColor {}
+    var size: Number = 15.0
+    var weight: Number = 400.0
+    var design: CAFontDesign = .Default
+    // Whether a run wider than its bounds breaks onto further lines at word
+    // boundaries, as a wrapped text layer does, rather than running past them.
+    var wraps: Bool = false
+    // How many lines a run that wraps stands on at most, the last cut short
+    // under an ellipsis, as SwiftUI's `.lineLimit(_:)`; 0 for as many as it
+    // takes. And the room between two of its lines, as `.lineSpacing(_:)`.
+    var lineLimit: Number = 0
+    var lineSpacing: Number = 0.0
+    // Where each wrapped line sits across the layer's width: 0 at its leading
+    // edge, 0.5 centered, 1 at its trailing edge.
+    var alignment: Number = 0.0
+    var adaptiveInk: Bool = false
+    var inkLeft: Number = 0.0
+    var inkRight: Number = 0.0
+    var inkTop: Number = 0.0
+    var inkBottom: Number = 0.0
+    // Spans of the content drawn in a color of their own -- a line of source
+    // in its syntax colors -- in byte order, not overlapping. Bytes no span
+    // covers are drawn in `color`. One run with many inks rather than a run per
+    // ink, so the pen crosses from one span to the next as it crosses any two
+    // letters, and the spans never part at their seams.
+    var spans: [CATextSpan] = []
+    // How the run's ink meets what is under it: laid over it, or burned or
+    // dodged into it, as a label is into the glass it is set in.
+    var blend: CABlendMode = .Normal
+    // Whether the run sits in its box as a `UILabel` sets a line: on the
+    // face's own ascent and descent, where TextKit's line under SwiftUI's
+    // `Text` rounds them to whole points. UIKit's tab bar sets its titles in
+    // labels, SF's 10-point title 9.67 over its baseline, not 10.
+    var labelMetrics: Bool = false
+}
+
+// Bytes `start` up to, not including, `end` of a text layer's content, and
+// their ink.
+public @Derive(Copy)
+struct CATextSpan {
+    var start: Number = 0
+    var end: Number = 0
+    var color: CAColor = CAColor {}
+}
+
+public struct CATexture {
+    var handle: TextureHandle = TextureHandle(0)
+    var secondaryHandle: TextureHandle = TextureHandle(0)
+    var transition: Number = 0.0
+    var opacity: Number = 1.0
+    var cornerRadius: Number = 0.0
+    // An image file (PNG, JPEG) to show in place of a handed-over texture,
+    // decoded and uploaded by the compositor the first time a layer names it.
+    var path: String = ""
+    // Whether the file's image covers the layer at its own proportions,
+    // cropped to the layer's box, rather than stretched to it.
+    var aspectFill: Bool = false
+}
+
+// How ink meets what is already drawn under it. A linear burn darkens what is
+// beneath by how far the ink is from white, and a linear dodge lightens it by
+// the ink itself — which is how Apple sets a symbol into glass: the glass shows
+// through the glyph rather than being painted over by it. A destination-out
+// takes itself out of everything drawn under it on the surface it lands on,
+// as Core Animation's `destOut` compositing filter does -- UIKit's lens
+// punches the tab bar with one.
+public enum CABlendMode {
+    Normal
+    LinearBurn
+    LinearDodge
+    DestinationOut
+}
+
+extend CABlendMode {
+    function shaderCode() -> Number {
+        match self {
+            Normal -> return 0
+            LinearBurn -> return 1
+            LinearDodge -> return 2
+            DestinationOut -> return 3
+        }
+    }
+
+    // Whether the ink is burned or dodged into what is under it, glass
+    // included, rather than laid over it or cut out of it.
+    function intoBackdrop() -> Bool {
+        return self == .LinearBurn || self == .LinearDodge
+    }
+
+    // Where a blend sends a quad in the batch: its mode's code, in the hundred the
+    // blend names. A mode's own codes stay under 100, so a blended quad is never
+    // mistaken for another mode, and every code from 100 up draws through a
+    // blending pipeline.
+    function route() -> Number {
+        return self.shaderCode() * 100
+    }
+}
+
+public struct CAIcon {
+    var svg: String = ""
+    var tint: CAColor = CAColor {}
+    var weightGrowth: Number = 0.0
+    var blend: CABlendMode = .Normal
+    // Drawn on its whole canvas, the document's box fitted to the layer's, as
+    // a path a view draws in its own box is, rather than trimmed to its ink.
+    var wholeCanvas: Bool = false
+}
+
+public struct CAGlass {
+    var blur: Number = 1.0
+    var edgeRefraction: Number = 1.0
+    var tint: CAColor = CAColor { r: 1.0, g: 1.0, b: 1.0, a: 0.04 }
+    var material: CAGlassMaterial = CAGlassMaterial {}
+    // Touch highlight and morph target in the layer's LOCAL coordinate space.
+    // The compositor applies the layer's presentation transform at submit time.
+    // The platform's two touch lights: the little glow -- `glowStrength` of
+    // a dodge at `glowX`, `glowY`, falling to nothing `glowRadius` out -- and
+    // the big glow, `glowWash` of a lift over the whole surface. `glowDark`
+    // takes the dark appearance's stronger dodge.
+    var glowX: Number = 0.0
+    var glowY: Number = 0.0
+    var glowStrength: Number = 0.0
+    // How far out the highlight reaches, in the same local units.
+    var glowRadius: Number = 0.0
+    var glowWash: Number = 0.0
+    var glowDark: Bool = false
+    // The warp beneath the glass, in points: UIKit's lifted lens reads
+    // `warpAmount` further out at its rim, falling to nothing `warpHeight`
+    // in, along normals ovalized by `warpOvalization`. Zero is none.
+    var warpAmount: Number = 0.0
+    var warpHeight: Number = 0.0
+    var warpOvalization: Number = 0.0
+    // What lies behind the glass through a colour matrix, in place of its
+    // recipe's face, as a `CABackdropLayer` draws it under a `gaussianBlur`
+    // of `matrixBlur` (the filter's units, over a capture at `matrixScale`)
+    // and a `colorMatrix` of `_ColorMatrix.YCC(black:white:saturation:)`.
+    // `matrixOpacity` is how much of it shows; zero is none.
+    var matrixOpacity: Number = 0.0
+    var matrixBlur: Number = 0.0
+    var matrixScale: Number = 1.0
+    var matrixBlack: Number = 0.0
+    var matrixWhite: Number = 1.0
+    var matrixSaturation: Number = 1.0
+    var morphX: Number = 0.0
+    var morphY: Number = 0.0
+    var morphWidth: Number = 0.0
+    var morphHeight: Number = 0.0
+    var morphRadius: Number = 0.0
+    var morphBlend: Number = 0.0
+    // As a solid's, and 2 a squircle whose corner can run past the short
+    // side: as wide as the radius and as tall as the side allows, up to the
+    // ellipse the box holds. It clips what the surface holds to the same
+    // shape.
+    var shapeKind: Number = 0
+    // What the surface's laid-out size does to it. Glass is one recipe across
+    // every size, and only the compositor knows the size, so the recipe rides
+    // on the content and is applied where the surface is drawn.
+    var sizing: CAGlassSizing = CAGlassSizing {}
+    // The platform recipe the surface is made of. A surface that names one is
+    // drawn to it whole, and every field above but the highlight, the morph
+    // and the shape is the recipe's to decide.
+    var style: CAGlassStyle? = .None
+}
+
+// A figure that follows a surface's size: `base + slope * extent`, held
+// between `minimum` and `maximum`, where the extent is the shorter side in
+// points.
+public @Derive(Copy)
+struct CAGlassRamp {
+    var base: Number = 0.0
+    var slope: Number = 0.0
+    var minimum: Number = 0.0
+    var maximum: Number = 0.0
+}
+
+extend CAGlassRamp {
+    function at(width: Number, height: Number) -> Number {
+        return clamp(self.base + self.slope * min(width, height), self.minimum, self.maximum)
+    }
+}
+
+// What a surface's size does to its glass: how much of its blur it shows and
+// how far that blurs, the grays its edge burns in, and how its top and bottom
+// edges are lit. The default leaves a surface exactly as its `blur` and
+// material say, which is glass that does not change with size.
+public @Derive(Copy)
+struct CAGlassSizing {
+    var blur: CAGlassRamp = CAGlassRamp { base: 1.0, minimum: 1.0, maximum: 1.0 }
+    // How far the glass blurs what is behind it at this size, as a gaussian's
+    // sigma in points. A ramp that tops out below zero states none, and `blur`
+    // alone is the dial.
+    var blurRadius: CAGlassRamp = CAGlassRamp { base: -1.0, minimum: -1.0, maximum: -1.0 }
+    // The grays the edge's ring and side lines burn in at this size. A ramp
+    // that tops out at zero states none, and the material's own gray stands.
+    var ringTone: CAGlassRamp = CAGlassRamp {}
+    var sideTone: CAGlassRamp = CAGlassRamp {}
+    // The grays the top and bottom edges are lit in at this size, read the
+    // same way.
+    var lightDodge: CAGlassRamp = CAGlassRamp {}
+    var lightBurn: CAGlassRamp = CAGlassRamp {}
+}
+
+extend CAGlass {
+    // The blur a surface this size draws with.
+    function blurAt(width: Number, height: Number) -> Number {
+        let shown = self.blur * self.sizing.blur.at(width, height)
+        if self.sizing.blurRadius.maximum < 0.0 {
+            return shown
+        }
+        return shown * glassBlurDial(
+            self.sizing.blurRadius.at(width, height),
+            self.material.blurNearSplit
+        )
+    }
+}
+
+// The dial that blurs as far as `radius` points: up the sharp capture's
+// crossfade to the near level, which the dial reaches at `split`, then across
+// to the far level at the dial's top.
+public function glassBlurDial(radius: Number, split: Number) -> Number {
+    let near = GlassBlur.nearRadius
+    if radius <= near {
+        return split * max(radius, 0.0) / near
+    }
+    return min(split + (1.0 - split) * (radius - near) / (GlassBlur.farRadius - near), 1.0)
+}
+
+extend CAGlassRamp {
+    // The gray one of the edge's lines burns in at this size: the sizing's, when
+    // it states one, and the material's otherwise.
+    function toneAt(material: Number, width: Number, height: Number) -> Number {
+        if self.maximum <= 0.0 {
+            return material
+        }
+        return self.at(width, height)
+    }
+}
+
+extend CAGlass {
+    // The material a surface this size shades with: its own, with the edge's
+    // grays and its light taken at the surface's size.
+    function materialAt(width: Number, height: Number) -> CAGlassMaterial {
+        let material = self.material
+        return CAGlassMaterial {
+            edgeStrokeStrength: material.edgeStrokeStrength,
+            edgeStrokeDarken: material.edgeStrokeDarken,
+            edgeStrokePeak: material.edgeStrokePeak,
+            edgeStrokeFade: material.edgeStrokeFade,
+            sheenStrength: material.sheenStrength,
+            lensMaxBend: material.lensMaxBend,
+            refractionReach: material.refractionReach,
+            blurNearSplit: material.blurNearSplit,
+            borderSpread: material.borderSpread,
+            borderSideOffset: material.borderSideOffset,
+            borderSideSpread: material.borderSideSpread,
+            borderGray: self.sizing.ringTone.toneAt(material.borderGray, width, height),
+            borderSideGray: self.sizing.sideTone.toneAt(material.borderSideGray, width, height),
+            innerRimStrength: material.innerRimStrength,
+            innerRimWidth: material.innerRimWidth,
+            washBlend: material.washBlend,
+            washUpperR: material.washUpperR,
+            washUpperG: material.washUpperG,
+            washUpperB: material.washUpperB,
+            washUpperAlpha: material.washUpperAlpha,
+            washUpperBlend: material.washUpperBlend,
+            edgeLightDodge: self.sizing.lightDodge.toneAt(material.edgeLightDodge, width, height),
+            edgeLightBurn: self.sizing.lightBurn.toneAt(material.edgeLightBurn, width, height)
+        }
+    }
+}
+
+extend CAGlassRamp {
+    function signature() -> Number {
+        return round(self.base * 1000.0) * 3
+            + round(self.slope * 100000.0) * 5
+            + round(self.minimum * 1000.0) * 7
+            + round(self.maximum * 1000.0) * 11
+    }
+}
+
+extend CAGlassSizing {
+    function signature() -> Number {
+        return self.blur.signature() * 13
+            + self.blurRadius.signature() * 31
+            + self.ringTone.signature() * 17
+            + self.sideTone.signature() * 19
+            + self.lightDodge.signature() * 23
+            + self.lightBurn.signature() * 29
+    }
+}
+
+// `axis`: 0 none, 1 down, 2 across (leading→trailing), 3 corner→corner. `start`
+// is the near color (also the layer's `fillColor`); `end` is the far color.
+public struct CAGradient {
+    var start: CAColor = CAColor {}
+    var end: CAColor = CAColor {}
+    var axis: Number = 1
+    var shapeKind: Number = 0
+}
+
+extend CAContent {
+    // A stable code per kind, so the flat reconcile and the damage signature stay on
+    // Ints (the retained passes never clone a whole content value to ask its kind).
+    function kind() -> Number {
+        match self {
+            Empty -> return 0
+            Solid(s) -> return 1
+            Text(t) -> return 2
+            Texture(x) -> return 3
+            Icon(i) -> return 4
+            Glass(g) -> return 5
+            Gradient(r) -> return 6
+        }
+    }
+
+    function shapeKind() -> Number {
+        match self {
+            Solid(s) -> return s.shapeKind
+            Glass(g) -> return g.shapeKind
+            Gradient(g) -> return g.shapeKind
+            Empty -> return 0
+            Text(t) -> return 0
+            Texture(t) -> return 0
+            Icon(i) -> return 0
+        }
+    }
+
+    // Whether this is a run of text.
+    function isText() -> Bool {
+        return match self {
+            Text(t) -> true
+            Empty, Solid, Texture, Icon, Glass, Gradient -> false
+        }
+    }
+}
+
+// A corner radius as a signature term. A capsule's radius is unbounded — the
+// box clamps it to half its short side when it is drawn — so it is folded to
+// one code instead of being converted, which an infinite float cannot be.
+public function radiusCode(radius: Number) -> Number {
+    if radius > 1000000.0 {
+        return 100000000
+    }
+    return round(radius * 100.0)
+}
+
+extend CAColor {
+    function packed() -> Number {
+        return round(self.r * 255.0) * 16777216
+            + round(self.g * 255.0) * 65536
+            + round(self.b * 255.0) * 256
+            + round(self.a * 255.0)
+    }
+}
+
+extend CAGlassMaterial {
+    function signature() -> Number {
+        return round(self.edgeStrokeStrength * 1000.0) * 3
+            + round(self.edgeStrokeDarken * 1000.0) * 5
+            + round(self.edgeStrokePeak * 1000.0) * 7
+            + round(self.edgeStrokeFade * 1000.0) * 11
+            + round(self.sheenStrength * 1000.0) * 13
+            + round(self.lensMaxBend * 100.0) * 17
+            + round(self.refractionReach * 100.0) * 19
+            + round(self.blurNearSplit * 1000.0) * 23
+            + round(self.borderSpread * 1000.0) * 29
+            + round(self.borderSideOffset * 1000.0) * 31
+            + round(self.borderSideSpread * 1000.0) * 37
+            + round(self.borderGray * 1000.0) * 41
+            + round(self.borderSideGray * 1000.0) * 43
+            + round(self.innerRimStrength * 1000.0) * 47
+            + round(self.innerRimWidth * 1000.0) * 53
+            + round(self.washBlend * 1000.0) * 59
+            + round(self.washUpperR * 1000.0) * 61
+            + round(self.washUpperG * 1000.0) * 67
+            + round(self.washUpperB * 1000.0) * 71
+            + round(self.washUpperAlpha * 1000.0) * 73
+            + round(self.washUpperBlend * 1000.0) * 79
+            + round(self.edgeLightDodge * 1000.0) * 83
+            + round(self.edgeLightBurn * 1000.0) * 89
+    }
+}
+
+extend CAContent {
+    // A cheap fingerprint of everything about the content that the renderer draws.
+    // Equal signatures across frames mean the layer's paint is unchanged, which is
+    // what lets a still layer be re-flushed from the retained batch (damage skip).
+    function signature() -> Number {
+        match self {
+            Empty -> return 1
+            Solid(s) -> return 1000000
+                + s.fill.packed() * 31
+                + s.border.packed() * 17
+                + round(s.borderWidth * 100.0) * 7
+                + radiusCode(s.cornerRadius) * 3
+                + s.shapeKind
+                + s.blend.shaderCode() * 19
+            Text(t) -> return 2000000
+                + t.content.count * 131
+                + round(t.size * 100.0) * 31
+                + round(t.weight) * 7
+                + t.color.packed()
+                + (t.adaptiveInk ? 1 : 0) * 19
+                + round(t.inkLeft * 100.0) * 23
+                + round(t.inkRight * 100.0) * 29
+                + round(t.inkTop * 100.0) * 37
+                + round(t.inkBottom * 100.0) * 41
+                + t.blend.shaderCode() * 43
+            Texture(x) -> return 3000000
+                + x.handle.raw * 131
+                + x.secondaryHandle.raw * 97
+                + round(x.transition * 1000.0) * 17
+                + round(x.opacity * 1000.0) * 7
+                + radiusCode(x.cornerRadius)
+                + x.path.count * 61
+                + (x.aspectFill ? 1 : 0) * 13
+            Icon(i) -> return 4000000
+                + i.svg.count * 131
+                + i.tint.packed()
+                + round(i.weightGrowth * 100.0) * 17
+                + i.blend.shaderCode() * 19
+                + (i.wholeCanvas ? abs(Number(hash(i.svg))) % 1000003 : 0)
+            Glass(g) -> return 5000000
+                + round(g.blur * 1000.0) * 131
+                + round(g.edgeRefraction * 1000.0) * 31
+                + g.tint.packed()
+                + g.material.signature()
+                + g.sizing.signature()
+                + round(g.glowX * 100.0) * 83
+                + round(g.glowY * 100.0) * 89
+                + round(g.glowStrength * 1000.0) * 97
+                + round(g.glowRadius * 10.0) * 79
+                + round(g.glowWash * 1000.0) * 71
+                + (g.glowDark ? 67 : 0)
+                + round(g.warpAmount * 100.0) * 107
+                + round(g.warpHeight * 100.0) * 109
+                + round(g.warpOvalization * 100.0) * 113
+                + round(g.matrixOpacity * 1000.0) * 127
+                + round(g.matrixBlur * 100.0) * 131
+                + round(g.matrixScale * 1000.0) * 137
+                + round(g.matrixBlack * 1000.0) * 139
+                + round(g.matrixWhite * 1000.0) * 149
+                + round(g.matrixSaturation * 1000.0) * 151
+                + round(g.morphX * 100.0) * 101
+                + round(g.morphY * 100.0) * 103
+                + round(g.morphWidth * 100.0) * 107
+                + round(g.morphHeight * 100.0) * 109
+                + radiusCode(g.morphRadius) * 113
+                + round(g.morphBlend * 100.0) * 127
+                + g.shapeKind * 137
+            Gradient(r) -> return 6000000
+                + r.start.packed() * 131
+                + r.end.packed() * 31
+                + r.axis * 7
+                + r.shapeKind
+        }
+    }
+}

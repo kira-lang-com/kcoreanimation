@@ -1,0 +1,690 @@
+import Foundation
+import Heap
+import Ember
+// Emitting runs: one icon, and one line of text.
+//
+// Both walk a source, take a cached glyph per item from `UiBatchGlyphs.kira`, and
+// append one quad each to the current stream. Text carries the extra decision an
+// icon does not: whether the run inks itself dark or light, which mode 4 defers to
+// the shader by reading the blurred capture under the run rather than deciding on
+// the CPU from a color nobody has composited yet.
+
+// Append a vector icon: rasterize the SVG once per (icon, physical size) into
+// the glyph atlas (coverage-only) and emit one tinted mode-1 quad. Cache keys
+// live in the glyph hash under a NEGATIVE namespace (glyph keys are always
+// positive), so icons and glyphs share the atlas and the lookup table.
+extend UiBatch {
+    function pushIcon(
+        graphics: borrow Graphics,
+        svg: borrow String,
+        x: Number,
+        y: Number,
+        w: Number,
+        h: Number,
+        color: borrow RGBAColor,
+        clipMinX: Number,
+        clipMinY: Number,
+        clipMaxX: Number,
+        clipMaxY: Number,
+        // How much heavier than the drawn artwork this glyph is, in POINTS of
+        // outward growth. It is the symbol's weight, and it is part of the atlas
+        // key: the same folder at two weights is two different pictures.
+        weightGrowth: Number = 0.0,
+        // Turned about its own center, as cosine and sine.
+        rotCos: Number = 1.0,
+        rotSin: Number = 0.0,
+        // How the ink meets what is under it. A burn draws through a pipeline
+        // that takes its color AWAY from the target, so it carries the ink's
+        // distance from white — `1 - color` — rather than the color.
+        blend: CABlendMode = .Normal,
+        // The ink's own width over its height, where the box it is drawn in has
+        // been stretched away from it. Zero when the box is the ink's.
+        inkAspect: Number = 0.0,
+        // The corner of the rounded box the clip is, zero for a plain one.
+        clipRadius: Number = 0.0,
+        clipShapeKind: Number = 0.0,
+        // Drawn on its whole canvas rather than trimmed to its ink (CAIcon).
+        wholeCanvas: Bool = false,
+    ) {
+        var state = nativeRecover<UiBatchState>(self.storage)
+        var scale = state.scale
+        if scale <= 0.0 {
+            scale = 1.0
+        }
+        // The box the caller gave IS the ink's box: a symbol is rasterized
+        // trimmed to its drawing, so its width and height are its own and the
+        // two are not generally equal. A box stretched out of the ink's own
+        // proportions is drawn the way any transformed picture is: the ink is
+        // rasterized in its own proportions, covering the box's longer reach,
+        // and that picture is stretched into the box.
+        var inkW = w
+        var inkH = h
+        if inkAspect > 0.0 && h > 0.0 {
+            if w / h > inkAspect {
+                inkH = w / inkAspect
+            } else {
+                inkW = h * inkAspect
+            }
+        }
+        let devPxW = inkW * scale
+        let devPxH = inkH * scale
+        let sizePts = h
+        let devPx = devPxH
+        // Rasterized at the same oversample as text, and for the same reason: an icon is
+        // coverage in the same atlas, drawn through the same sampler. Left at one sample
+        // per device pixel it was the softest thing on screen once the glyphs were
+        // fixed — a hairline stroke at 19pt has nothing to spare.
+        //
+        // An entry has to fit the atlas, so a large icon gives up the oversample first
+        // and is then rasterized at the largest entry that fits, scaled up by its quad.
+        // It is a vector: reading it a little softer is a loss of sharpness, whereas the
+        // size ceiling this replaces DROPPED the draw — an icon asked for above it left
+        // nothing on screen at all.
+        let maxPx = GlyphAtlas.size - 2 * GlyphAtlas.gutter
+        let devPxLong = devPxW > devPxH ? devPxW : devPxH
+        var longPx = trunc(devPxLong * textOversampleAt(scale) + 0.5)
+        if longPx > maxPx {
+            longPx = trunc(devPxLong + 0.5)
+        }
+        if longPx > maxPx {
+            longPx = maxPx
+        }
+        if longPx <= 0 {
+            return
+        }
+        // The oversample the entry ACTUALLY carries, which is what the quad and its uv
+        // slack are measured in below.
+        let overs = Number(longPx) / devPxLong
+        let px = trunc(devPxW * overs + 0.5)
+        let pxH = trunc(devPxH * overs + 0.5)
+        if px <= 0 || pxH <= 0 {
+            return
+        }
+        // The growth is applied to the RASTER, so it is measured in raster
+        // pixels, and it belongs in the key beside the size.
+        let growthPx = weightGrowth * scale * overs
+        let growthKey = trunc(growthPx * 4.0 + 0.5)
+        let symbolKey = (abs(Number(hash(svg))) + (wholeCanvas ? 1 : 0)) % SymbolCacheKey.modulus
+        let key = -(((symbolKey * 1024 + px) * 1024 + pxH) * 64 + growthKey)
+        let slotIndex = symbolSlot(
+            state,
+            svg,
+            SymbolRequest {
+                symbol: symbolKey,
+                key: key,
+                w: px,
+                h: pxH,
+                growth: growthKey / 4.0,
+                wholeCanvas: wholeCanvas
+            }
+        )
+        let slot = state.glyphs[slotIndex]
+        if !slot.valid {
+            return
+        }
+        let atlasX = slot.atlasX
+        let atlasY = slot.atlasY
+        let wpx = slot.w
+        let hpx = slot.h
+        let atlasW = Float(GlyphAtlas.size)
+        // The ink fills the box it was given, so it is drawn AT that box —
+        // no centering, because there is no margin left to center. It is
+        // still landed on whole device pixels the way a glyph is, grown
+        // outward with the slack drawn from the atlas's transparent
+        // gutter: a coverage bitmap read at a fractional offset is
+        // resampled rather than displayed. Worked in binary floats, as a
+        // glyph's place is.
+        let scaleF = Float(scale)
+        let leftDev = Float(x) * scaleF
+        let topDev = Float(y) * scaleF
+        let rightDev = leftDev + Float(w) * scaleF
+        let bottomDev = topDev + Float(h) * scaleF
+        let oversX = Float(wpx) / (Float(w) * scaleF)
+        let oversY = Float(hpx) / (Float(h) * scaleF)
+        let x0 = trunc(leftDev)
+        let y0 = trunc(topDev)
+        let x1 = trunc(rightDev) + 1.0
+        let y1 = trunc(bottomDev) + 1.0
+        let u0 = (Float(atlasX) - (leftDev - x0) * oversX) / atlasW
+        let v0 = (Float(atlasY) - (topDev - y0) * oversY) / atlasW
+        let u1 = (Float(atlasX + wpx) + (x1 - rightDev) * oversX) / atlasW
+        let v1 = (Float(atlasY + hpx) + (y1 - bottomDev) * oversY) / atlasW
+        let gx = x0 / scaleF
+        let gy = y0 / scaleF
+        let iconW = (x1 - x0) / scaleF
+        let iconH = (y1 - y0) / scaleF
+        let stride = QuadLayout.floatCount
+        if state.quadCount < QuadLayout.maxPerBatch && !isNull(state.contentsPtr) {
+            let base = state.frameBase + state.quadCount * stride
+            // Mode 1, recorded for the draw path — see the same note in the
+            // glyph emitter. An icon that inherits a stale glass code is drawn
+            // through a glass pipeline and disappears. A burned or dodged
+            // icon records 110 or 210, the codes its blending pipelines take.
+            let requiresGeneric = rotSin != 0.0 || rotCos != 1.0
+            let iconModeCode = 10 + blend.route()
+            var ink = RGBAColor { r: color.r, g: color.g, b: color.b, a: color.a }
+            if blend == .LinearBurn {
+                ink = RGBAColor { r: 1.0 - color.r, g: 1.0 - color.g, b: 1.0 - color.b, a: color.a }
+            }
+            state.streams[state.streamIndex.raw].recordMode(
+                state.quadCount,
+                iconModeCode,
+                requiresGeneric
+            )
+            if iconModeCode >= 100 { state.blendWanted = true }
+            writeQuadRecordFloat(
+                state.contentsPtr,
+                base,
+                gx,
+                gy,
+                gx + iconW,
+                gy + iconH,
+                u0,
+                v0,
+                u1,
+                v1,
+                Float(state.viewportW),
+                Float(state.viewportH),
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                Float(ink.r),
+                Float(ink.g),
+                Float(ink.b),
+                Float(ink.a),
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                Float(clipMinX),
+                Float(clipMinY),
+                Float(clipMaxX),
+                Float(clipMaxY),
+                Float(rotCos),
+                Float(rotSin),
+                Float(clipRadius),
+                Float(clipShapeKind)
+            )
+            state.quadCount += 1
+        }
+    }
+}
+
+// Lay out and append a UTF-8 string left-to-right, vertically centered in the
+// (x,y,w,h) box. Each glyph is a textured quad sampling its atlas coverage.
+// `adaptive` text derives its color per pixel from the backdrop capture instead of
+// using `color`: mode-4 glyphs sample the blurred capture at their own screen
+// position and land on dark ink over light content, light ink over dark. It needs a
+// capture to read, which only exists from the first glass layer on — text below all
+// glass keeps `color`, since nothing has been captured for it to measure.
+//
+// What the capture holds is the content UNDER the glass, not the glass itself, so
+// the surface's wash is mixed back in before the decision — `wash` is its strength
+// and `washLuma` the luminance of its color, which is not assumed white: a gray
+// wash lands the composite somewhere else entirely. Without this, dark photo behind
+// heavy frost reads as dark and the text picks white on a near-white surface.
+extend UiBatch {
+    function pushText(
+        graphics: borrow Graphics,
+        content: borrow String,
+        x: Number,
+        y: Number,
+        w: Number,
+        h: Number,
+        color: borrow RGBAColor,
+        sizePx: Number,
+        weightAxis: Number,
+        clipMinX: Number,
+        clipMinY: Number,
+        clipMaxX: Number,
+        clipMaxY: Number,
+        adaptive: Bool = false,
+        wash: Number = 0.0,
+        washLuma: Number = 1.0,
+        inkLeft: Number = 0.0,
+        inkRight: Number = 0.0,
+        inkTop: Number = 0.0,
+        inkBottom: Number = 0.0,
+        rotCos: Number = 1.0,
+        rotSin: Number = 0.0,
+        // The scale the run is shown at, from a transform over it. It is laid
+        // out at its own size and its glyphs scaled down onto the screen.
+        displayScale: Number = 1.0,
+        design: CAFontDesign = .Default,
+        // Spans of the content in inks of their own, and the opacity their
+        // colors are drawn at; bytes no span covers take `color`.
+        spans: borrow [CATextSpan] = [],
+        spanOpacity: Number = 1.0,
+        // Draws the run's shadow instead of the run: each glyph's coverage in
+        // `color`, under a gaussian `shadowBlur` points across, as a design
+        // tool's blur is measured.
+        shadow: Bool = false,
+        shadowBlur: Number = 0.0,
+        // The corner of the rounded box the clip is, zero for a plain one.
+        clipRadius: Number = 0.0,
+        clipShapeKind: Number = 0.0,
+        // Set on the face's own ascent and descent, as a label is; see
+        // `CAText.labelMetrics`.
+        labelMetrics: Bool = false,
+    ) {
+        // Recover the compositor state ONCE for the whole string. Every per-glyph step
+        // (size, metrics, glyph lookup, atlas rasterization, and quad emission) runs
+        // inline against this single recovered state. Previously each glyph called
+        // separate @Native helpers that each did their own nativeRecover<UiBatchState>
+        // (~3-7 per character) — the dominant resize render cost. The hot path stays
+        // inline here to avoid per-glyph helper/recovery overhead.
+        var state = nativeRecover<UiBatchState>(self.storage)
+        if !state.textFace.isSome() {
+            return
+        }
+        // Rasterize glyphs at physical pixels (point size x backing scale) for crisp text
+        // on Retina, but lay them out in points: every glyph pixel metric is divided by
+        // `scale` back into point space.
+        var scale = state.scale
+        if scale <= 0.0 {
+            scale = 1.0
+        }
+        // The size the FACE is set to: device size times the oversample. Everything
+        // read back from the rasterizer after this — advances, bearings, bitmap extents,
+        // vertical metrics — is therefore in RASTER pixels, and is divided by
+        // `rasterScale` (not `scale`) on the way back into points.
+        let rasterScale = scale * textOversampleAt(scale)
+        // A run under a scale is laid out once at its own size about its own
+        // origin -- every whole-pixel decision below included -- and the
+        // finished glyphs are scaled onto the screen from there. The text is
+        // shown smaller, not set smaller: set at each size a scale passes
+        // through, its glyphs would snap to a different pixel size and its
+        // baseline to a different pixel row frame by frame, and it would shake
+        // against everything else moving with it.
+        var shown: Number = 1.0
+        if displayScale > 0.0 && (displayScale > 1.0001 || displayScale < 0.9999) {
+            shown = displayScale
+        }
+        // The origin is the device pixel nearest the run's corner, so the
+        // whole-pixel decisions made about it are the ones the run makes at
+        // rest: when the scale arrives at 1 the glyphs are already where the
+        // settled run puts them, and nothing hops a pixel as it lands.
+        let originX = shown == 1.0 ? 0.0 : floor(x * scale + 0.5) / scale
+        let originY = shown == 1.0 ? 0.0 : floor(y * scale + 0.5) / scale
+        let runX = (x - originX) / shown
+        let runY = (y - originY) / shown
+        let runW = w / shown
+        let runH = h / shown
+        let leftInk = inkLeft / shown
+        let rightInk = inkRight / shown
+        let topInk = inkTop / shown
+        let bottomInk = inkBottom / shown
+        let sizeKey = glyphSizeKey(sizePx / shown * rasterScale)
+        let weightKey = glyphWeightKey(weightAxis)
+        let faceKey = state.faceKey(design)
+        let metricKey = (sizeKey * 1000 + weightKey) * 2 + faceKey
+        let (faceAscender, faceDescender, lineAscent, lineDescent) = match state.metricsFor(
+            metricKey
+        ) {
+            Some(metric) -> metric
+            None -> {
+                if !state.setFace(sizeKey, weightKey, faceKey) {
+                    return
+                }
+                state.metrics.append(state.faceMetrics(metricKey))
+                (state.ascender, state.descender, state.lineAscent, state.lineDescent)
+            }
+        }
+        var ascender = textLineAscent(faceAscender / rasterScale)
+        var descender = textLineDescent(faceDescender / rasterScale)
+        if labelMetrics {
+            ascender = lineAscent / rasterScale
+            descender = lineDescent / rasterScale
+        }
+        // Where the BASELINE goes.
+        //
+        // A run given room for the font's line box sits on the baseline that box
+        // implies — the font's own ascent and descent, not this string's ink. It
+        // has to be the font's, because ink is a property of the LETTERS: center
+        // the ink instead and "editornext-test" (ascenders, no descenders) sits
+        // on a different line from "main.kworld", every label in a column moves
+        // as its text changes, and a glyph beside any of them can only agree
+        // with one of them by accident.
+        //
+        // Ink still places the run when the box is TIGHTER than the line box:
+        // a text leaf hugs its ink, so a card sized to a number has no invisible
+        // leading above and below it, and that is the case this branch exists
+        // for.
+        var hasInk = false
+        if rightInk > leftInk && topInk > 0.0 && bottomInk >= 0.0 {
+            hasInk = true
+        }
+        let lineBox = ascender + descender
+        var baseline = runY + (runH - lineBox) / 2.0 + ascender
+        if hasInk && runH < lineBox {
+            let inkHeight = topInk + bottomInk
+            if runH > inkHeight {
+                baseline = runY + (runH - inkHeight) / 2.0 + topInk
+            } else {
+                baseline = runY + topInk
+            }
+        }
+        // The baseline lands on a WHOLE device pixel. Horizontal position is resolved
+        // to a quarter pixel by rasterizing the outline at that phase (see the phase
+        // handling below), but there is no vertical equivalent and the platform does
+        // not have one either: for horizontal text macOS quantizes y outright. Leaving
+        // it fractional makes the sampler resample every glyph vertically — a uniform
+        // softness across all text, which is exactly what a run of unhinted glyphs
+        // must NOT have, or the whole thing reads as blurry rather than as smooth.
+        let baselineDevice = trunc(baseline * scale + 0.5)
+        // Adaptive only where a capture exists to read (from the first glass layer on).
+        // The sample point is the RUN's center, carried on every glyph of the run, so a
+        // string picks ONE ink and reads as one piece of text — sampling per glyph would
+        // let a word straddling an edge in the backdrop come out half dark, half light.
+        var glyphMode = 1.0
+        var glyphWash: Number = 0.0
+        var glyphWashLuma: Number = 1.0
+        var runCenterU: Number = 0.0
+        var runCenterV: Number = 0.0
+        if adaptive && state.streamIndex.raw > 0 && state.glassReady {
+            glyphMode = 4.0
+            glyphWash = wash
+            glyphWashLuma = washLuma
+            runCenterU = (x + w / 2.0) / state.viewportW
+            runCenterV = (y + h / 2.0) / state.viewportH
+        }
+        let atlasW = Number(GlyphAtlas.size)
+        // A shadow's glyphs are grown by its reach on every side, in whole
+        // device pixels, so the falloff is never cut at the glyph's box.
+        var shadowPad: Number = 0
+        var shadowReach: Number = 0.0
+        if shadow {
+            glyphMode = 1.5
+            shadowPad = ceil(max(shadowBlur, 0.0) * scale / shown)
+            shadowReach = max(shadowBlur, 0.0) * scale / shown * textOversampleAt(scale) / atlasW
+        }
+        // The glyph index, held directly rather than reached through the state for
+        // every character. A field of a recovered state is an address the runtime
+        // re-derives and type-checks per access, and a third of the cost of putting a
+        // string on screen once went there. A map or array copy takes a SHARE of its
+        // block, so these cost a count, not a copy.
+        //
+        // A miss writes the new entry back through `state`, which gives the state's
+        // copies a block of their own and leaves these looking at the old one, so they
+        // are re-taken there. Misses happen once per glyph per size and phase.
+        var glyphIndex = state.glyphIndex
+        var glyphSlots = state.glyphs
+        let stride = QuadLayout.floatCount
+        // What every glyph of the run writes the same, read off the state once.
+        let overs = textOversampleAt(scale)
+        let contents = state.contentsPtr
+        let contentsReady = !isNull(contents)
+        let frameBase = state.frameBase
+        let viewW = state.viewportW
+        let viewH = state.viewportH
+        let stream = state.streamIndex.raw
+        let glyphModeCode = trunc(glyphMode * 10.0)
+        let requiresGeneric = rotSin != 0.0 || rotCos != 1.0
+        var penX = runX
+        if hasInk {
+            // The layout frame starts at visible ink, while glyph bearings are
+            // measured from the renderer's pen origin. Shift the pen so the
+            // actual first painted column lands exactly on the frame edge.
+            penX = runX - leftInk
+        }
+        // Each glyph's place is worked in binary floats: its corners are
+        // fractions of a pixel no decimal ends, and decimal quotients were
+        // most of a run's cost.
+        var pen = Float(penX)
+        let scaleF = Float(scale)
+        let oversF = Float(overs)
+        let rasterF = Float(rasterScale)
+        let atlasF = Float(atlasW)
+        let shownF = Float(shown)
+        let originXF = Float(originX)
+        let originYF = Float(originY)
+        let baselineF = Float(baselineDevice)
+        let padF = Float(shadowPad)
+        let runCenterXF = Float(runX) + Float(runW) * 0.5
+        let runCenterYF = Float(runY) + Float(runH) * 0.5
+        let cosF = Float(rotCos)
+        let sinF = Float(rotSin)
+        let viewWF = Float(viewW)
+        let viewHF = Float(viewH)
+        let modeF = Float(glyphMode)
+        let washLumaF = Float(glyphWashLuma)
+        let reachF = Float(shadow ? shadowReach : glyphWash)
+        let runULeft = Float(runCenterU)
+        let runVTop = Float(runCenterV)
+        let clipF = (Float(clipMinX), Float(clipMinY), Float(clipMaxX), Float(clipMaxY))
+        let clipRadiusF = Float(clipRadius)
+        let clipKindF = Float(clipShapeKind)
+        var inkF = (Float(color.r), Float(color.g), Float(color.b), Float(color.a))
+
+        // The run shaped in the instance its glyphs are drawn from, so
+        // ligatures and kerning land as measuring placed them.
+        if !state.setFace(sizeKey, weightKey, faceKey) {
+            return
+        }
+        let runInstance = match state.faceInstance {
+            Some(instance) -> instance
+            None -> return
+        }
+        var shaper = nativeRecover<TextEngine>(textEngine())
+        let shapedRun = shaper.shapedRun(runInstance, content)
+        // The first span that does not end before the glyph's byte.
+        var span = 0
+        var lastByte: Number = 0
+        var ink = RGBAColor { r: color.r, g: color.g, b: color.b, a: color.a }
+        for shaped in shapedRun {
+            let glyph = shaped.glyph
+            if spans.count > 0 {
+                let byte = shaped.cluster
+                // A run read right to left comes in falling bytes.
+                if byte < lastByte {
+                    span = 0
+                }
+                lastByte = byte
+                while span < spans.count && spans[span].end <= byte {
+                    span += 1
+                }
+                if span < spans.count && spans[span].start <= byte {
+                    let c = spans[span].color
+                    ink = RGBAColor { r: c.r, g: c.g, b: c.b, a: c.a * spanOpacity }
+                } else {
+                    ink = RGBAColor { r: color.r, g: color.g, b: color.b, a: color.a }
+                }
+                inkF = (Float(ink.r), Float(ink.g), Float(ink.b), Float(ink.a))
+            }
+            // --- inline glyph lookup (open-addressing hash) ---
+            // The pen in DEVICE pixels decides the subpixel phase: the glyph is
+            // rasterized for the fraction it actually sits at, then placed on a
+            // whole pixel. Rasterizing once and drawing at a fractional offset
+            // instead leaves the sampler to resample coverage, which is both
+            // softer and unevenly spaced — the thing this is here to avoid.
+            let devicePen = (pen + Float(shaped.offset) / rasterF) * scaleF
+            let phase = glyphPhaseOfFloat(devicePen)
+            let key = glyphCacheKey(Number(glyph.raw), sizeKey, weightKey, faceKey, phase)
+            var slotIndex = glyphIndex.value(key)
+            // --- inline rasterization on miss ---
+            if slotIndex == .None && !state.setFace(sizeKey, weightKey, faceKey) {
+                break
+            }
+            if slotIndex == .None {
+                let instance = match state.faceInstance {
+                    Some(instance) -> instance
+                    None -> break
+                }
+                let engine = nativeRecover<TextEngine>(textEngine())
+                let shift = glyphPhaseOffset(phase, textOversampleAt(scale)) / 64
+                let bitmap = engine.glyphBitmap(instance, glyph, shift)
+                state.glyphsRasterised += 1
+                let gwp = bitmap.width
+                let ghp = bitmap.rows
+                var newSlot = UiGlyphSlot {
+                    key: key,
+                    advance: bitmap.advance,
+                    bearingX: bitmap.left,
+                    bearingY: bitmap.top,
+                    w: gwp,
+                    h: ghp,
+                    valid: true
+                }
+                if gwp > 0 && ghp > 0 {
+                    match packGlyph(state, gwp, ghp) {
+                        Some(place) -> {
+                            atlasBlitLevels(state, bitmap.levels, place, gwp, ghp)
+                            newSlot.atlasX = place.x
+                            newSlot.atlasY = place.y
+                        }
+                        None -> newSlot.valid = false
+                    }
+                }
+                // A glyph that found no room is still appended, for its
+                // advance, but left out of the index so the started-over
+                // atlas rasterizes it again.
+                let cached = newSlot.valid && glyphCacheHasRoom(state)
+                state.glyphs.append(move newSlot)
+                let index = state.glyphs.count - 1
+                slotIndex = .Some(index)
+                glyphSlots = state.glyphs
+                if cached {
+                    state.glyphIndex.set(key, index)
+                    // The write above gave the state's index a block of its
+                    // own; take the new one, or later lookups miss this entry.
+                    glyphIndex = state.glyphIndex
+                }
+            }
+            // --- inline slot read + emit ---
+            match slotIndex {
+                Some(index) -> {
+                    // The whole slot at once. It is nine scalars and owns nothing,
+                    // so copying it is a handful of loads — where reading eight of
+                    // its fields one at a time was eight element reads through the
+                    // recovered state, each re-deriving the payload address and
+                    // walking into an array of structs.
+                    let slot = glyphSlots[index]
+                    let valid = slot.valid
+                    let gwpx = slot.w
+                    let ghpx = slot.h
+                    if valid && gwpx > 0 && ghpx > 0 {
+                        let bearingX = slot.bearingX
+                        let bearingY = slot.bearingY
+                        let atlasX = slot.atlasX
+                        let atlasY = slot.atlasY
+                        // The glyph's true rectangle in DEVICE pixels. Bearings and
+                        // extents come back from the rasterizer in raster pixels, so
+                        // at 2x oversampling an odd one lands the edge on a half
+                        // pixel — which is where this went wrong.
+                        let leftDev = trunc(devicePen) + Float(bearingX) / oversF
+                        let topDev = baselineF - Float(bearingY) / oversF
+                            - trunc(Float(shaped.rise) / rasterF * scaleF + 0.5)
+                        let rightDev = leftDev + Float(gwpx) / oversF
+                        let bottomDev = topDev + Float(ghpx) / oversF
+                        // Grown to whole device pixels.
+                        //
+                        // A quad edge sitting exactly on a pixel CENTER is decided by
+                        // the rasterizer's fill rule, and the two sides of a glyph do
+                        // not fall the same way: one edge keeps its pixel and the
+                        // other loses it. The coverage in that column is not spread,
+                        // it is gone — an M whose stems are the same width in the
+                        // outline comes out with one bar visibly lighter than the
+                        // other, and every letter in the run has some version of it.
+                        //
+                        // So the quad is grown outward to whole pixels and the extra
+                        // is taken from the atlas's own one-texel gutter, which is
+                        // transparent. Every pixel the glyph touches is rasterized,
+                        // and the sampling stays exactly two texels to a pixel.
+                        let x0 = trunc(leftDev) - padF
+                        let y0 = trunc(topDev) - padF
+                        let x1 = trunc(rightDev) + 1.0 + padF
+                        let y1 = trunc(bottomDev) + 1.0 + padF
+                        var gx = x0 / scaleF
+                        var gy = y0 / scaleF
+                        let gw = (x1 - x0) / scaleF
+                        let gh = (y1 - y0) / scaleF
+                        if requiresGeneric {
+                            let dx = gx + gw * 0.5 - runCenterXF
+                            let dy = gy + gh * 0.5 - runCenterYF
+                            gx = runCenterXF + dx * cosF - dy * sinF - gw * 0.5
+                            gy = runCenterYF + dx * sinF + dy * cosF - gh * 0.5
+                        }
+                        let u0 = (Float(atlasX) - (leftDev - x0) * oversF) / atlasF
+                        let v0 = (Float(atlasY) - (topDev - y0) * oversF) / atlasF
+                        let u1 = (Float(atlasX + gwpx) + (x1 - rightDev) * oversF) / atlasF
+                        let v1 = (Float(atlasY + ghpx) + (y1 - bottomDev) * oversF) / atlasF
+                        // Mode 1.5 carries the glyph's own box in the atlas, which
+                        // its blur stays inside, where mode 4 has its sample point.
+                        var boxLeft = runULeft
+                        var boxTop = runVTop
+                        var boxRight: Float = 0.0
+                        var boxBottom: Float = 0.0
+                        if shadow {
+                            boxLeft = Float(atlasX) / atlasF
+                            boxTop = Float(atlasY) / atlasF
+                            boxRight = Float(atlasX + gwpx) / atlasF
+                            boxBottom = Float(atlasY + ghpx) / atlasF
+                        }
+                        let quad = state.quadCount
+                        if quad < QuadLayout.maxPerBatch && contentsReady {
+                            let base = frameBase + quad * stride
+                            // The mode this quad is, recorded where the draw path
+                            // looks it up. writeQuad does this for every quad that
+                            // goes through it; the glyph path writes the record
+                            // itself and has to do the same, or the slot keeps
+                            // whatever the last frame to use this index put there —
+                            // and a glyph inheriting a glass region code is drawn
+                            // through a glass pipeline, which is where the black
+                            // boxes and vanished letters came from.
+                            state.streams[stream].recordMode(quad, glyphModeCode, requiresGeneric)
+                            if glyphModeCode >= 100 { state.blendWanted = true }
+                            // Mode 4 reuses the fields it has no other use for:
+                            // borderWidth is the wash strength, edgeRefraction its
+                            // color's luminance, border.rg the run's sample point
+                            // in capture uv. Mode 1.5 has the blur's reach in
+                            // borderWidth and the glyph's atlas box in border.
+                            writeQuadRecordFloat(
+                                contents,
+                                base,
+                                originXF + gx * shownF,
+                                originYF + gy * shownF,
+                                originXF + (gx + gw) * shownF,
+                                originYF + (gy + gh) * shownF,
+                                u0,
+                                v0,
+                                u1,
+                                v1,
+                                viewWF,
+                                viewHF,
+                                0.0,
+                                0.0,
+                                0.0,
+                                reachF,
+                                modeF,
+                                washLumaF,
+                                inkF.0,
+                                inkF.1,
+                                inkF.2,
+                                inkF.3,
+                                boxLeft,
+                                boxTop,
+                                boxRight,
+                                boxBottom,
+                                clipF.0,
+                                clipF.1,
+                                clipF.2,
+                                clipF.3,
+                                cosF,
+                                sinF,
+                                clipRadiusF,
+                                clipKindF
+                            )
+                            state.quadCount = quad + 1
+                        }
+                    }
+                    pen += Float(slot.advance + shaped.kerning) / rasterF
+                }
+                // A glyph that could not be drawn or kept adds no ink and no advance.
+                None -> {}
+            }
+        }
+    }
+}

@@ -1,0 +1,57 @@
+// The recipe glass's rim lights: how much of a light an edge faces, and the
+// highlight layer's band, as the platform's SDF highlight draws them. Pure
+// functions of the edge's depth and normal, shared by `UiGlassRecipe.ksl`'s
+// edge specular and its highlight layer.
+
+// How much a light at `angle` with spread `spread` falls on an edge facing
+// `normal`: one facing it head on, nothing where the edge turns `spread` or
+// more away from it, rising linearly with the cosine between, as the platform's
+// highlight takes the cosine of the spread it is given. An angle of zero is
+// straight up, as the platform measures the highlight layer's lights: the
+// Dock's key light at 0 lights its top edge.
+function facing(normal: Float2, angle: Float, spread: Float) -> Float {
+    let toward = dot(normal, Float2(sin(angle), 0.0 - cos(angle)))
+    let edge = cos(min(spread, 3.14159))
+    return clamp((toward - edge) / max(1.0 - edge, 0.0001), 0.0, 1.0)
+}
+
+// How much the edge specular falls on an edge facing `normal`: the alignment
+// with the light at `angle` from the horizontal, on the lit side and the
+// opposite one alike, remapped from the cosine of `spread` up to one. The Dock's
+// 75 degrees light the corners at about six tenths of the top, as the
+// platform's rim runs round them, and leave the straight ends dark.
+function specularFacing(normal: Float2, angle: Float, spread: Float) -> Float {
+    let toward = abs(dot(normal, Float2(cos(angle), sin(angle))))
+    let edge = cos(min(spread, 3.14159))
+    return clamp((toward - edge) / max(1.0 - edge, 0.0001), 0.0, 1.0)
+}
+
+// How much the key-fill falls on an edge facing `normal`: as `facing`, its
+// angle measured from straight up, `glass_background`'s key_fill_highlight_dir
+// (sin, -cos), but on the lit side and the opposite one alike. A quarter turn
+// lights the side edges.
+function keyFillFacing(normal: Float2, angle: Float, spread: Float) -> Float {
+    let toward = abs(dot(normal, Float2(sin(angle), 0.0 - cos(angle))))
+    let edge = cos(min(spread, 3.14159))
+    return clamp((toward - edge) / max(1.0 - edge, 0.0001), 0.0, 1.0)
+}
+
+// One light of the highlight layer, as the platform's SDF highlight draws it,
+// `depth` points inside the edge: a band `height` deep whose fall-off is
+// `curvature` linear and the rest flat, anti-aliased over `pixel` at both of its
+// ends, where the edge faces the light; then compressed by `amount` as
+// v / (1 + k (1 - v)), k = 1 / amount - 2, the platform's own conversion, so
+// an amount of a half draws the band as it is. A diffuse light is the linear
+// band alone.
+function rimLight(depth: Float, normal: Float2, height: Float, angle: Float, spread: Float, curvature: Float, amount: Float, pixel: Float) -> Float {
+    if height <= 0.0 {
+        return 0.0
+    }
+    let fall = clamp(depth / height, 0.0, 1.0)
+    let flat = 1.0 - step(1.0, fall)
+    let outer = clamp(depth / pixel + 0.5, 0.0, 1.0)
+    let inner = clamp((height - depth) / pixel + 0.5, 0.0, 1.0)
+    let lit = mix(flat, 1.0 - fall, curvature) * outer * inner * facing(normal, angle, spread)
+    let k = 1.0 / max(amount, 0.000001) - 2.0
+    return lit / max(1.0 + k * (1.0 - lit), 0.000001)
+}

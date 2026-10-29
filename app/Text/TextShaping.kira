@@ -1,0 +1,484 @@
+import Foundation
+
+// Shaping a run: its scalars mapped to glyphs, GSUB's substitutions run over
+// them (FontSubstitution.kira), and GPOS's kerning moving them
+// (roadmap/09-kira-ui.md, "a line of text, correctly kerned, with a ligature
+// visible"). Measuring and drawing both read the one shaped run, so the box a
+// run is laid out in and the glyphs drawn into it stay one width.
+
+// One glyph of a shaped run: which glyph, the byte of the text it came from,
+// the pen's whole advance past it, how much positioning changed the glyph's
+// own advance by, how far right of the pen it is drawn and how far above the
+// baseline, all in pixels of the instance the run was shaped in. A mark set
+// on the glyph before it advances the pen by nothing.
+struct ShapedGlyph {
+    let glyph: GlyphId
+    let cluster: Number
+    let advance: Number
+    let kerning: Number
+    let offset: Number
+    let rise: Number
+}
+
+// What positioning moved each glyph by, in font units: its advance, and where
+// it is drawn from the pen. A mark attached to another glyph names it, with
+// how far its anchor is from that glyph's.
+struct GlyphPlacement {
+    var advances: [Float] = []
+    var offsets: [Float] = []
+    var attachments: [Number] = []
+    var anchorX: [Float] = []
+    var anchorY: [Float] = []
+    // A cursive attachment's: the advance that replaces the glyph's own,
+    // where `advanceSet` is, and the glyph a joined glyph hangs from (-1 for
+    // none) with how far above that glyph it sits.
+    var advanceTo: [Float] = []
+    var advanceSet: [Bool] = []
+    var cursiveParent: [Number] = []
+    var cursiveRise: [Float] = []
+}
+
+// The bits of a value format, in the order its values are written.
+namespace ValueFormat {
+    let xPlacement: Number = 0x0001
+    let yPlacement: Number = 0x0002
+    let xAdvance: Number = 0x0004
+    let yAdvance: Number = 0x0008
+    let xPlacementDevice: Number = 0x0010
+    let yPlacementDevice: Number = 0x0020
+    let xAdvanceDevice: Number = 0x0040
+    let yAdvanceDevice: Number = 0x0080
+    // A device table that is an index into the item variation store.
+    let variationIndex: Number = 0x8000
+}
+
+// Which way a run reads. Splitting a paragraph into runs of one direction is
+// the bidirectional pass above the shaper (roadmap/09-text.md); a run the
+// shaper is handed reads one way.
+@Derive(Copy)
+enum TextDirection {
+    LeftToRight
+    RightToLeft
+}
+
+// The script a run is in, which chooses the language system its features
+// are read from.
+@Derive(Copy)
+enum TextScript {
+    Latin
+    Greek
+    Cyrillic
+    Armenian
+    Hebrew
+    Arabic
+    Devanagari
+    Thai
+    Hangul
+    Kana
+    Han
+}
+
+extend TextEngine {
+    // `text` shaped in `instance`, in the script and direction its letters
+    // give it, from what an earlier call answered where it can be.
+    function shapedRun(
+        borrow mut self,
+        instance: borrow FaceInstance,
+        text: borrow String
+    ) -> [ShapedGlyph] {
+        let key = "\(instance.key) \(text)"
+        match shapes.value(key) {
+            Some(known) -> return known
+            None -> {}
+        }
+        let script = runScript(text)
+        let shaped = shape(instance, text, script, scriptDirection(script))
+        if shapes.count() >= TextCache.shapes { shapes.removeAll() }
+        shapes.set(move key, copy shaped)
+        return shaped
+    }
+
+    // `text` shaped in `instance` as a run in `script` reading `direction`:
+    // substituted and positioned in the order it was written, then, reading
+    // right to left, turned to the order it is seen in, as HarfBuzz shapes a
+    // run.
+    function shape(
+        borrow mut self,
+        instance: borrow FaceInstance,
+        text: borrow String,
+        script: borrow TextScript,
+        direction: borrow TextDirection
+    ) -> [ShapedGlyph] {
+        let font = fonts[instance.font.raw]
+        let tag = scriptTag(script)
+        var buffer = ShapingBuffer {}
+        var scalars: [Number] = []
+        var bytes: [Number] = []
+        var byte: Number = 0
+        while byte < text.count {
+            let width = scalarWidthAt(text, byte)
+            if byte + width > text.count { break }
+            // A run ends at a NUL, as one handed over from C does.
+            let scalar = scalarAt(text, byte, width)
+            if scalar == 0 { break }
+            buffer.glyphs.append(font.glyph(scalar).raw)
+            scalars.append(scalar)
+            bytes.append(byte)
+            buffer.clusters.append(byte)
+            byte += width
+        }
+        if script == .Arabic {
+            font.joinForms(buffer, scalars, bytes, tag, instance.tabular)
+        } else {
+            font.substitute(buffer, font.substitutionsFor(tag, instance.tabular))
+        }
+        let backward = direction == .RightToLeft
+        let placement = font.position(
+            buffer,
+            instance.coordinates,
+            font.positioningsFor(tag),
+            backward
+        )
+        let count = buffer.glyphs.count
+        // Each glyph's advance and placement in pixels, in the order it is
+        // seen: a run read right to left turns end to end here.
+        var order: [Number] = []
+        var seen: [Number] = []
+        for index in 0..count {
+            order.append(backward ? count - 1 - index : index)
+            seen.append(0)
+        }
+        for (place, index) in order.enumerated() { seen[index] = place }
+        var advances: [Number] = []
+        var pens: [Number] = []
+        var pen: Number = 0
+        for index in order {
+            let attached = placement.attachments[index] >= 0
+            let glyph = GlyphId(UN16(buffer.glyphs[index]))
+            let own = placement.advanceSet[index]
+            ? Number(placement.advanceTo[index] * instance.scale)
+            : advance(instance, glyph)
+            let width = attached
+            ? 0
+            : own + Number(placement.advances[index] * instance.scale) + instance.tracking
+            pens.append(pen)
+            advances.append(width)
+            pen += width
+        }
+        // A mark is drawn where its anchor meets the glyph it hangs from:
+        // from that glyph's pen and placement, in the order written, so a mark
+        // on a mark follows the first.
+        var offsets: [Number] = []
+        var rises: [Number] = []
+        for place in 0..count {
+            offsets.append(Number(placement.offsets[order[place]] * instance.scale))
+            rises.append(0)
+        }
+        // A joined glyph sits as high as the glyph it hangs from, and its
+        // own rise above that, along the whole chain.
+        let lifted = cursiveRises(placement)
+        for index in 0..count {
+            rises[seen[index]] = Number(lifted[index] * instance.scale)
+        }
+        for index in 0..count {
+            let target = placement.attachments[index]
+            if target < 0 { continue }
+            let place = seen[index]
+            let base = seen[target]
+            offsets[place] = pens[base] - pens[place] + offsets[base]
+                + Number(placement.anchorX[index] * instance.scale)
+            rises[place] = rises[base] + Number(placement.anchorY[index] * instance.scale)
+        }
+        var shaped: [ShapedGlyph] = []
+        for (place, index) in order.enumerated() {
+            let glyph = GlyphId(UN16(buffer.glyphs[index]))
+            shaped.append(
+                ShapedGlyph {
+                    glyph: glyph,
+                    cluster: Number(buffer.clusters[index]),
+                    advance: advances[place],
+                    kerning: advances[place] - advance(instance, glyph),
+                    offset: offsets[place],
+                    rise: rises[place]
+                }
+            )
+        }
+        return shaped
+    }
+}
+
+// The script of a run: that of its first letter that has one, Latin for a run
+// of digits, spaces and punctuation, which every script shares.
+function runScript(text: borrow String) -> TextScript {
+    var byte: Number = 0
+    while byte < text.count {
+        let width = scalarWidthAt(text, byte)
+        if byte + width > text.count { break }
+        match scalarScript(scalarAt(text, byte, width)) {
+            Some(script) -> return script
+            None -> {}
+        }
+        byte += width
+    }
+    return .Latin
+}
+
+// The script a scalar belongs to, by its Unicode block; nothing for one every
+// script shares.
+function scalarScript(scalar: Number) -> TextScript? {
+    return match scalar {
+        0x41..0x5B, 0x61..0x7B, 0xC0..0x250, 0x1E00..0x1F00 -> .Some(.Latin)
+        0x370..0x400, 0x1F00..0x2000 -> .Some(.Greek)
+        0x400..0x530 -> .Some(.Cyrillic)
+        0x530..0x590 -> .Some(.Armenian)
+        0x590..0x600 -> .Some(.Hebrew)
+        0x600..0x700, 0x750..0x780 -> .Some(.Arabic)
+        0x900..0x980 -> .Some(.Devanagari)
+        0xE00..0xE80 -> .Some(.Thai)
+        0x1100..0x1200, 0xAC00..0xD7B0 -> .Some(.Hangul)
+        0x3040..0x3100 -> .Some(.Kana)
+        0x4E00..0xA000 -> .Some(.Han)
+        else -> .None
+    }
+}
+
+// The way a run in `script` reads.
+function scriptDirection(script: borrow TextScript) -> TextDirection {
+    return match script {
+        Hebrew, Arabic -> .RightToLeft
+        Latin, Greek, Cyrillic, Armenian, Devanagari, Thai, Hangul, Kana, Han -> .LeftToRight
+    }
+}
+
+// The OpenType tag of a script.
+function scriptTag(script: borrow TextScript) -> UN32 {
+    return match script {
+        // latn, grek, cyrl, armn, hebr, arab, dev2, thai, hang, kana, hani
+        Latin -> 0x6C61746E
+        Greek -> 0x6772656B
+        Cyrillic -> 0x6379726C
+        Armenian -> 0x61726D6E
+        Hebrew -> 0x68656272
+        Arabic -> 0x61726162
+        Devanagari -> 0x64657632
+        Thai -> 0x74686169
+        Hangul -> 0x68616E67
+        Kana -> 0x6B616E61
+        Han -> 0x68616E69
+    }
+}
+
+extend FontFile {
+    // How the positionings `table` turns on move each glyph of `buffer`, at
+    // `coordinates`.
+    // A run set right to left is `backward`.
+    function position(
+        buffer: borrow ShapingBuffer,
+        coordinates: borrow [Float],
+        table: borrow LayoutTable,
+        backward: Bool
+    ) -> GlyphPlacement {
+        var placement = GlyphPlacement {}
+        for index in 0..buffer.glyphs.count {
+            placement.advances.append(0.0)
+            placement.offsets.append(0.0)
+            placement.attachments.append(-1)
+            placement.anchorX.append(0.0)
+            placement.anchorY.append(0.0)
+            placement.advanceTo.append(0.0)
+            placement.advanceSet.append(false)
+            placement.cursiveParent.append(-1)
+            placement.cursiveRise.append(0.0)
+        }
+        let run = PositioningRun { coordinates: copy coordinates, backward: backward }
+        for lookup in table.active {
+            var at: Number = 0
+            while at < buffer.glyphs.count {
+                if skipped(buffer.glyphs[at], lookup) {
+                    at += 1
+                    continue
+                }
+                let step = positionAt(lookup, buffer, at, run, placement, 0)
+                at += step < 0 ? 1 : max(step, 1)
+            }
+        }
+        return placement
+    }
+
+    // Applies the first of `lookup`'s subtables that applies at `at`; how many
+    // glyphs it consumed, or -1 where none applied.
+    function positionAt(
+        lookup: borrow LayoutLookup,
+        buffer: borrow ShapingBuffer,
+        at: Number,
+        run: borrow PositioningRun,
+        placement: borrow mut GlyphPlacement,
+        depth: Number
+    ) -> Number {
+        for subtable in lookup.subtables {
+            let step = match lookup.kind {
+                1 -> singleAdjustment(subtable, buffer, at, run.coordinates, placement)
+                2 -> pairAdjustment(subtable, lookup, buffer, at, run.coordinates, placement)
+                3 -> attachCursive(subtable, lookup, buffer, at, run, placement)
+                4, 5, 6 -> attachMark(
+                    subtable,
+                    lookup.kind,
+                    lookup,
+                    buffer,
+                    at,
+                    run.coordinates,
+                    placement
+                )
+                7 -> contextPositioning(subtable, lookup, buffer, at, run, placement, depth, false)
+                8 -> contextPositioning(subtable, lookup, buffer, at, run, placement, depth, true)
+                else -> -1
+            }
+            if step >= 0 { return step }
+        }
+        return -1
+    }
+
+    function singleAdjustment(
+        subtable: Number,
+        buffer: borrow ShapingBuffer,
+        at: Number,
+        coordinates: borrow [Float],
+        placement: borrow mut GlyphPlacement
+    ) -> Number {
+        let index = data.coverageIndex(subtable + data.u16(subtable + 2), buffer.glyphs[at])
+        if index < 0 { return -1 }
+        let format = data.u16(subtable + 4)
+        var value = subtable + 6
+        if data.u16(subtable) == 2 {
+            if index >= data.u16(subtable + 6) { return -1 }
+            value = subtable + 8 + index * valueSize(format)
+        }
+        adjust(placement, at, format, value, subtable, coordinates)
+        return 1
+    }
+
+    // Kerning: the pair at `at` and the next glyph the lookup does not skip,
+    // by glyph (format 1) or by class (format 2).
+    function pairAdjustment(
+        subtable: Number,
+        lookup: borrow LayoutLookup,
+        buffer: borrow ShapingBuffer,
+        at: Number,
+        coordinates: borrow [Float],
+        placement: borrow mut GlyphPlacement
+    ) -> Number {
+        let first = buffer.glyphs[at]
+        if data.coverageIndex(subtable + data.u16(subtable + 2), first) < 0 { return -1 }
+        let second = nextUnskipped(buffer, at + 1, lookup)
+        if second < 0 { return -1 }
+        let firstFormat = data.u16(subtable + 4)
+        let secondFormat = data.u16(subtable + 6)
+        let firstSize = valueSize(firstFormat)
+        let record = match data.u16(subtable) {
+            1 -> pairRecord(
+                subtable,
+                first,
+                buffer.glyphs[second],
+                firstSize + valueSize(secondFormat)
+            )
+            2 -> classRecord(
+                subtable,
+                first,
+                buffer.glyphs[second],
+                firstSize + valueSize(secondFormat)
+            )
+            else -> -1
+        }
+        if record < 0 { return -1 }
+        adjust(placement, at, firstFormat, record, subtable, coordinates)
+        adjust(placement, second, secondFormat, record + firstSize, subtable, coordinates)
+        return secondFormat != 0 ? second - at + 1 : second - at
+    }
+
+    // Where the values for `first` then `second` start in a format 1 pair
+    // subtable whose records hold `size` bytes of values; -1 for none.
+    function pairRecord(subtable: Number, first: Number, second: Number, size: Number) -> Number {
+        let index = data.coverageIndex(subtable + data.u16(subtable + 2), first)
+        if index >= data.u16(subtable + 8) { return -1 }
+        let set = subtable + data.u16(subtable + 10 + index * 2)
+        let stride = 2 + size
+        var low: Number = 0
+        var high = data.u16(set)
+        while low < high {
+            let middle = trunc((low + high) / 2)
+            let record = set + 2 + middle * stride
+            let found = data.u16(record)
+            if found == second { return record + 2 }
+            if found < second { low = middle + 1 } else { high = middle }
+        }
+        return -1
+    }
+
+    // Where the values for `first` then `second` start in a format 2 pair
+    // subtable, by the classes its two class definitions give them.
+    function classRecord(subtable: Number, first: Number, second: Number, size: Number) -> Number {
+        let firstClass = data.glyphClassIn(subtable + data.u16(subtable + 8), first)
+        let secondClass = data.glyphClassIn(subtable + data.u16(subtable + 10), second)
+        let firstCount = data.u16(subtable + 12)
+        let secondCount = data.u16(subtable + 14)
+        if firstClass >= firstCount || secondClass >= secondCount { return -1 }
+        return subtable + 16 + (firstClass * secondCount + secondClass) * size
+    }
+
+    // Adds the value record at `value`, in `format`, to glyph `at`. Device
+    // tables count from `base`; one that indexes the variation store adds the
+    // delta at `coordinates`.
+    function adjust(
+        placement: borrow mut GlyphPlacement,
+        at: Number,
+        format: Number,
+        value: Number,
+        base: Number,
+        coordinates: borrow [Float]
+    ) {
+        var field = value
+        var advance: Float = 0.0
+        var offset: Float = 0.0
+        if (format & ValueFormat.xPlacement) != 0 {
+            offset += Float(data.i16(field))
+            field += 2
+        }
+        if (format & ValueFormat.yPlacement) != 0 { field += 2 }
+        if (format & ValueFormat.xAdvance) != 0 {
+            advance += Float(data.i16(field))
+            field += 2
+        }
+        if (format & ValueFormat.yAdvance) != 0 { field += 2 }
+        if (format & ValueFormat.xPlacementDevice) != 0 {
+            offset += deviceDelta(base, data.u16(field), coordinates)
+            field += 2
+        }
+        if (format & ValueFormat.yPlacementDevice) != 0 { field += 2 }
+        if (format & ValueFormat.xAdvanceDevice) != 0 {
+            advance += deviceDelta(base, data.u16(field), coordinates)
+        }
+        placement.advances[at] = placement.advances[at] + advance
+        placement.offsets[at] = placement.offsets[at] + offset
+    }
+
+    // The delta a device table `offset` bytes past `base` adds at
+    // `coordinates`: a variation index's; a hinting device table adds none,
+    // as glyphs are not hinted.
+    function deviceDelta(base: Number, offset: Number, coordinates: borrow [Float]) -> Float {
+        if offset == 0 { return 0.0 }
+        let device = base + offset
+        if data.u16(device + 4) != ValueFormat.variationIndex { return 0.0 }
+        return variationDelta(data.u16(device), data.u16(device + 2), coordinates)
+    }
+}
+
+// How many bytes a value record in `format` holds: two for each bit set.
+function valueSize(format: Number) -> Number {
+    var size: Number = 0
+    var bits = format & 0xFF
+    while bits != 0 {
+        size += (bits & 1) * 2
+        bits = bits >> 1
+    }
+    return size
+}

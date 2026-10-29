@@ -1,0 +1,282 @@
+import Foundation
+
+// An SVG path's `d`, walked into outlines: M L H V C S Q T A Z, absolute in
+// upper case and relative in lower.
+
+enum PathCommand {
+    Move
+    Line
+    Horizontal
+    Vertical
+    Cubic
+    SmoothCubic
+    Quadratic
+    SmoothQuadratic
+    Arc
+    Close
+}
+
+enum PathPlacement {
+    Absolute
+    Relative
+}
+
+struct PathStep {
+    let command: PathCommand
+    let placement: PathPlacement
+}
+
+// What reading one command's numbers came to: a path's data ends at the first
+// command whose numbers are missing.
+enum PathProgress {
+    Drawn
+    Truncated
+}
+
+function pathStep(letter: borrow String) -> PathStep? {
+    match letter {
+        "M" -> return .Some(PathStep { command: .Move, placement: .Absolute })
+        "m" -> return .Some(PathStep { command: .Move, placement: .Relative })
+        "L" -> return .Some(PathStep { command: .Line, placement: .Absolute })
+        "l" -> return .Some(PathStep { command: .Line, placement: .Relative })
+        "H" -> return .Some(PathStep { command: .Horizontal, placement: .Absolute })
+        "h" -> return .Some(PathStep { command: .Horizontal, placement: .Relative })
+        "V" -> return .Some(PathStep { command: .Vertical, placement: .Absolute })
+        "v" -> return .Some(PathStep { command: .Vertical, placement: .Relative })
+        "C" -> return .Some(PathStep { command: .Cubic, placement: .Absolute })
+        "c" -> return .Some(PathStep { command: .Cubic, placement: .Relative })
+        "S" -> return .Some(PathStep { command: .SmoothCubic, placement: .Absolute })
+        "s" -> return .Some(PathStep { command: .SmoothCubic, placement: .Relative })
+        "Q" -> return .Some(PathStep { command: .Quadratic, placement: .Absolute })
+        "q" -> return .Some(PathStep { command: .Quadratic, placement: .Relative })
+        "T" -> return .Some(PathStep { command: .SmoothQuadratic, placement: .Absolute })
+        "t" -> return .Some(PathStep { command: .SmoothQuadratic, placement: .Relative })
+        "A" -> return .Some(PathStep { command: .Arc, placement: .Absolute })
+        "a" -> return .Some(PathStep { command: .Arc, placement: .Relative })
+        "Z", "z" -> return .Some(PathStep { command: .Close, placement: .Absolute })
+        else -> return .None
+    }
+}
+
+// The numbers each command takes.
+function operandCount(command: borrow PathCommand) -> Number {
+    return match command {
+        Move -> 2
+        Line -> 2
+        Horizontal -> 1
+        Vertical -> 1
+        Cubic -> 6
+        SmoothCubic -> 4
+        Quadratic -> 4
+        SmoothQuadratic -> 2
+        Arc -> 7
+        Close -> 0
+    }
+}
+
+// Numbers that follow a command without a letter of their own repeat it,
+// except after a move, whose further pairs are lines. A close takes no
+// numbers, so numbers after one start nothing.
+function repeatedStep(step: borrow PathStep) -> PathStep? {
+    return match step.command {
+        Move -> .Some(PathStep { command: .Line, placement: step.placement })
+        Close -> .None
+        Line -> .Some(step)
+        Horizontal -> .Some(step)
+        Vertical -> .Some(step)
+        Cubic -> .Some(step)
+        SmoothCubic -> .Some(step)
+        Quadratic -> .Some(step)
+        SmoothQuadratic -> .Some(step)
+        Arc -> .Some(step)
+    }
+}
+
+let symbolOrigin = SymbolPoint { x: 0.0, y: 0.0 }
+
+// The outlines `data` draws.
+function symbolPathOutlines(data: borrow String) -> [SymbolOutline] {
+    var walk = PathWalk { scanner: SymbolScanner { text: copy data } }
+    var step: PathStep? = .None
+    while true {
+        match walk.scanner.letter() {
+            Some(letter) -> step = pathStep(letter)
+            None -> {
+                if walk.scanner.atEnd() { break }
+                step = match step {
+                    Some(previous) -> repeatedStep(previous)
+                    None -> .None
+                }
+            }
+        }
+        match step {
+            Some(taken) -> {
+                match walk.take(taken) {
+                    Drawn -> {}
+                    Truncated -> break
+                }
+            }
+            // A letter that names no command, or numbers no command takes,
+            // end the data where they stand.
+            None -> break
+        }
+    }
+    return walk.finished()
+}
+
+struct PathWalk {
+    var scanner: SymbolScanner
+    var outlines: [SymbolOutline] = []
+    // The outline being drawn; empty until a command starts one.
+    var drawing: SymbolOutline = SymbolOutline()
+    var position: SymbolPoint = symbolOrigin
+    // Where the outline being drawn started, which a close returns to.
+    var start: SymbolPoint = symbolOrigin
+    // The last curve's second control point, which a smooth curve reflects.
+    var control: SymbolPoint = symbolOrigin
+    var previous: PathCommand? = .None
+
+    function take(borrow mut self, step: borrow PathStep) -> PathProgress {
+        var values: [Float] = []
+        for index in 0..operandCount(step.command) {
+            match scanner.number() {
+                Some(value) -> values.append(value)
+                None -> return .Truncated
+            }
+        }
+        let origin = match step.placement {
+            Absolute -> symbolOrigin
+            Relative -> position
+        }
+        draw(step.command, values, origin)
+        previous = .Some(step.command)
+        return .Drawn
+    }
+
+    function draw(
+        borrow mut self,
+        command: borrow PathCommand,
+        values: borrow [Float],
+        origin: borrow SymbolPoint
+    ) {
+        match command {
+            Move -> moveTo(placed(values, 0, origin))
+            Line -> lineTo(placed(values, 0, origin))
+            Horizontal -> lineTo(SymbolPoint { x: values[0] + origin.x, y: position.y })
+            Vertical -> lineTo(SymbolPoint { x: position.x, y: values[0] + origin.y })
+            Cubic -> cubicTo(
+                placed(values, 0, origin),
+                placed(values, 2, origin),
+                placed(values, 4, origin)
+            )
+            SmoothCubic -> cubicTo(
+                reflected(.Cubic, .SmoothCubic),
+                placed(values, 0, origin),
+                placed(values, 2, origin)
+            )
+            Quadratic -> quadraticTo(placed(values, 0, origin), placed(values, 2, origin))
+            SmoothQuadratic -> quadraticTo(
+                reflected(.Quadratic, .SmoothQuadratic),
+                placed(values, 0, origin)
+            )
+            Arc -> arcTo(values, origin)
+            Close -> close()
+        }
+    }
+
+    function moveTo(borrow mut self, point: borrow SymbolPoint) {
+        finish()
+        position = point
+        start = point
+        drawing.add(point)
+    }
+
+    // Starts an outline at the current point when none is being drawn, so a
+    // path that draws before it moves begins where it stands.
+    function begin(borrow mut self) {
+        if drawing.points.count == 0 { drawing.add(position) }
+    }
+
+    function lineTo(borrow mut self, point: borrow SymbolPoint) {
+        begin()
+        position = point
+        drawing.add(point)
+    }
+
+    function cubicTo(
+        borrow mut self,
+        first: borrow SymbolPoint,
+        second: borrow SymbolPoint,
+        to: borrow SymbolPoint
+    ) {
+        begin()
+        drawing.addCubic(position, first, second, to)
+        control = second
+        position = to
+    }
+
+    function quadraticTo(borrow mut self, control: borrow SymbolPoint, to: borrow SymbolPoint) {
+        begin()
+        drawing.addQuadratic(position, control, to)
+        self.control = control
+        position = to
+    }
+
+    function arcTo(borrow mut self, values: borrow [Float], origin: borrow SymbolPoint) {
+        begin()
+        let arc = SymbolArc {
+            radiusX: values[0],
+            radiusY: values[1],
+            rotation: values[2],
+            size: values[3] == 0.0 ? .Small : .Large,
+            sweep: values[4] == 0.0 ? .CounterClockwise : .Clockwise,
+            to: placed(values, 5, origin)
+        }
+        drawing.addArc(position, arc)
+        position = arc.to
+    }
+
+    function close(borrow mut self) {
+        if drawing.points.count == 0 { return }
+        drawing.closed = true
+        position = start
+    }
+
+    // A smooth curve's first control point: the last one reflected through
+    // the current point when the command before was a curve of its kind, and
+    // the current point otherwise.
+    function reflected(
+        borrow self,
+        curve: borrow PathCommand,
+        smooth: borrow PathCommand
+    ) -> SymbolPoint {
+        match previous {
+            Some(command) -> {
+                if command == curve || command == smooth {
+                    return SymbolPoint {
+                        x: 2.0 * position.x - control.x,
+                        y: 2.0 * position.y - control.y
+                    }
+                }
+            }
+            None -> {}
+        }
+        return position
+    }
+
+    function finish(borrow mut self) {
+        if drawing.points.count == 0 { return }
+        outlines.append(drawing)
+        drawing = SymbolOutline()
+    }
+
+    function finished(borrow mut self) -> [SymbolOutline] {
+        finish()
+        return outlines
+    }
+}
+
+// The point at `values[index]` and the number after it, from `origin`.
+function placed(values: borrow [Float], index: Number, origin: borrow SymbolPoint) -> SymbolPoint {
+    return SymbolPoint { x: values[index] + origin.x, y: values[index + 1] + origin.y }
+}

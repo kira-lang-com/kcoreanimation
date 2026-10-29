@@ -1,0 +1,516 @@
+import Foundation
+
+// Lowering the retained tree into a render plan.
+//
+// A recursive walk over (node, target-pass) frames, carrying the growing plan as
+// a `borrow mut` accumulator. A node normally emits one draw command into its
+// current pass and hands its own effective opacity to its children (ordinary
+// opacity inheritance). A GROUP-OPACITY node instead opens its own pass, draws
+// its whole subtree into it at full alpha, and emits a single COMPOSITE command
+// into the parent pass at the group alpha — so overlapping children blend once,
+// inside the group, and the group fades as one. Folding the alpha into each child
+// (the wrong thing) is exactly what this avoids. A render-target node opens a
+// pass targeting a texture the same way.
+//
+// A DEFORMED node -- glass pulled by a press -- draws its own content in place
+// at the deformed geometry, and opens a pass for what it holds, drawn at rest:
+// the composite carries that picture through the deformation, so the text on
+// the glass stretches with it as an image instead of being laid out afresh at
+// every frame's shape, and while only the deformation changes the pass is not
+// dirty and its texture is reused.
+//
+// Overlays are walked from the canvas root, unclipped, after the root subtree —
+// a hoisted menu escapes its ancestors' clips.
+
+public @Derive(Copy)
+struct CAPlanFrame {
+    var id: LayerId = LayerId(0)
+    var pass: RenderPassId = RenderPassId(0)
+    var world: CAAffineTransform = CAAffineTransform {}
+    var opacity: Number = 1.0
+    var clipMinX: Number = 0.0
+    var clipMinY: Number = 0.0
+    var clipMaxX: Number = 1000000.0
+    var clipMaxY: Number = 1000000.0
+    var clipRadius: Number = 0.0
+    var clipShapeKind: Number = 0
+    var glassWash: Number = 0.0
+    var glassWashLuma: Number = 1.0
+    // Whether what is planned lands on a blending group's surface, where a cut
+    // goes back to what the group started out as.
+    var seeded: Bool = false
+}
+
+public function planUnclipped(id: LayerId, pass: RenderPassId) -> CAPlanFrame {
+    return CAPlanFrame { id: id, pass: pass }
+}
+
+extend CALayerNode {
+    function drawCmd(
+        at: borrow CAAffineTransform,
+        opacity: Number,
+        frame: borrow CAPlanFrame
+    ) -> CADrawCmd {
+        // Drawn where its platter is, which is its own box unless a press is
+        // still sliding onto it.
+        let world = at.concat(translation(self.platterX.presentation, self.platterY.presentation))
+        let w = self.boundsW.presentation + self.platterW.presentation
+        let h = self.boundsH.presentation + self.platterH.presentation
+        let lengthScale = world.lengthScale()
+        return CADrawCmd {
+            layer: self.id,
+            kind: self.content.kind(),
+            content: self.content,
+            quad: world.orientedQuad(w, h),
+            worldBounds: world.applyRect(Rect { x: 0.0, y: 0.0, width: w, height: h }),
+            localWidth: w,
+            localHeight: h,
+            layoutWidth: self.boundsW.model + self.platterW.model,
+            opacity: opacity,
+            fill: self.fillColor.presentation(),
+            border: self.borderColor.presentation(),
+            cornerRadius: self.cornerRadius.presentation * lengthScale,
+            borderWidth: self.borderWidth.presentation * lengthScale,
+            lengthScale: lengthScale,
+            textScale: world.textScale(),
+            textWeight: self.textWeight.presentation,
+            glassWash: frame.glassWash,
+            glassWashLuma: frame.glassWashLuma,
+            capturesBackdrop: self.capturesBackdrop,
+            clipMinX: frame.clipMinX,
+            clipMinY: frame.clipMinY,
+            clipMaxX: frame.clipMaxX,
+            clipMaxY: frame.clipMaxY,
+            clipRadius: frame.clipRadius,
+            clipShapeKind: frame.clipShapeKind,
+            sourcePass: .None,
+            hit: self.hit,
+            hitKey: self.hitKey
+        }
+    }
+
+    // What the layer draws, as it lands on its surface. A blending group's own
+    // draw opens that surface on a fresh capture of what is behind it; a cut on
+    // a blending group's surface puts that capture back through its shape, as
+    // a `destOut` does to a surface that started out as it, rather than
+    // leaving nothing.
+    function planDrawCmd(
+        at: borrow CAAffineTransform,
+        opacity: Number,
+        frame: borrow CAPlanFrame,
+        seeds: Bool
+    ) -> CADrawCmd {
+        var cmd = self.drawCmd(at, opacity, frame)
+        if seeds {
+            cmd.capturesBackdrop = true
+            cmd.seedsGroup = true
+        }
+        if frame.seeded && self.cutsOut() {
+            // A `destOut` reads only its source's alpha, so the capture comes
+            // back as much as the cut's fill covers, untinted by its colour.
+            cmd.opacity = cmd.opacity * cmd.fill.a
+            cmd.fill = CAColor { a: 0.0 }
+            cmd.content = .Glass(CAGlass { style: .Some(CAGlassStyle { recipe: .Identity }) })
+            cmd.kind = cmd.content.kind()
+        }
+        return cmd
+    }
+
+    // Whether the layer is a cut: a fill taken out of what is under it.
+    function cutsOut() -> Bool {
+        return match self.content {
+            Solid(s) -> s.blend == .DestinationOut
+            Empty, Text, Texture, Icon, Glass, Gradient -> false
+        }
+    }
+
+    function hasShadow() -> Bool {
+        let color = self.shadowColor.presentation()
+        return self.shadowOpacity.presentation > 0.0 && color.a > 0.0
+    }
+
+    function shadowCmd(
+        world: borrow CAAffineTransform,
+        opacity: Number,
+        frame: borrow CAPlanFrame
+    ) -> CADrawCmd {
+        let width = self.boundsW.presentation
+        let height = self.boundsH.presentation
+        let lengthScale = world.lengthScale()
+        let blur = max(self.shadowRadius.presentation * lengthScale, 0.0)
+        let localOffsetX = self.shadowX.presentation
+        let localOffsetY = self.shadowY.presentation
+        let offsetX = world.a * localOffsetX + world.c * localOffsetY
+        let offsetY = world.b * localOffsetX + world.d * localOffsetY
+        var quad = world.orientedQuad(width, height)
+        quad.centerX = quad.centerX + offsetX
+        quad.centerY = quad.centerY + offsetY
+        let base = world.applyRect(Rect { x: 0.0, y: 0.0, width: width, height: height })
+        let pad = blur * 1.5 + 1.0
+        // An inverted shadow lands only inside the caster's own box.
+        var reach = Rect {
+            x: base.x + offsetX - pad,
+            y: base.y + offsetY - pad,
+            width: base.width + pad * 2.0,
+            height: base.height + pad * 2.0
+        }
+        if self.shadowInverts {
+            reach = copy base
+        }
+        return CADrawCmd {
+            layer: self.id,
+            kind: DrawKind.shadow,
+            // A run of text casts the shape of its letters, so it is carried;
+            // every other layer, and every inverted shadow, casts its box,
+            // which needs only its bounds.
+            content: self.content.isText() && !self.shadowInverts ? copy self.content : .Empty,
+            quad: quad,
+            worldBounds: reach,
+            localWidth: width,
+            localHeight: height,
+            layoutWidth: self.boundsW.model,
+            opacity: opacity * self.shadowOpacity.presentation,
+            fill: self.shadowColor.presentation(),
+            cornerRadius: self.cornerRadius.presentation * lengthScale,
+            shadowRadius: blur,
+            shadowOffset: Point { x: offsetX, y: offsetY },
+            shadowKnockout: self.capturesBackdrop,
+            shadowInverts: self.shadowInverts,
+            shapeKind: self.content.shapeKind(),
+            lengthScale: lengthScale,
+            textScale: world.textScale(),
+            textWeight: self.textWeight.presentation,
+            clipMinX: frame.clipMinX,
+            clipMinY: frame.clipMinY,
+            clipMaxX: frame.clipMaxX,
+            clipMaxY: frame.clipMaxY,
+            clipRadius: frame.clipRadius,
+            clipShapeKind: frame.clipShapeKind,
+            sourcePass: .None
+        }
+    }
+}
+
+public function compositeCmd(
+    layer: LayerId,
+    bounds: borrow Rect,
+    opacity: Number,
+    frame: borrow CAPlanFrame,
+    sourcePass: RenderPassId
+) -> CADrawCmd {
+    return CADrawCmd {
+        layer: layer,
+        kind: DrawKind.composite,
+        content: .Empty,
+        quad: CAOrientedQuad {
+            centerX: bounds.x + bounds.width / 2.0,
+            centerY: bounds.y + bounds.height / 2.0,
+            halfW: bounds.width / 2.0,
+            halfH: bounds.height / 2.0
+        },
+        worldBounds: bounds,
+        opacity: opacity,
+        clipMinX: frame.clipMinX,
+        clipMinY: frame.clipMinY,
+        clipMaxX: frame.clipMaxX,
+        clipMaxY: frame.clipMaxY,
+        clipRadius: frame.clipRadius,
+        clipShapeKind: frame.clipShapeKind,
+        sourcePass: .Some(sourcePass)
+    }
+}
+
+extend CALayerNode {
+    // Presentation state inherited by a node's children: world transform, clip, and
+    // the enclosing glass wash adaptive text must measure against.
+    function planChildFrame(
+        frame: borrow CAPlanFrame,
+        world: borrow CAAffineTransform
+    ) -> CAPlanFrame {
+        var out = frame
+        out.world = world
+        if self.clip {
+            let box = world.applyRect(
+                Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: self.boundsW.presentation,
+                    height: self.boundsH.presentation
+                }
+            )
+            let clip = nestedClip(
+                CAClipShape {
+                    minX: frame.clipMinX,
+                    minY: frame.clipMinY,
+                    maxX: frame.clipMaxX,
+                    maxY: frame.clipMaxY,
+                    radius: frame.clipRadius,
+                    kind: frame.clipShapeKind
+                },
+                box,
+                self.cornerRadius.presentation * world.lengthScale(),
+                self.content.shapeKind()
+            )
+            out.clipMinX = clip.minX
+            out.clipMinY = clip.minY
+            out.clipMaxX = clip.maxX
+            out.clipMaxY = clip.maxY
+            out.clipRadius = clip.radius
+            out.clipShapeKind = clip.kind
+        }
+        match self.content {
+            Glass(glass) -> {
+                let (alpha, luma) = (self.fillColor.presentation()).glassWash(glass.material)
+                out.glassWash = alpha
+                out.glassWashLuma = luma
+            }
+            Empty -> {}
+            Solid(s) -> {}
+            Text(t) -> {}
+            Texture(t) -> {}
+            Icon(i) -> {}
+            Gradient(g) -> {}
+        }
+        return out
+    }
+}
+
+extend CALayerTree {
+    function planNode(frame: borrow CAPlanFrame, plan: borrow mut CARenderPlan) {
+        var idx = LayerSlot(0)
+        match self.nodeSlot(frame.id) {
+            None -> { return }
+            Some(slot) -> { idx = slot }
+        }
+        if !self.nodes[idx.raw].mounted {
+            return
+        }
+        self.planLayer(self.nodes[idx.raw], frame, plan)
+    }
+
+    // Plans one mounted layer and what it holds. The node is borrowed where it
+    // stands in the tree: a node is a large value, and a copy of each one per
+    // frame was a good part of planning it.
+    function planLayer(
+        node: borrow CALayerNode,
+        frame: borrow CAPlanFrame,
+        plan: borrow mut CARenderPlan
+    ) {
+        let rest = frame.world.concat(node.localTransform())
+        let world = node.deformation.isIdentity() ? rest : rest.concat(node.deformTransform())
+        let eff = frame.opacity * node.opacity.presentation
+        // A group at full opacity looks the same drawn in place, so it is.
+        // A cut is never a reason to draw apart: Core Animation's `destOut`
+        // is a blend mode like any other (`prepare_compositing_filter` asks no
+        // group for it), so it takes away whatever is drawn under it on the
+        // surface it lands on, glass and all.
+        let isGroup = node.groupOpacity && node.opacity.presentation < 1.0 && node.childIds.count > 0
+        let isTarget = node.renderTarget && node.childIds.count > 0
+        let isBlurred = node.blur.presentation > 0.0 && node.childIds.count > 0
+        let isDisplaced = !node.displacement.isNone() && node.childIds.count > 0
+        // What a deformed layer holds goes into a picture, unless some of it is
+        // ink burned or dodged into the glass -- a picture drawn apart has no
+        // glass under it to burn into, and the ink would be lost -- in which case
+        // it is drawn live through the deformation, as glass is.
+        let isDeformed = !node.deformation.isIdentity() && node.childIds.count > 0 && !self.planInksIntoBackdrop(
+            node
+        )
+        // A blending group opens its surface on what is behind it before it
+        // draws anything, and everything it holds lands there.
+        let seeds = node.blendingGroup && node.childIds.count > 0
+        var childFrame = node.planChildFrame(frame, isDeformed ? rest : world)
+        childFrame.seeded = seeds || frame.seeded
+
+        if isGroup || isTarget || isBlurred || isDisplaced || isDeformed {
+            let newPass = RenderPassId(plan.passes.count)
+            var kind: CAPassKind = .GroupOpacity
+            var targetId = RenderTargetId(0)
+            if isTarget {
+                kind = .RenderTarget
+                targetId = node.renderTargetId
+            }
+            plan.passes.append(
+                CAPass {
+                    kind: kind,
+                    passId: newPass,
+                    owner: node.id,
+                    targetId: targetId,
+                    groupOpacity: eff
+                }
+            )
+            // Deformed, the layer's own content is drawn live where the
+            // deformation puts it -- glass refracts what is really behind it --
+            // and only what it holds goes into the picture.
+            let own = isDeformed ? frame.pass : newPass
+            let ownOpacity = isDeformed ? eff : 1.0
+            if node.hasShadow() {
+                plan.emit(own, node.shadowCmd(world, ownOpacity, frame), node.damaged)
+            }
+            let seedAt = plan.passes[own.raw].cmds.count
+            plan.emit(own, node.planDrawCmd(world, ownOpacity, frame, seeds), node.damaged)
+            for childId in node.childIds {
+                var cidx = LayerSlot(0)
+                match self.nodeSlot(childId) {
+                    None -> { continue }
+                    Some(slot) -> { cidx = slot }
+                }
+                if self.nodes[cidx.raw].mounted && !self.nodes[cidx.raw].hoisted {
+                    // Glass held by a deformed layer refracts what is really
+                    // behind it, so it is drawn live and deformed, as the layer's
+                    // own content is, rather than into the picture.
+                    if isDeformed && self.nodes[cidx.raw].capturesBackdrop {
+                        let deformed = node.planChildFrame(frame, world)
+                        let live = deformed {
+                            let id = childId
+                            let opacity = eff
+                        }
+                        self.planNode(live, plan)
+                        continue
+                    }
+                    let cf = childFrame {
+                        let id = childId
+                        let pass = newPass
+                        let opacity = 1.0
+                        let seeded = seeds
+                    }
+                    self.planNode(cf, plan)
+                }
+            }
+            if seeds && own.raw == newPass.raw {
+                plan.widenSeed(own, seedAt)
+            }
+            // A blurred self spreads past what it painted, so its texture is
+            // held open by the blur's reach on every side.
+            let p = newPass.raw
+            if isBlurred && !node.blurOpaque && plan.passes[p].hasBounds {
+                let reach = node.blur.presentation * world.lengthScale()
+                let held = plan.passes[p].bounds
+                plan.passes[p].bounds = Rect {
+                    x: held.x - reach,
+                    y: held.y - reach,
+                    width: held.width + reach * 2.0,
+                    height: held.height + reach * 2.0
+                }
+            }
+            // A displaced self draws over the whole of its box, wherever in it
+            // the map reads from, so its texture is held open to the box.
+            if isDisplaced && plan.passes[p].hasBounds {
+                let box = node.drawCmd(world, 1.0, frame).worldBounds
+                plan.passes[p].bounds = rectUnion(plan.passes[p].bounds, box)
+            }
+            if plan.passes[p].hasBounds {
+                let isolatedBounds = plan.passes[p].bounds
+                let shown = isDeformed ? (rest.deformAcross(node)).applyRect(
+                    isolatedBounds
+                ) : isolatedBounds
+                var composite = compositeCmd(node.id, shown, eff, frame, newPass)
+                composite.blur = isBlurred ? node.blur.presentation * world.lengthScale() : 0.0
+                composite.blurOpaque = node.blurOpaque
+                if isDisplaced {
+                    let scale = world.lengthScale()
+                    let own = node.drawCmd(world, 1.0, frame)
+                    composite.displacement = CADisplacement {
+                        amount: node.displacement.amount * scale,
+                        height: node.displacement.height * scale,
+                        curvature: node.displacement.curvature,
+                        ovalization: node.displacement.ovalization
+                    }
+                    // The box in the layer's own space at the world's length
+                    // scale, and how far the world stretches it past that on
+                    // each axis.
+                    var element = copy own.quad
+                    let w = node.boundsW.presentation
+                    let h = node.boundsH.presentation
+                    element.halfW = w / 2.0 * scale
+                    element.halfH = h / 2.0 * scale
+                    composite.elementScale = Point {
+                        x: own.quad.halfW > 0.0 ? element.halfW / own.quad.halfW : 1.0,
+                        y: own.quad.halfH > 0.0 ? element.halfH / own.quad.halfH : 1.0
+                    }
+                    composite.element = move element
+                    composite.elementRadius = own.cornerRadius
+                }
+                let dirty = plan.passes[p].dirty || node.damaged
+                let refresh = plan.passes[p].requiresRefresh
+                plan.emit(frame.pass, move composite, dirty)
+                if refresh {
+                    plan.passes[frame.pass.raw].requiresRefresh = true
+                }
+            }
+            return
+        }
+
+        if node.hasShadow() {
+            plan.emit(frame.pass, node.shadowCmd(world, eff, frame), node.damaged)
+        }
+        let seedAt = plan.passes[frame.pass.raw].cmds.count
+        plan.emit(frame.pass, node.planDrawCmd(world, eff, frame, seeds), node.damaged)
+        for childId in node.childIds {
+            var cidx = LayerSlot(0)
+            match self.nodeSlot(childId) {
+                None -> { continue }
+                Some(slot) -> { cidx = slot }
+            }
+            if self.nodes[cidx.raw].mounted && !self.nodes[cidx.raw].hoisted {
+                let cf = childFrame {
+                    let id = childId
+                    let opacity = eff
+                }
+                self.planNode(cf, plan)
+            }
+        }
+        if seeds {
+            plan.widenSeed(frame.pass, seedAt)
+        }
+    }
+
+    function plan() -> CARenderPlan {
+        var plan = CARenderPlan {}
+        if self.rootId == LayerId(0) {
+            return plan
+        }
+        plan.passes.append(CAPass { kind: .Root, passId: RenderPassId(0) })
+        self.planNode(planUnclipped(self.rootId, RenderPassId(0)), plan)
+        for overlayId in self.orderedOverlays() {
+            self.planNode(planUnclipped(overlayId, RenderPassId(0)), plan)
+        }
+        return plan
+    }
+
+    // Whether anything `node` holds inks by burning or dodging what is under it,
+    // as a symbol set into glass does.
+    function planInksIntoBackdrop(node: borrow CALayerNode) -> Bool {
+        for childId in node.childIds {
+            match self.nodeSlot(childId) {
+                None -> { continue }
+                Some(slot) -> {
+                    match self.nodes[slot.raw].content {
+                        Icon(icon) -> {
+                            if icon.blend.intoBackdrop() {
+                                return true
+                            }
+                        }
+                        Empty -> {}
+                        Solid(s) -> {
+                            if s.blend.intoBackdrop() {
+                                return true
+                            }
+                        }
+                        Text(t) -> {
+                            if t.blend.intoBackdrop() {
+                                return true
+                            }
+                        }
+                        Texture(x) -> {}
+                        Glass(g) -> {}
+                        Gradient(g) -> {}
+                    }
+                    if self.planInksIntoBackdrop(self.nodes[slot.raw]) {
+                        return true
+                    }
+                }
+            }
+        }
+        return false
+    }
+}

@@ -1,0 +1,86 @@
+import Foundation
+import Ember
+
+// The face a batch sets its runs in: which of its two faces a design takes,
+// the instance at a run's size and weight, and the line metrics read from it.
+
+// A face's vertical metrics at one size and weight, under the key a run
+// asks for them by: its ascender and descender rounded, and as they are.
+struct FaceMetrics {
+    let key: Number
+    let ascender: Number
+    let descender: Number
+    let lineAscent: Number
+    let lineDescent: Number
+}
+
+extend UiBatchState {
+    // The ascender and descender cached under `key`, rounded and as they are,
+    // if a run asked for them.
+    function metricsFor(key: Number) -> (Number, Number, Number, Number)? {
+        for known in metrics {
+            if known.key == key {
+                return .Some((known.ascender, known.descender, known.lineAscent, known.lineDescent))
+            }
+        }
+        return .None
+    }
+
+    // The metrics the face is set to now, to be cached under `key`.
+    function faceMetrics(key: Number) -> FaceMetrics {
+        return FaceMetrics {
+            key: key,
+            ascender: ascender,
+            descender: descender,
+            lineAscent: lineAscent,
+            lineDescent: lineDescent
+        }
+    }
+
+    // Which face a run in `design` is set in: 1 for the monospaced one, 0 for the
+    // default, which also sets monospaced runs where the host has no face for them,
+    // and 2 for the default with tabular figures.
+    function faceKey(design: borrow CAFontDesign) -> Number {
+        if design == .Monospaced && self.monoFace.isSome() {
+            return 1
+        }
+        return design == .MonospacedDigits ? 2 : 0
+    }
+
+    // Sets a face to a run's size and weight, reading its vertical metrics into
+    // the state, unless it already stands there. False where there is no face.
+    // `sizeKey` is in raster pixels; the face's optical size is the run's size
+    // in points, the raster pixels divided back by the backing scale and the
+    // oversample, as the runs are laid out.
+    function setFace(borrow mut self, sizeKey: Number, weightKey: Number, faceKey: Number) -> Bool {
+        if self.fontSizeSet == sizeKey && self.fontWeightSet == weightKey && self.fontFaceSet == faceKey {
+            return true
+        }
+        let face = match faceKey == 1 ? self.monoFace : self.textFace {
+            Some(face) -> face
+            None -> return false
+        }
+        var scale = self.scale
+        if scale <= 0.0 {
+            scale = 1.0
+        }
+        let points = sizeKey / (scale * textOversampleAt(scale))
+        var engine = nativeRecover<TextEngine>(textEngine())
+        let instance = engine.instance(
+            face,
+            sizeKey,
+            points,
+            glyphWeightAxis(weightKey),
+            faceKey == 2
+        )
+        self.ascender = instance.ascender
+        self.descender = instance.descender
+        self.lineAscent = instance.lineAscent
+        self.lineDescent = instance.lineDescent
+        self.faceInstance = .Some(instance)
+        self.fontSizeSet = sizeKey
+        self.fontWeightSet = weightKey
+        self.fontFaceSet = faceKey
+        return true
+    }
+}

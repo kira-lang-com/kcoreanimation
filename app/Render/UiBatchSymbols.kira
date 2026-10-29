@@ -1,0 +1,125 @@
+import Foundation
+import Heap
+
+// Symbols in the glyph atlas: drawn once per size, and while a symbol's size
+// is still changing, drawn from the raster it last had.
+
+// A symbol as `pushIcon` asks for it: which drawing, its key in the atlas at
+// this size and weight, the size in raster pixels and the growth.
+struct SymbolRequest {
+    let symbol: Number
+    let key: Number
+    let w: Number
+    let h: Number
+    let growth: Number
+    let wholeCanvas: Bool
+}
+
+// The size a symbol was last asked for, and the slot it was drawn from then.
+struct SymbolSighting {
+    var w: Number = 0
+    var h: Number = 0
+    var slot: Number = 0
+    var frame: Number = 0
+}
+
+namespace SymbolReuse {
+    // How much larger than a raster a size still changing may be drawn from it.
+    let stretch: Number = 1.25
+}
+
+// The slot `request` draws from. A size drawn before is drawn from its own
+// raster. A new size of a symbol asked for at another size last time is one
+// still changing, a symbol growing or shrinking through an animation, and is
+// drawn from the raster it last had, scaled, unless that is too small to
+// stretch so far: drawn anew it would be rasterized every frame and fill the
+// atlas with sizes it passes through once. Asked for the same size twice, it
+// is drawn at that size, and so is a second size in the frame of the first:
+// a symbol drawn at two sizes at once.
+function symbolSlot(
+    state: borrow mut UiBatchState,
+    svg: borrow String,
+    request: borrow SymbolRequest
+) -> Number {
+    var slot = match state.glyphIndex.value(request.key) {
+        Some(index) -> index
+        None -> -1
+    }
+    if slot < 0 {
+        match state.symbolSightings.value(request.symbol) {
+            Some(seen) -> {
+                let changing = seen.frame != state.framesBegun && (
+                    seen.w != request.w || seen.h != request.h
+                )
+                if changing && seen.slot < state.glyphs.count && state.glyphs[seen.slot].valid {
+                    let drawn = state.glyphs[seen.slot]
+                    if request.w <= drawn.w * SymbolReuse.stretch && request.h <= drawn.h * SymbolReuse.stretch {
+                        slot = seen.slot
+                    }
+                }
+            }
+            None -> {}
+        }
+    }
+    if slot < 0 {
+        slot = cacheSymbol(
+            state,
+            svg,
+            request.key,
+            request.w,
+            request.h,
+            request.growth,
+            request.wholeCanvas
+        )
+    }
+    state.symbolSightings.set(
+        request.symbol,
+        SymbolSighting { w: request.w, h: request.h, slot: slot, frame: state.framesBegun }
+    )
+    return slot
+}
+
+// Draw a symbol into the atlas and record its slot, answering the slot's index.
+// A symbol that does not draw never will, so its empty slot is cached; one that
+// found no room waits for the atlas to start over.
+function cacheSymbol(
+    state: borrow mut UiBatchState,
+    svg: borrow String,
+    key: Number,
+    width: Number,
+    height: Number,
+    growth: Number,
+    wholeCanvas: Bool
+) -> Number {
+    var slot = UiGlyphSlot { key: key, w: width, h: height }
+    var settled = true
+    let drawn = wholeCanvas
+    ? symbolCanvasCoverage(svg, width, height, growth)
+    : symbolInkCoverage(svg, width, height, growth)
+    match drawn {
+        Ok(coverage) -> {
+            match packGlyph(state, width, height) {
+                Some(place) -> {
+                    atlasBlitLevels(state, coverage.levels, place, width, height)
+                    slot.atlasX = place.x
+                    slot.atlasY = place.y
+                    slot.valid = true
+                }
+                None -> settled = false
+            }
+        }
+        Error(failure) -> log warn("symbol not drawn", traceText(failure))
+    }
+    state.glyphs.append(move slot)
+    let index = state.glyphs.count - 1
+    if settled && glyphCacheHasRoom(state) {
+        state.glyphIndex.set(key, index)
+    }
+    return index
+}
+
+// A symbol's hash folded below a prime, leaving room in its cache key for
+// its size and weight.
+namespace SymbolCacheKey {
+    let modulus: Number = 4294967291
+}

@@ -1,0 +1,253 @@
+import Foundation
+import Ember
+
+// Liquid Glass drawn to a recipe: one quad per surface, through
+// `Shaders/UiGlassRecipe.ksl`, which reads every number that shapes the glass
+// from the recipe table rather than from the quad.
+//
+// The quad carries what only the surface knows -- where it is, its shape, its
+// clip, the tint it is given, how far it has faded, its touch highlight and the
+// shape it is fusing with -- and the index of its recipe's record. It reaches
+// as far past the shape as the recipe's shadows do, and the capture under it
+// as far again as the recipe bends and blurs what it reads.
+
+// What a recipe surface is drawn with, beside where it is.
+public struct GlassRecipeSurface {
+    var style: CAGlassStyle = CAGlassStyle {}
+    var radius: Number = 0.0
+    var shapeKind: Number = 0.0
+    // The layer's own colour, which tints the glass as the platform's tint
+    // option does; clear for none.
+    var tint: RGBAColor = RGBAColor { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }
+    var opacity: Number = 1.0
+    // The touch highlight, in the same coordinates as the surface, packed as
+    // `packedGlow` packs it.
+    var glowX: Number = 0.0
+    var glowY: Number = 0.0
+    var glowStrength: Number = 0.0
+    // The second shape this surface is fusing with, as a rectangle in the
+    // same coordinates as the surface, and the smooth minimum's reach.
+    var morphX: Number = 0.0
+    var morphY: Number = 0.0
+    var morphW: Number = 0.0
+    var morphH: Number = 0.0
+    var morphRadius: Number = 0.0
+    var morphBlend: Number = 0.0
+    // The warp beneath the glass, in the surface's units, and its
+    // ovalization; a zero amount is none.
+    var warpAmount: Number = 0.0
+    var warpHeight: Number = 0.0
+    var warpOvalization: Number = 0.0
+    // The backdrop colour matrix in place of the face: how much of it shows,
+    // its blur in the filter's units over a capture at its scale, and its
+    // levels and saturation. A zero opacity is none.
+    var matrixOpacity: Number = 0.0
+    var matrixBlur: Number = 0.0
+    var matrixScale: Number = 1.0
+    var matrixBlack: Number = 0.0
+    var matrixWhite: Number = 1.0
+    var matrixSaturation: Number = 1.0
+    // How much more the layer is scaled along each axis than along the one it
+    // is scaled least on. The shape, and every length the recipe states, are
+    // laid out in the layer's own space at that least scale and carried to the
+    // screen through this, as Core Animation renders a layer's glass in its
+    // own space and transforms the result: a capsule under a wider scale than
+    // tall has elliptical ends. One and one for any layer scaled evenly.
+    var stretchX: Number = 1.0
+    var stretchY: Number = 1.0
+}
+
+// The rectangle a surface is clipped to, and the rounded corner the clip has.
+public struct GlassRecipeClip {
+    var minX: Number = -1000000.0
+    var minY: Number = -1000000.0
+    var maxX: Number = 1000000.0
+    var maxY: Number = 1000000.0
+    var radius: Number = 0.0
+    var shapeKind: Number = 0.0
+}
+
+// The mode a recipe quad is drawn with: `pipelineForQuad` routes its code, 35,
+// to the recipe pipeline.
+let glassRecipeMode: Number = 3.5
+
+extend UiBatch {
+    function pushRecipeGlass(
+        x: Number,
+        y: Number,
+        w: Number,
+        h: Number,
+        surface: borrow GlassRecipeSurface,
+        clip: borrow GlassRecipeClip
+    ) {
+        if w <= 0.0 || h <= 0.0 || surface.opacity <= 0.0 {
+            return
+        }
+        var state = nativeRecover<UiBatchState>(self.storage)
+        if state.streamIndex.raw == 0 || state.glassRecipeValues.count == 0 {
+            return
+        }
+        state.glassStatSurfaces += 1
+        let record = glassRecipeRecord(surface.style)
+        let reach = glassRecipeReach(state.glassRecipeValues, surface.style)
+        let kx = max(surface.stretchX, 0.0001)
+        let ky = max(surface.stretchY, 0.0001)
+        // Everything below is in the layer's space but for the quad's corners,
+        // the capture and the backdrop coordinates, which are the screen's.
+        // The shader reads a point of the layer's as `uv.zw / hsize` of the
+        // backdrop, so the stretch reaches every offset it samples at. The
+        // anti-aliasing band is the screen's two pixels, at the mean stretch.
+        let edgeBand = glassHairline(2.0, state.scale) / sqrt(kx * ky)
+        let cx = x + w / 2.0
+        let cy = y + h / 2.0
+        let halfW = w / 2.0 / kx
+        let halfH = h / 2.0 / ky
+        let morphX = cx + (surface.morphX - cx) / kx
+        let morphY = cy + (surface.morphY - cy) / ky
+        let morphW = surface.morphW / kx
+        let morphH = surface.morphH / ky
+        // The quad covers the shape, the recipe's shadows and the shape this
+        // one is fusing with; everything else leaves on the coverage test.
+        var pad = reach.shadow + edgeBand
+        if surface.morphBlend > 0.0 && morphW > 0.0 && morphH > 0.0 {
+            let bulge = surface.morphBlend * 0.25
+            let left = cx - halfW
+            let top = cy - halfH
+            pad += max(
+                max(left - min(left, morphX), max(cx + halfW, morphX + morphW) - cx - halfW),
+                max(top - min(top, morphY), max(cy + halfH, morphY + morphH) - cy - halfH)
+            ) + bulge
+        }
+        // The warp beneath a lifted lens reads past its rim as well.
+        let captureHalfW = (halfW + pad + reach.capture + surface.warpAmount) * kx
+        let captureHalfH = (halfH + pad + reach.capture + surface.warpAmount) * ky
+        state.recordGlassCapture(
+            cx - captureHalfW,
+            cy - captureHalfH,
+            cx + captureHalfW,
+            cy + captureHalfH
+        )
+        let lhx = halfW + pad
+        let lhy = halfH + pad
+        let widening = surface.shapeKind > 1.5
+        let radius = min(surface.radius, widening ? max(halfW, halfH) : min(halfW, halfH))
+        let vw = state.viewportW
+        let vh = state.viewportH
+        self.emitQuad(
+            cx - lhx * kx,
+            cy - lhy * ky,
+            cx + lhx * kx,
+            cy + lhy * ky,
+            -lhx,
+            -lhy,
+            lhx,
+            lhy,
+            halfW,
+            halfH,
+            radius,
+            surface.tint.a,
+            glassRecipeMode,
+            record,
+            surface.tint.r,
+            surface.tint.g,
+            surface.tint.b,
+            0.0,
+            cx / vw,
+            cy / vh,
+            halfW * kx / vw,
+            halfH * ky / vh,
+            clip.minX,
+            clip.minY,
+            clip.maxX,
+            clip.maxY,
+            // The material block: unread here but for the warp, the backdrop
+            // matrix, the fade and the anti-aliasing band.
+            m0: surface.warpAmount,
+            m1: surface.warpHeight,
+            m2: surface.warpOvalization,
+            m4: surface.matrixOpacity,
+            m5: surface.matrixBlur,
+            m6: surface.matrixScale,
+            m7: surface.matrixBlack,
+            m8: surface.matrixWhite,
+            m9: surface.matrixSaturation,
+            m21: 1.0 - min(surface.opacity, 1.0),
+            m23: edgeBand,
+            gradR: (surface.glowX - cx) / kx,
+            gradG: (surface.glowY - cy) / ky,
+            gradB: surface.glowStrength,
+            morphX: (morphX + morphW * 0.5) - cx,
+            morphY: (morphY + morphH * 0.5) - cy,
+            morphHalfW: morphW * 0.5,
+            morphHalfH: morphH * 0.5,
+            morphRadius: surface.morphRadius,
+            morphBlend: surface.morphBlend,
+            shapeKind: surface.shapeKind,
+            clipRadius: clip.radius,
+            clipShapeKind: clip.shapeKind
+        )
+    }
+}
+
+// How far a recipe's effects reach past its shape: `shadow` is what it draws
+// outside the shape, and `capture` how much further out the backdrop it reads
+// lies, for its lens and its blur.
+struct GlassRecipeReach {
+    let shadow: Number
+    let capture: Number
+}
+
+function glassRecipeReach(table: borrow [Number], style: borrow CAGlassStyle) -> GlassRecipeReach {
+    var shadow: Number = 0.0
+    if glassRecipeValue(table, style, GlassRecipeField.shadowOpacity) > 0.0 {
+        let offset = max(
+            abs(glassRecipeValue(table, style, GlassRecipeField.shadowOffsetX)),
+            abs(glassRecipeValue(table, style, GlassRecipeField.shadowOffsetY))
+        )
+        // A Gaussian blur's tail runs three deviations; the radius is one.
+        shadow = 3.0 * glassRecipeValue(table, style, GlassRecipeField.shadowRadius) + offset
+    }
+    if glassRecipeValue(table, style, GlassRecipeField.ringShadowOpacity) > 0.0 {
+        let ring = glassRecipeValue(
+            table,
+            style,
+            GlassRecipeField.ringShadowOffset
+        ) + 3.0 * glassRecipeValue(table, style, GlassRecipeField.ringShadowBlurRadius)
+        shadow = max(shadow, ring)
+    }
+    let bend = max(
+        max(
+            glassRecipeValue(table, style, GlassRecipeField.innerRefractionAmount),
+            glassRecipeValue(table, style, GlassRecipeField.outerRefractionAmount)
+        ),
+        glassRecipeValue(table, style, GlassRecipeField.shadowAmount)
+    )
+    return GlassRecipeReach { shadow: max(shadow, 4.0), capture: abs(bend) + GlassBlur.reach }
+}
+
+extend UiBatchState {
+    // Notes the only backdrop pixels a glass surface on this stream can read,
+    // so the capture under it takes them and no more.
+    function recordGlassCapture(
+        borrow mut self,
+        minX: Number,
+        minY: Number,
+        maxX: Number,
+        maxY: Number
+    ) {
+        let stream = self.streamIndex.raw
+        let base = self.streams[stream].glassBoundCount * 4
+        if base + 3 < self.streams[stream].glassBounds.count {
+            self.streams[stream].glassBounds[base] = minX
+            self.streams[stream].glassBounds[base + 1] = minY
+            self.streams[stream].glassBounds[base + 2] = maxX
+            self.streams[stream].glassBounds[base + 3] = maxY
+        } else {
+            self.streams[stream].glassBounds.append(minX)
+            self.streams[stream].glassBounds.append(minY)
+            self.streams[stream].glassBounds.append(maxX)
+            self.streams[stream].glassBounds.append(maxY)
+        }
+        self.streams[stream].glassBoundCount++
+    }
+}

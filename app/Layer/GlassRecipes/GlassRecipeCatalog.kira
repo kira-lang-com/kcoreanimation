@@ -1,0 +1,183 @@
+import Foundation
+
+// The platform's Liquid Glass recipes by name, and the GPU table that holds
+// every variant of every one. Generated with the readers beside it from the
+// GlassRecipes/*.klist files; the case order is the table order.
+
+// Which glass a surface is made of: the platform's own recipe names.
+public enum CAGlassRecipe {
+    AbuttedSidebar
+    AppIcons
+    AVPlayer
+    Bubbles
+    Camera
+    CarPlayUltra
+    CartouchePopover
+    Clear
+    Control
+    ControlCenter
+    Dock
+    DockRegular
+    FaceTime
+    Identity
+    Inspector
+    Keyboard
+    Loupe
+    Menu
+    Monogram
+    NotificationCenter
+    Regular
+    Sidebar
+    Siri
+    SiriSnippet
+    Slider
+    Text
+    Widgets
+}
+
+// The whole recipe table: for each recipe in case order, its six variants,
+// each `GlassRecipeTable.recordFloats` numbers in `GlassRecipeField` order.
+public function glassRecipeTable() -> [Number] {
+    var table: [Number] = []
+    for value in glassRecipeValuesAbuttedSidebar() { table.append(value) }
+    for value in glassRecipeValuesAppIcons() { table.append(value) }
+    for value in glassRecipeValuesAVPlayer() { table.append(value) }
+    for value in glassRecipeValuesBubbles() { table.append(value) }
+    for value in glassRecipeValuesCamera() { table.append(value) }
+    for value in glassRecipeValuesCarPlayUltra() { table.append(value) }
+    for value in glassRecipeValuesCartouchePopover() { table.append(value) }
+    for value in glassRecipeValuesClear() { table.append(value) }
+    for value in glassRecipeValuesControl() { table.append(value) }
+    for value in glassRecipeValuesControlCenter() { table.append(value) }
+    for value in glassRecipeValuesDock() { table.append(value) }
+    for value in glassRecipeValuesDockRegular() { table.append(value) }
+    for value in glassRecipeValuesFaceTime() { table.append(value) }
+    for value in glassRecipeValuesIdentity() { table.append(value) }
+    for value in glassRecipeValuesInspector() { table.append(value) }
+    for value in glassRecipeValuesKeyboard() { table.append(value) }
+    for value in glassRecipeValuesLoupe() { table.append(value) }
+    for value in glassRecipeValuesMenu() { table.append(value) }
+    for value in glassRecipeValuesMonogram() { table.append(value) }
+    for value in glassRecipeValuesNotificationCenter() { table.append(value) }
+    for value in glassRecipeValuesRegular() { table.append(value) }
+    for value in glassRecipeValuesSidebar() { table.append(value) }
+    for value in glassRecipeValuesSiri() { table.append(value) }
+    for value in glassRecipeValuesSiriSnippet() { table.append(value) }
+    for value in glassRecipeValuesSlider() { table.append(value) }
+    for value in glassRecipeValuesText() { table.append(value) }
+    for value in glassRecipeValuesWidgets() { table.append(value) }
+    return table
+}
+
+// Where each value sits in a variant's record. The order is the one
+// `Shaders/UiGlassRecipe.ksl` declares its `GlassRecipe` type in.
+public namespace GlassRecipeField {
+    let backdropScale: Number = 0
+    let ovalization: Number = 1
+    let blurRadius: Number = 2
+    let blurDistance0: Number = 3
+    let blurDistance1: Number = 4
+    let blurDistance2: Number = 5
+    let blurDistance3: Number = 6
+    let blurOpacity0: Number = 7
+    let blurOpacity1: Number = 8
+    let blurOpacity2: Number = 9
+    let blurOpacity3: Number = 10
+    let innerRefractionHeight: Number = 11
+    let innerRefractionAmount: Number = 12
+    let outerRefractionHeight: Number = 13
+    let outerRefractionAmount: Number = 14
+    let refractionDistance0: Number = 15
+    let refractionDistance1: Number = 16
+    let refractionOpacity: Number = 17
+    let faceOpacity: Number = 18
+    let faceBlack: Number = 19
+    let faceWhite: Number = 20
+    let faceSaturation: Number = 21
+    let faceMaxLuma: Number = 22
+    let faceFillRed: Number = 23
+    let faceFillGreen: Number = 24
+    let faceFillBlue: Number = 25
+    let faceFillAlpha: Number = 26
+    let specularHeight: Number = 27
+    let specularAngle: Number = 28
+    let specularSpread: Number = 29
+    let specularAmount: Number = 30
+    let specularOffset: Number = 31
+    let specularColorBias: Number = 32
+    let shadowOpacity: Number = 33
+    let shadowAmount: Number = 34
+    let shadowHeight: Number = 35
+    let shadowOffsetX: Number = 36
+    let shadowOffsetY: Number = 37
+    let shadowRadius: Number = 38
+    let shadowBlurRadius: Number = 39
+    let shadowDistanceOffset: Number = 40
+    let shadowBlack: Number = 41
+    let shadowWhite: Number = 42
+    let shadowSaturation: Number = 43
+    let shadowFillRed: Number = 44
+    let shadowFillGreen: Number = 45
+    let shadowFillBlue: Number = 46
+    let shadowFillAlpha: Number = 47
+    let bleedOpacity: Number = 48
+    let bleedAmount: Number = 49
+    let bleedHeight: Number = 50
+    let bleedBlurRadius: Number = 51
+    let bleedDistance0: Number = 52
+    let bleedDistance1: Number = 53
+    let bleedBlack: Number = 54
+    let bleedWhite: Number = 55
+    let bleedSaturation: Number = 56
+    let bleedDarken: Number = 57
+    let blurFillRadius: Number = 58
+    let blurFillLighten: Number = 59
+    let blurFillDarken: Number = 60
+    let blurFillNormal: Number = 61
+    let ringShadowOpacity: Number = 62
+    let ringShadowOffset: Number = 63
+    let ringShadowStrokeWidth: Number = 64
+    let ringShadowBlurRadius: Number = 65
+    let ringShadowMask: Number = 66
+    let clamp: Number = 67
+    let clampPreserveHue: Number = 68
+    let highlightPresent: Number = 69
+    let highlightCurvature: Number = 70
+    let keyRed: Number = 71
+    let keyGreen: Number = 72
+    let keyBlue: Number = 73
+    let keyAlpha: Number = 74
+    let keyHeight: Number = 75
+    let keyAngle: Number = 76
+    let keySpread: Number = 77
+    let keyAmount: Number = 78
+    let fillRed: Number = 79
+    let fillGreen: Number = 80
+    let fillBlue: Number = 81
+    let fillAlpha: Number = 82
+    let fillHeight: Number = 83
+    let fillAngle: Number = 84
+    let fillSpread: Number = 85
+    let fillAmount: Number = 86
+    let diffuseHeightScale: Number = 87
+    let diffuseSpreadScale: Number = 88
+    let diffuseAmountScale: Number = 89
+    let highlightMaxComponent: Number = 90
+    let highlightOpacity: Number = 91
+    let vibrantRed0: Number = 92
+    let vibrantRed1: Number = 93
+    let vibrantRed2: Number = 94
+    let vibrantRed3: Number = 95
+    let vibrantRed4: Number = 96
+    let vibrantGreen0: Number = 97
+    let vibrantGreen1: Number = 98
+    let vibrantGreen2: Number = 99
+    let vibrantGreen3: Number = 100
+    let vibrantGreen4: Number = 101
+    let vibrantBlue0: Number = 102
+    let vibrantBlue1: Number = 103
+    let vibrantBlue2: Number = 104
+    let vibrantBlue3: Number = 105
+    let vibrantBlue4: Number = 106
+    let specularKind: Number = 107
+}

@@ -1,0 +1,399 @@
+import Foundation
+import Ember
+
+// The compositor's one new batch primitive: an EXACT oriented quad. The batch
+// vertex stream already carries a per-quad rotation (cos/sin about the quad's
+// center — see `writeQuadRotation`), so a rotated layer needs no shader change
+// and no axis-aligned bounding-box fallback: the covering rectangle is grown to
+// the rotated extent and the SDF is evaluated in the quad's own turned frame.
+//
+// The unrotated case delegates to `pushRect`, the batch's proven surface path,
+// so only genuinely rotated layers take the new branch.
+extend UiBatch {
+    function pushLayerQuad(
+        cx: Number,
+        cy: Number,
+        halfW: Number,
+        halfH: Number,
+        rotCos: Number,
+        rotSin: Number,
+        radius: Number,
+        borderWidth: Number,
+        fill: borrow RGBAColor,
+        border: borrow RGBAColor,
+        clipMinX: Number,
+        clipMinY: Number,
+        clipMaxX: Number,
+        clipMaxY: Number,
+        clipRadius: Number,
+        clipShapeKind: Number,
+        shapeKind: Number,
+        gradient: borrow RGBAColor,
+        gradientAxis: Number,
+        blend: CABlendMode = .Normal,
+    ) {
+        if halfW <= 0.0 || halfH <= 0.0 {
+            return
+        }
+        // The layer names its corner by kind; the generic pipeline reads it off
+        // `mode`, where a continuous corner is 0.25. Handing the kind over as the
+        // mode drew a squircle layer as nothing at all.
+        var shapeMode = 0.0
+        if shapeKind != 0 { shapeMode = 0.25 }
+        if fill.a <= 0.0 && gradient.a <= 0.0 && (border.a <= 0.0 || borderWidth <= 0.0) {
+            return
+        }
+        var absS = rotSin
+        if absS < 0.0 {
+            absS = -absS
+        }
+        if absS < 0.0001 && rotCos > 0.9999 {
+            self.pushRect(
+                cx - halfW,
+                cy - halfH,
+                halfW * 2.0,
+                halfH * 2.0,
+                fill,
+                border,
+                borderWidth,
+                radius,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                shapeMode,
+                gradient,
+                gradientAxis,
+                glowX: 0.0,
+                glowY: 0.0,
+                glowStrength: 0.0,
+                clipRadius: clipRadius,
+                clipShapeKind: Number(clipShapeKind),
+                blend: blend
+            )
+            return
+        }
+        var absC = rotCos
+        if absC < 0.0 {
+            absC = -absC
+        }
+        let pad = 1.0
+        let coverHalfW = halfW * absC + halfH * absS + pad
+        let coverHalfH = halfW * absS + halfH * absC + pad
+        var clampedRadius = radius
+        if clampedRadius > halfW {
+            clampedRadius = halfW
+        }
+        if clampedRadius > halfH {
+            clampedRadius = halfH
+        }
+        let ink = blend.ink(fill)
+        self.noteHole(fill, blend)
+        let before = self.quadCount()
+        self.emitQuad(
+            cx - coverHalfW,
+            cy - coverHalfH,
+            cx + coverHalfW,
+            cy + coverHalfH,
+            -coverHalfW,
+            -coverHalfH,
+            coverHalfW,
+            coverHalfH,
+            halfW,
+            halfH,
+            clampedRadius,
+            borderWidth,
+            shapeMode,
+            0.0,
+            ink.r,
+            ink.g,
+            ink.b,
+            ink.a,
+            border.r,
+            border.g,
+            border.b,
+            border.a,
+            clipMinX,
+            clipMinY,
+            clipMaxX,
+            clipMaxY,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            gradient.r,
+            gradient.g,
+            gradient.b,
+            gradient.a,
+            gradientAxis,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            rotCos,
+            rotSin,
+            clipRadius,
+            Number(clipShapeKind)
+        )
+        self.routeBlend(before, blend)
+    }
+
+    function pushLayerTextureQuad(
+        cx: Number,
+        cy: Number,
+        halfW: Number,
+        halfH: Number,
+        rotCos: Number,
+        rotSin: Number,
+        alpha: Number,
+        transition: Number,
+        radius: Number,
+        clipMinX: Number,
+        clipMinY: Number,
+        clipMaxX: Number,
+        clipMaxY: Number,
+        blur: Number = 0.0,
+        clipRadius: Number = 0.0,
+        clipShapeKind: Number = 0.0,
+        displacement: borrow CADisplacement = CADisplacement {},
+        element: borrow CAOrientedQuad = CAOrientedQuad {},
+        elementRadius: Number = 0.0,
+        elementScale: borrow Point = Point { x: 1.0, y: 1.0 },
+        blurOpaque: Bool = false,
+        straight: Bool = false,
+    ) {
+        if halfW <= 0.0 || halfH <= 0.0 || alpha <= 0.0 {
+            return
+        }
+        // A displaced texture is its own mode, 2.2, its map carried in the
+        // material block a texture otherwise leaves empty: the amount, height,
+        // curvature and ovalization, then the element's center as an offset
+        // from this quad's and its half extents, then its corner radius, then
+        // what this quad's space is scaled by on each axis to be the
+        // element's.
+        let displaced = !displacement.isNone()
+        // The blur rides the border slots, which a texture never draws: its
+        // reach across and down in the texture's own coordinates.
+        // Blurring a composited subtree is an explicit texture mode, not a
+        // heuristic over packed UV fields. Ordinary viewports always sample
+        // their original pixels sharply, even while glass captures run.
+        // An opaque blur is 2.12: its taps read the texture's edge again.
+        var textureMode = blur > 0.0 ? (blurOpaque ? 2.12 : 2.1) : 2.0
+        // An image file's texels carry their colour whole, as a PNG does, not
+        // weighted by their alpha as the blend takes them: 2.03 weights them
+        // as they are read.
+        if straight && textureMode == 2.0 {
+            textureMode = 2.03
+        }
+        if displaced {
+            textureMode = 2.2
+        }
+        self.emitQuad(
+            cx - halfW,
+            cy - halfH,
+            cx + halfW,
+            cy + halfH,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            halfW,
+            halfH,
+            radius,
+            0.0,
+            textureMode,
+            transition,
+            1.0,
+            1.0,
+            1.0,
+            alpha,
+            blur / (halfW * 2.0),
+            blur / (halfH * 2.0),
+            0.0,
+            0.0,
+            clipMinX,
+            clipMinY,
+            clipMaxX,
+            clipMaxY,
+            displaced ? displacement.amount : 0.0,
+            displaced ? displacement.height : 0.0,
+            displaced ? displacement.curvature : 0.0,
+            displaced ? displacement.ovalization : 0.0,
+            displaced ? element.centerX - cx : 0.0,
+            displaced ? element.centerY - cy : 0.0,
+            displaced ? element.halfW : 0.0,
+            displaced ? element.halfH : 0.0,
+            displaced ? elementRadius : 0.0,
+            displaced ? elementScale.x : 0.0,
+            displaced ? elementScale.y : 0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            rotCos,
+            rotSin,
+            clipRadius,
+            clipShapeKind
+        )
+    }
+
+    function pushLayerShadowQuad(
+        cx: Number,
+        cy: Number,
+        halfW: Number,
+        halfH: Number,
+        rotCos: Number,
+        rotSin: Number,
+        radius: Number,
+        blurRadius: Number,
+        offset: borrow Point,
+        knockout: Bool,
+        inverts: Bool,
+        color: borrow RGBAColor,
+        clipMinX: Number,
+        clipMinY: Number,
+        clipMaxX: Number,
+        clipMaxY: Number,
+        shapeKind: Number,
+    ) {
+        if halfW <= 0.0 || halfH <= 0.0 || color.a <= 0.0 {
+            return
+        }
+        var blur = blurRadius
+        if blur < 0.0 { blur = 0.0 }
+        // The blur is two deviations, and the Gaussian reaches three.
+        let pad = blur * 1.5 + 1.0
+        var coverHalfW = halfW + pad
+        var coverHalfH = halfH + pad
+        var clampedRadius = radius
+        if clampedRadius < 0.0 { clampedRadius = 0.0 }
+        if clampedRadius > halfW { clampedRadius = halfW }
+        if clampedRadius > halfH { clampedRadius = halfH }
+        var mode = -1.0
+        if shapeKind != 0 { mode = -1.25 }
+        // The border slots, which a shadow never draws, carry where the caster
+        // stands from the shadow, in the quad's own turned space, and whether
+        // the shadow stops at the caster's edge -- or, inverted, lies only
+        // within it.
+        let casterX = rotCos * offset.x + rotSin * offset.y
+        let casterY = rotCos * offset.y - rotSin * offset.x
+        var knocks = knockout ? 1.0 : 0.0
+        if inverts {
+            knocks = 2.0
+            // The caster's box, which is all an inverted shadow covers, can
+            // stand past the shadow's own reach by the offset.
+            coverHalfW = coverHalfW + abs(casterX)
+            coverHalfH = coverHalfH + abs(casterY)
+        }
+        self.emitQuad(
+            cx - coverHalfW,
+            cy - coverHalfH,
+            cx + coverHalfW,
+            cy + coverHalfH,
+            -coverHalfW,
+            -coverHalfH,
+            coverHalfW,
+            coverHalfH,
+            halfW,
+            halfH,
+            clampedRadius,
+            blur,
+            mode,
+            0.0,
+            color.r,
+            color.g,
+            color.b,
+            color.a,
+            casterX,
+            casterY,
+            knocks,
+            0.0,
+            clipMinX,
+            clipMinY,
+            clipMaxX,
+            clipMaxY,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            rotCos,
+            rotSin
+        )
+    }
+}

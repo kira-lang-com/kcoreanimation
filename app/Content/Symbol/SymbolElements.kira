@@ -1,0 +1,154 @@
+import Foundation
+
+// The outlines each SVG element a symbol may use draws.
+
+enum SymbolElement {
+    Canvas
+    Path
+    Rect
+    Circle
+    Ellipse
+    Line
+    Polyline
+    Polygon
+
+    // Lines and polylines are open runs with no inside to fill.
+    function fillable(borrow self) -> Bool {
+        return match self {
+            Canvas -> false
+            Path -> true
+            Rect -> true
+            Circle -> true
+            Ellipse -> true
+            Line -> false
+            Polyline -> false
+            Polygon -> true
+        }
+    }
+}
+
+function symbolElement(name: borrow String) -> SymbolElement? {
+    match name {
+        "svg" -> return .Some(.Canvas)
+        "path" -> return .Some(.Path)
+        "rect" -> return .Some(.Rect)
+        "circle" -> return .Some(.Circle)
+        "ellipse" -> return .Some(.Ellipse)
+        "line" -> return .Some(.Line)
+        "polyline" -> return .Some(.Polyline)
+        "polygon" -> return .Some(.Polygon)
+        else -> return .None
+    }
+}
+
+function elementOutlines(element: borrow SymbolElement, tag: borrow SymbolTag) -> [SymbolOutline] {
+    return match element {
+        Canvas -> []
+        Path -> match tag.attribute("d") {
+            Some(data) -> symbolPathOutlines(data)
+            None -> []
+        }
+        Rect -> rectOutlines(tag)
+        Circle -> ellipseOutlines(tag)
+        Ellipse -> ellipseOutlines(tag)
+        Line -> lineOutlines(tag)
+        Polyline -> pointsOutlines(tag)
+        Polygon -> polygonOutlines(tag)
+    }
+}
+
+// A circle's `r`, or an ellipse's `rx` and `ry`, around `cx`, `cy`.
+function ellipseOutlines(tag: borrow SymbolTag) -> [SymbolOutline] {
+    let centerX = floatOr(tag.float("cx"), 0.0)
+    let centerY = floatOr(tag.float("cy"), 0.0)
+    var radiusX: Float = 0.0
+    var radiusY: Float = 0.0
+    match tag.float("r") {
+        Some(radius) -> {
+            radiusX = radius
+            radiusY = radius
+        }
+        None -> {
+            radiusX = floatOr(tag.float("rx"), 0.0)
+            radiusY = floatOr(tag.float("ry"), radiusX)
+        }
+    }
+    if radiusX <= 0.0 || radiusY <= 0.0 { return [] }
+    var outline = SymbolOutline { closed: true }
+    let steps = Float(SymbolCurve.ellipseSteps)
+    for step in 0..SymbolCurve.ellipseSteps {
+        let angle = Float(step) / steps * Float(Angle.fullTurn)
+        outline.add(
+            SymbolPoint { x: centerX + radiusX * cos(angle), y: centerY + radiusY * sin(angle) }
+        )
+    }
+    return [outline]
+}
+
+function rectOutlines(tag: borrow SymbolTag) -> [SymbolOutline] {
+    let x = floatOr(tag.float("x"), 0.0)
+    let y = floatOr(tag.float("y"), 0.0)
+    let width = floatOr(tag.float("width"), 0.0)
+    let height = floatOr(tag.float("height"), 0.0)
+    if width <= 0.0 || height <= 0.0 { return [] }
+    // A corner cannot be rounder than half the shorter side.
+    let radius = min(floatOr(tag.float("rx"), 0.0), min(width, height) / 2.0)
+    var outline = SymbolOutline { closed: true }
+    if radius <= SymbolDefault.squareCorner {
+        outline.add(SymbolPoint { x: x, y: y })
+        outline.add(SymbolPoint { x: x + width, y: y })
+        outline.add(SymbolPoint { x: x + width, y: y + height })
+        outline.add(SymbolPoint { x: x, y: y + height })
+        return [outline]
+    }
+    let left = x + radius
+    let right = x + width - radius
+    let top = y + radius
+    let bottom = y + height - radius
+    // Clockwise from the top left, each corner a quarter turn on from the last.
+    let corners = [
+        SymbolPoint { x: left, y: top },
+        SymbolPoint { x: right, y: top },
+        SymbolPoint { x: right, y: bottom },
+        SymbolPoint { x: left, y: bottom }
+    ]
+    let quarter = Float(Angle.pi) / 2.0
+    let steps = Float(SymbolCurve.cornerSteps)
+    for (index, center) in corners.enumerated() {
+        let base = Float(Angle.pi) + Float(index) * quarter
+        for step in 0..(SymbolCurve.cornerSteps + 1) {
+            let angle = base + Float(step) / steps * quarter
+            outline.add(
+                SymbolPoint { x: center.x + radius * cos(angle), y: center.y + radius * sin(angle) }
+            )
+        }
+    }
+    return [outline]
+}
+
+function lineOutlines(tag: borrow SymbolTag) -> [SymbolOutline] {
+    var outline = SymbolOutline()
+    outline.add(SymbolPoint { x: floatOr(tag.float("x1"), 0.0), y: floatOr(tag.float("y1"), 0.0) })
+    outline.add(SymbolPoint { x: floatOr(tag.float("x2"), 0.0), y: floatOr(tag.float("y2"), 0.0) })
+    return [outline]
+}
+
+// A polyline's `points`.
+function pointsOutlines(tag: borrow SymbolTag) -> [SymbolOutline] {
+    let points = match tag.attribute("points") {
+        Some(points) -> symbolNumbers(points)
+        None -> return []
+    }
+    var outline = SymbolOutline()
+    for pair in 0..trunc(Number(points.count) / 2) {
+        outline.add(SymbolPoint { x: points[pair * 2], y: points[pair * 2 + 1] })
+    }
+    return [outline]
+}
+
+// A polygon is a polyline that closes.
+function polygonOutlines(tag: borrow SymbolTag) -> [SymbolOutline] {
+    var outlines = pointsOutlines(tag)
+    for index in 0..outlines.count { outlines[index].closed = true }
+    return outlines
+}

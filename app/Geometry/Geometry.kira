@@ -1,0 +1,270 @@
+import Foundation
+
+// The affine transform a layer draws under, and the point/rect maths the
+// compositor and hit tester need. `Rect`, `Size` and `Point` are Foundation's,
+// so nothing here redeclares them; the transform is the one type this layer
+// adds, named `CA` so it never collides with an extracted `FoundationDeform`.
+//
+//   | a  c  tx |
+//   | b  d  ty |
+//   | 0  0  1  |
+public @Derive(Copy)
+struct CAAffineTransform {
+    var a: Number = 1.0
+    var b: Number = 0.0
+    var c: Number = 0.0
+    var d: Number = 1.0
+    var tx: Number = 0.0
+    var ty: Number = 0.0
+}
+
+public function identity() -> CAAffineTransform {
+    return CAAffineTransform {}
+}
+
+public function translation(x: Number, y: Number) -> CAAffineTransform {
+    return CAAffineTransform { a: 1.0, b: 0.0, c: 0.0, d: 1.0, tx: x, ty: y }
+}
+
+public function scaleTransform(sx: Number, sy: Number) -> CAAffineTransform {
+    return CAAffineTransform { a: sx, b: 0.0, c: 0.0, d: sy, tx: 0.0, ty: 0.0 }
+}
+
+public function rotation(radians: Number) -> CAAffineTransform {
+    let cs = cos(radians)
+    let sn = sin(radians)
+    return CAAffineTransform { a: cs, b: sn, c: -sn, d: cs, tx: 0.0, ty: 0.0 }
+}
+
+extend CAAffineTransform {
+    function isIdentity() -> Bool {
+        return self.a == 1.0 && self.b == 0.0 && self.c == 0.0 && self.d == 1.0 && self.tx == 0.0 && self.ty == 0.0
+    }
+
+    function scaleX() -> Number {
+        return axisLength(self.a, self.b)
+    }
+
+    function scaleY() -> Number {
+        return axisLength(self.c, self.d)
+    }
+
+    function lengthScale() -> Number {
+        return min(self.scaleX(), self.scaleY())
+    }
+
+    // The scale text under `t` is shown at, exactly: text is set at its own size
+    // and its glyphs scaled by this, so it follows a scale as smoothly as the
+    // layers around it do.
+    function textScale() -> Number {
+        let sx = self.scaleX()
+        let sy = self.scaleY()
+        if sx == sy { return max(sx, 0.01) }
+        return sqrt(max(sx * sy, 0.0001))
+    }
+
+    // `outer` applied to the result of `inner`: outer * inner, so a child's own
+    // transform composes under its parent's.
+    // Neither turned nor sheared, as nearly every layer in a UI is: x and y
+    // each depend on themselves alone.
+    function isAxisAligned() -> Bool {
+        return self.b == 0.0 && self.c == 0.0
+    }
+
+    // Only moves: most layers are placed and not scaled or turned, and a
+    // product of numbers is never the fast path a sum is.
+    function isTranslation() -> Bool {
+        return self.a == 1.0 && self.d == 1.0 && self.b == 0.0 && self.c == 0.0
+    }
+
+    function concat(inner: borrow CAAffineTransform) -> CAAffineTransform {
+        if self.isTranslation() {
+            return CAAffineTransform {
+                a: inner.a,
+                b: inner.b,
+                c: inner.c,
+                d: inner.d,
+                tx: inner.tx + self.tx,
+                ty: inner.ty + self.ty
+            }
+        }
+        if self.isAxisAligned() && inner.isAxisAligned() {
+            return CAAffineTransform {
+                a: self.a * inner.a,
+                d: self.d * inner.d,
+                tx: self.a * inner.tx + self.tx,
+                ty: self.d * inner.ty + self.ty
+            }
+        }
+        return CAAffineTransform {
+            a: self.a * inner.a + self.c * inner.b,
+            b: self.b * inner.a + self.d * inner.b,
+            c: self.a * inner.c + self.c * inner.d,
+            d: self.b * inner.c + self.d * inner.d,
+            tx: self.a * inner.tx + self.c * inner.ty + self.tx,
+            ty: self.b * inner.tx + self.d * inner.ty + self.ty
+        }
+    }
+
+    function applyX(x: Number, y: Number) -> Number {
+        return self.a * x + self.c * y + self.tx
+    }
+
+    function applyY(x: Number, y: Number) -> Number {
+        return self.b * x + self.d * y + self.ty
+    }
+
+    function applyPoint(x: Number, y: Number) -> Point {
+        return Point { x: self.applyX(x, y), y: self.applyY(x, y) }
+    }
+
+    // The axis-aligned bounding box of a rectangle carried through the transform.
+    // Rotation turns a rect into a quad, so the four corners are mapped and the
+    // extremes taken — the box a clip or a damage rect is measured in.
+    function applyRect(rect: borrow Rect) -> Rect {
+        if self.isTranslation() {
+            return Rect {
+                x: rect.x + self.tx,
+                y: rect.y + self.ty,
+                width: rect.width,
+                height: rect.height
+            }
+        }
+        if self.isAxisAligned() {
+            let left = self.a * rect.x + self.tx
+            let right = self.a * (rect.x + rect.width) + self.tx
+            let top = self.d * rect.y + self.ty
+            let bottom = self.d * (rect.y + rect.height) + self.ty
+            let minX = min(left, right)
+            let minY = min(top, bottom)
+            return Rect {
+                x: minX,
+                y: minY,
+                width: max(left, right) - minX,
+                height: max(top, bottom) - minY
+            }
+        }
+        let x0 = rect.x
+        let y0 = rect.y
+        let x1 = rect.x + rect.width
+        let y1 = rect.y + rect.height
+        let ax = self.applyX(x0, y0)
+        let ay = self.applyY(x0, y0)
+        let bx = self.applyX(x1, y0)
+        let by = self.applyY(x1, y0)
+        let cx = self.applyX(x1, y1)
+        let cy = self.applyY(x1, y1)
+        let dx = self.applyX(x0, y1)
+        let dy = self.applyY(x0, y1)
+        let minX = min(min(ax, bx), min(cx, dx))
+        let maxX = max(max(ax, bx), max(cx, dx))
+        let minY = min(min(ay, by), min(cy, dy))
+        let maxY = max(max(ay, by), max(cy, dy))
+        return Rect { x: minX, y: minY, width: maxX - minX, height: maxY - minY }
+    }
+
+    // The inverse, for hit testing: a screen point is carried back into a layer's
+    // own coordinates and tested against its untransformed bounds, so a rotated or
+    // scaled layer is pressable where it is drawn rather than where it was laid out.
+    function determinant() -> Number {
+        return self.a * self.d - self.b * self.c
+    }
+
+    function invert() -> CAAffineTransform {
+        let det = self.determinant()
+        if det == 0.0 {
+            // A degenerate transform (a zero scale) maps everything to a line and
+            // has no inverse; the identity is returned so a hit test degrades to
+            // "misses everything under it" rather than dividing by zero.
+            return identity()
+        }
+        let inv = 1.0 / det
+        let ia = self.d * inv
+        let ib = (-self.b) * inv
+        let ic = (-self.c) * inv
+        let id = self.a * inv
+        return CAAffineTransform {
+            a: ia,
+            b: ib,
+            c: ic,
+            d: id,
+            tx: -(ia * self.tx + ic * self.ty),
+            ty: -(ib * self.tx + id * self.ty)
+        }
+    }
+}
+
+// A layer's world quad as the batch draws it: a center, half extents along the
+// layer's own axes, and a rotation. Decomposed from the world transform, so a
+// rotated/scaled layer becomes an EXACT oriented quad (the batch rotates it
+// about its center in the vertex stage) rather than an axis-aligned bounding box.
+// Assumes a shear-free transform (translate/rotate/scale), which UI composition
+// produces.
+public @Derive(Copy)
+struct CAOrientedQuad {
+    var centerX: Number = 0.0
+    var centerY: Number = 0.0
+    var halfW: Number = 0.0
+    var halfH: Number = 0.0
+    var rotCos: Number = 1.0
+    var rotSin: Number = 0.0
+}
+
+extend CAAffineTransform {
+    function orientedQuad(width: Number, height: Number) -> CAOrientedQuad {
+        if self.isTranslation() {
+            let halfW = width * 0.5
+            let halfH = height * 0.5
+            return CAOrientedQuad {
+                centerX: halfW + self.tx,
+                centerY: halfH + self.ty,
+                halfW: halfW,
+                halfH: halfH,
+                rotCos: 1.0
+            }
+        }
+        if self.isAxisAligned() {
+            let sx = abs(self.a)
+            return CAOrientedQuad {
+                centerX: self.a * (width * 0.5) + self.tx,
+                centerY: self.d * (height * 0.5) + self.ty,
+                halfW: width * 0.5 * sx,
+                halfH: height * 0.5 * abs(self.d),
+                rotCos: self.a < 0.0 ? -1.0 : 1.0
+            }
+        }
+        let center = self.applyPoint(width / 2.0, height / 2.0)
+        let sx = axisLength(self.a, self.b)
+        let sy = axisLength(self.c, self.d)
+        var rotCos: Number = 1.0
+        var rotSin: Number = 0.0
+        if sx > 0.0 {
+            rotCos = self.a / sx
+            rotSin = self.b / sx
+        }
+        return CAOrientedQuad {
+            centerX: center.x,
+            centerY: center.y,
+            halfW: width / 2.0 * sx,
+            halfH: height / 2.0 * sy,
+            rotCos: rotCos,
+            rotSin: rotSin
+        }
+    }
+}
+
+// The length of (`x`, `y`): one axis of a transform, which is most often
+// not turned, and then needs no square root.
+function axisLength(x: Number, y: Number) -> Number {
+    if y == 0.0 { return abs(x) }
+    if x == 0.0 { return abs(y) }
+    return sqrt(x * x + y * y)
+}
+
+public function rectContains(rect: borrow Rect, x: Number, y: Number) -> Bool {
+    return x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height
+}
+
+public function localContains(width: Number, height: Number, x: Number, y: Number) -> Bool {
+    return x >= 0.0 && x <= width && y >= 0.0 && y <= height
+}

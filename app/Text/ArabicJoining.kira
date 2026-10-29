@@ -1,0 +1,155 @@
+import Foundation
+
+// Which form each letter of an Arabic run takes: isolated, final, medial or
+// initial, from how it joins the letters on either side, as Unicode's
+// ArabicShaping.txt classes them and HarfBuzz's Arabic shaper reads them. A
+// face draws each form as its own glyph, chosen by its `isol`, `fina`,
+// `medi` and `init` features, and joins them up with cursive attachment.
+
+// How a letter joins its neighbours. A dual-joining letter joins on both
+// sides, a right-joining one only to the letter before it; a join-causing
+// one (the tatweel) joins on both sides and takes no form of its own; a
+// transparent one (a mark) is passed over.
+enum JoiningType {
+    NonJoining
+    Right
+    Dual
+    Causing
+    Transparent
+}
+
+// The form a letter takes, which feature chooses its glyph.
+enum JoiningForm {
+    None
+    Isolated
+    Final
+    Medial
+    Initial
+}
+
+namespace JoiningFeatures {
+    // isol, fina, medi, init.
+    let isolated: UN32 = 0x69736F6C
+    let final: UN32 = 0x66696E61
+    let medial: UN32 = 0x6D656469
+    let initial: UN32 = 0x696E6974
+}
+
+// The joining type of `scalar` across the Arabic and Arabic Supplement
+// blocks and the zero width joiner. Ranges end before their last number.
+function joiningType(scalar: Number) -> JoiningType {
+    return match scalar {
+        0x0610..0x061B, 0x064B..0x0660, 0x0670, 0x06D6..0x06DD, 0x06DF..0x06E5, 0x06E7, 0x06E8,
+            0x06EA..0x06EE -> .Transparent
+        0x0640, 0x200D -> .Causing
+        // Alef with its hamzas and madda, waw with hamza, alef, teh marbuta,
+        // dal, thal, reh, zain, waw, and their extended forms.
+        0x0622..0x0626, 0x0627, 0x0629, 0x062F..0x0633, 0x0648, 0x0671..0x0674, 0x0675..0x0678,
+            0x0688..0x069A, 0x06C0, 0x06C3..0x06CC, 0x06CD, 0x06CF, 0x06D2, 0x06D3, 0x06D5, 0x06EE,
+            0x06EF, 0x0759..0x075C, 0x076B, 0x076C, 0x0771, 0x0773, 0x0774, 0x0778, 0x0779 -> .Right
+        0x0620, 0x0626, 0x0628, 0x062A..0x062F, 0x0633..0x0640, 0x0641..0x0648, 0x0649, 0x064A,
+            0x066E, 0x066F, 0x0678..0x0688, 0x069A..0x06C0, 0x06C1, 0x06C2, 0x06CC, 0x06CE, 0x06D0,
+            0x06D1, 0x06FA..0x06FD, 0x06FF, 0x0750..0x0780 -> .Dual
+        else -> .NonJoining
+    }
+}
+
+function joinsBefore(type: borrow JoiningType) -> Bool {
+    return match type {
+        Right, Dual, Causing -> true
+        NonJoining, Transparent -> false
+    }
+}
+
+function joinsAfter(type: borrow JoiningType) -> Bool {
+    return match type {
+        Dual, Causing -> true
+        Right, NonJoining, Transparent -> false
+    }
+}
+
+// The form of each of `scalars`, in the order written. A letter joins the
+// one before it where it joins on that side and the one before it joins on
+// the other; marks between them are passed over and take no form.
+function joiningForms(scalars: borrow [Number]) -> [JoiningForm] {
+    let count = scalars.count
+    var types: [JoiningType] = []
+    var forms: [JoiningForm] = []
+    for scalar in scalars {
+        types.append(joiningType(scalar))
+        forms.append(.None)
+    }
+    var previous: Number = -1
+    for index in 0..count {
+        if types[index] == .Transparent { continue }
+        let joined = previous >= 0 && joinsAfter(types[previous]) && joinsBefore(types[index])
+        if joined {
+            // The letter before now joins on its far side too.
+            forms[previous] = match forms[previous] {
+                Final -> .Medial
+                Isolated -> .Initial
+                None -> .None
+                Medial -> .Medial
+                Initial -> .Initial
+            }
+        }
+        forms[index] = match types[index] {
+            Right, Dual -> joined ? .Final : .Isolated
+            NonJoining, Causing, Transparent -> .None
+        }
+        previous = index
+    }
+    return forms
+}
+
+namespace JoiningLayout {
+    // ccmp and locl, which take letters apart and pick a language's forms
+    // before the joining forms are chosen.
+    let first: [UN32] = [0x63636D70, 0x6C6F636C]
+    // rlig, rclt, calt, liga, clig: the rest, after them.
+    let after: [UN32] = [0x726C6967, 0x72636C74, 0x63616C74, 0x6C696761, 0x636C6967]
+}
+
+extend FontFile {
+    // Substitutes an Arabic run as HarfBuzz orders it: `ccmp` and `locl`,
+    // then each letter in the form it joins in, by the face's `isol`,
+    // `fina`, `medi` and `init` features, then the rest. A glyph a letter
+    // came apart into takes that letter's form, found by the byte it came
+    // from, `bytes` giving each of `scalars`' bytes.
+    function joinForms(
+        buffer: borrow mut ShapingBuffer,
+        scalars: borrow [Number],
+        bytes: borrow [Number],
+        script: UN32,
+        tabular: Bool
+    ) {
+        substitute(buffer, data.layoutTable(layout.gsub, script, JoiningLayout.first, 7))
+        let forms = joiningForms(scalars)
+        let features: [(UN32, JoiningForm)] = [
+            (JoiningFeatures.isolated, .Isolated),
+            (JoiningFeatures.final, .Final),
+            (JoiningFeatures.medial, .Medial),
+            (JoiningFeatures.initial, .Initial)
+        ]
+        for (feature, form) in features {
+            var wanted: [Bool] = []
+            var any = false
+            for cluster in buffer.clusters {
+                var taken = false
+                for (index, at) in bytes.enumerated() {
+                    if at == cluster {
+                        taken = forms[index] == form
+                        break
+                    }
+                }
+                wanted.append(taken)
+                any = any || taken
+            }
+            if !any { continue }
+            substituteWhere(buffer, data.layoutTable(layout.gsub, script, [feature], 7), wanted)
+        }
+        var rest = copy JoiningLayout.after
+        if tabular { rest.append(LayoutFeatures.tabularFigures) }
+        substitute(buffer, data.layoutTable(layout.gsub, script, rest, 7))
+    }
+}

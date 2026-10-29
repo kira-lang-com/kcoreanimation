@@ -1,0 +1,197 @@
+import Foundation
+import Ember
+import KiraLayout
+
+// Texture layers that name an image file rather than a texture someone handed
+// over: a wallpaper, a photograph.
+//
+// The file is decoded and uploaded the first time a layer draws it and kept
+// under its path after that, because a layer is drawn every frame and a decode
+// is a whole read of the file. A file that cannot be read is kept too, as no
+// texture, so a missing image is said once rather than once a frame. Every
+// `FileTextureCheck.every` lookups the file is looked at again: one replaced
+// on disk, as installing an application replaces its icon, is decoded anew.
+public struct FileTexture {
+    var path: String = ""
+    var handle: TextureHandle = TextureHandle(0)
+    var width: Number = 0.0
+    var height: Number = 0.0
+    var texture: GraphicsTexture = GraphicsTexture {}
+    // The file as it was decoded: none when it was not there.
+    var stamp: FileStamp? = .None
+    var lookups: Number = 0
+}
+
+// When a file last changed and which file a path named: a file replaced by
+// another at the same path has a new inode, one rewritten in place a new time.
+struct FileStamp {
+    let modified: Number
+    let inode: Number
+}
+
+namespace FileTextureCheck {
+    // A layer is drawn every frame: about twice a second at sixty frames.
+    let every: Number = 32
+    // Frames a replaced file's texture is kept before it is destroyed.
+    let retireAfter: Number = 3
+}
+
+struct AgingTexture {
+    let texture: GraphicsTexture
+    var frames: Number = 0
+}
+
+// A file that is not there is no failure: most representations are not.
+function fileStamp(path: borrow String) -> FileStamp? {
+    return match fileStatus(path) {
+        Ok(status) -> .Some(FileStamp { modified: status.modified, inode: status.inode })
+        Error(failure) -> .None
+    }
+}
+
+function sameStamp(a: borrow FileStamp?, b: borrow FileStamp?) -> Bool {
+    return match a {
+        Some(was) -> match b {
+            Some(now) -> was.modified == now.modified && was.inode == now.inode
+            None -> false
+        }
+        None -> match b {
+            Some(now) -> false
+            None -> true
+        }
+    }
+}
+
+extend EmberFoundationBackend {
+    function fileTexture(path: borrow String, quiet: Bool = false) -> FileTexture {
+        for index in 0..self.fileTextures.count {
+            if self.fileTextures[index].path != path { continue }
+            self.fileTextures[index].lookups += 1
+            if self.fileTextures[index].lookups % FileTextureCheck.every != 0 ||
+                sameStamp(self.fileTextures[index].stamp, fileStamp(path)) {
+                return copy self.fileTextures[index]
+            }
+            // Replaced on disk: the old texture is handed to the compositor
+            // to retire once the frame is encoded, since a pass may bind it.
+            log info("an image layer's file changed; decoding it again", path: path)
+            if self.fileTextures[index].handle.raw > 0 {
+                self.staleTextures.append(copy self.fileTextures[index].texture)
+            }
+            let fresh = self.loadFileTexture(path, quiet)
+            self.fileTextures[index] = copy fresh
+            return fresh
+        }
+        let loaded = self.loadFileTexture(path, quiet)
+        self.fileTextures.append(copy loaded)
+        return loaded
+    }
+
+    function loadFileTexture(path: borrow String, quiet: Bool) -> FileTexture {
+        var loaded = FileTexture { path: copy path, stamp: fileStamp(path) }
+        // A representation that is not there is no failure: the file is
+        // drawn instead.
+        let missing = match loaded.stamp {
+            Some(stamp) -> false
+            None -> true
+        }
+        if quiet && missing { return loaded }
+        match self.graphics.createTextureFromFile(path, path) {
+            Ok(texture) -> {
+                loaded.handle = TextureHandle(Number(texture.viewId.raw))
+                loaded.width = Number(texture.width)
+                loaded.height = Number(texture.height)
+                loaded.texture = texture
+            }
+            Error(failure) -> log warn("an image layer's file could not be shown", path: path)
+        }
+        return loaded
+    }
+
+    // The image `path` names, as drawn `width` by `height` pixels: the
+    // picture made for exactly that size when one lies beside it, as an
+    // icon's representations do, so it is shown at its real size rather than
+    // scaled; the file itself otherwise. A representation is the file's name
+    // with its pixel size after it, `AppIcon-134x134.png` beside `AppIcon.png`.
+    function sizedFileTexture(path: borrow String, width: Number, height: Number) -> FileTexture {
+        let dot = match path.lastIndexOf(".") {
+            Some(at) -> at
+            None -> return self.fileTexture(path)
+        }
+        if width <= 0 || height <= 0 { return self.fileTexture(path) }
+        // The whole pixels nearest: a picture a fraction of a pixel off its
+        // box is drawn at its own size all the same.
+        let across = round(width)
+        let down = round(height)
+        let sized = "\(path.substring(0, dot))-\(across)x\(down)\(path.substring(dot, path.count))"
+        let file = self.fileTexture(sized, quiet: true)
+        if file.handle.raw > 0 { return file }
+        return self.fileTexture(path)
+    }
+
+    // Draws a texture layer: the texture it was handed, or the image its file
+    // holds. An image that fills at its own aspect is drawn over the larger
+    // box that keeps its proportions and clipped back to the layer's own, so
+    // it is cropped rather than stretched. Answers whether anything was drawn.
+    function drawTextureLayer(
+        texture: borrow CATexture,
+        quad: borrow CAOrientedQuad,
+        opacity: Number,
+        cornerRadius: Number,
+        clipMinX: Number,
+        clipMinY: Number,
+        clipMaxX: Number,
+        clipMaxY: Number,
+        clipRadius: Number,
+        clipShapeKind: Number
+    ) -> Bool {
+        var handle = texture.handle
+        var halfW = quad.halfW
+        var halfH = quad.halfH
+        var minX = clipMinX
+        var minY = clipMinY
+        var maxX = clipMaxX
+        var maxY = clipMaxY
+        if texture.path.count > 0 {
+            let file = self.sizedFileTexture(
+                texture.path,
+                quad.halfW * 2 * self.scale,
+                quad.halfH * 2 * self.scale
+            )
+            handle = file.handle
+            if texture.aspectFill && file.width > 0.0 && file.height > 0.0 && halfW > 0.0 && halfH > 0.0 {
+                let cover = max(halfW / file.width, halfH / file.height)
+                halfW = file.width * cover
+                halfH = file.height * cover
+                minX = max(minX, quad.centerX - quad.halfW)
+                minY = max(minY, quad.centerY - quad.halfH)
+                maxX = min(maxX, quad.centerX + quad.halfW)
+                maxY = min(maxY, quad.centerY + quad.halfH)
+            }
+        }
+        if handle.raw <= 0 {
+            return false
+        }
+        self.drewVisibleUi = true
+        self.batch.setExternalTextures(self.graphics, handle.raw, texture.secondaryHandle.raw)
+        self.batch.pushLayerTextureQuad(
+            quad.centerX,
+            quad.centerY,
+            halfW,
+            halfH,
+            quad.rotCos,
+            quad.rotSin,
+            texture.opacity * opacity,
+            texture.transition,
+            cornerRadius,
+            minX,
+            minY,
+            maxX,
+            maxY,
+            blur: 0.0,
+            clipRadius: clipRadius,
+            clipShapeKind: clipShapeKind,
+            straight: texture.path.count > 0
+        )
+        return true
+    }
+}

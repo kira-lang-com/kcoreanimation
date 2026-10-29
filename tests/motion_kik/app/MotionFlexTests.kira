@@ -1,0 +1,233 @@
+import Foundation
+import KCoreAnimation
+
+// The flex, checked against SwiftUICore's FlexInteraction it is ported from:
+// the parameter sets, their resolution by size, the per-frame targets, the
+// springs that follow them, and the glow's profile.
+
+function flexStep() -> Number {
+    return 1.0 / 240.0
+}
+
+// Runs a flex for `seconds` and answers the last frame.
+function flexRun(state: borrow mut MotionFlexState, seconds: Number) -> MotionFlexFrame {
+    var frame = MotionFlexFrame {}
+    for _ in 0..Number(round(seconds / flexStep())) {
+        frame = motionFlexAdvance(state, flexStep())
+    }
+    return frame
+}
+
+function flexFitted(width: Number, height: Number, input: MotionFlexInput) -> MotionFlexState {
+    var state = MotionFlexState {}
+    motionFlexFit(state, motionFlexParameters(.Automatic, input, width, height), width, height)
+    return state
+}
+
+// --- the parameter sets ----------------------------------------------------
+
+// Below 120 points on its longer side an automatic element is ultra-small: the
+// small set, with a shorter stretch threshold for a finger.
+construct MfAnUltraSmallElementStretchesSooner() extends Test {
+    test {
+        let set = motionFlexParameters(.Automatic, .Touch, 44.0, 44.0)
+        return round(set.scaleDistanceThreshold) * 100 + round(set.liftScalePoints)
+    }
+    expect { return .Ok(200016) }
+}
+
+// A cursor lifts a small element two and a half points, not sixteen.
+construct MfACursorLiftsAlmostNothing() extends Test {
+    test {
+        let set = motionFlexParameters(.Automatic, .Cursor, 60.0, 28.0)
+        return scaled(set.liftScalePoints, 2) * 1000 + scaled(set.littleGlowOpacity, 2)
+    }
+    expect { return .Ok(250035) }
+}
+
+// Past 120 points the set is mixed from small to large: the lift, the
+// threshold and the glows by the shorter side, the springs by the longer.
+construct MfAnAutomaticSetMixesBySide() extends Test {
+    test {
+        // 44 tall: the shorter side is at the small set's own size, glow and
+        // all.
+        let set = motionFlexParameters(.Automatic, .Touch, 160.0, 44.0)
+        return round(set.liftScalePoints) * 100000
+            + round(set.scaleDistanceThreshold / 100.0) * 100
+            + scaled(set.littleGlowOpacity, 1)
+    }
+    expect { return .Ok(1606003) }
+}
+
+// A menu never lifts.
+construct MfAMenuNeverLifts() extends Test {
+    test {
+        let set = motionFlexParameters(.Menu, .Touch, 240.0, 300.0)
+        return round(set.liftScalePoints)
+    }
+    expect { return .Ok(0) }
+}
+
+// --- the press -------------------------------------------------------------
+
+// Held still, a 100 by 44 element grows by sixteen points on its longer side,
+// as `_UIFlexInteraction` grows it: a scale of (100 + 16) / 100, uniform, with
+// nothing to slide it.
+construct MfAStillPressLiftsUniformly() extends Test {
+    test {
+        var state = flexFitted(100.0, 44.0, .Touch)
+        motionFlexPress(state, 50.0, 22.0)
+        let frame = flexRun(state, 2.0)
+        return scaled(frame.scaleX, 4) * 100000 + scaled(frame.scaleY, 4)
+            + round(abs(frame.driftX) + abs(frame.driftY)) * 1000000000
+    }
+    expect { return .Ok(1160011600) }
+}
+
+// A floating tab bar, 257 by 57 points on an iPhone, lifts by 14.66 points --
+// the small set's sixteen mixed toward the large set's four by its height --
+// added to its width: under 6 %, as the device draws it, where adding them to
+// its height would swell it by a quarter.
+construct MfAWideBarLiftsByItsLength() extends Test {
+    test {
+        var state = flexFitted(257.0, 57.0, .Touch)
+        motionFlexPress(state, 128.0, 28.0)
+        let frame = flexRun(state, 2.0)
+        return scaled(frame.scaleX, 4) * 100000 + scaled(frame.scaleY, 4)
+    }
+    expect { return .Ok(1057010570) }
+}
+
+// Dragged right 20 points inside a 100 by 44 element, with a 2000-point
+// threshold, it stretches by 20 / 8000 across and narrows as much, sliding
+// that share of its width.
+construct MfADragStretchesAlongAndSlides() extends Test {
+    test {
+        var state = flexFitted(100.0, 44.0, .Touch)
+        motionFlexPress(state, 50.0, 22.0)
+        motionFlexMove(state, 70.0, 22.0)
+        let frame = flexRun(state, 3.0)
+        let lift = 116.0 / 100.0
+        let k = 20.0 / 8000.0
+        let along = abs(frame.scaleX - (lift + k)) < 0.0001
+        let across = abs(frame.scaleY - (lift - k)) < 0.0001
+        let slid = abs(frame.driftX - 100.0 * k) < 0.001
+        return along && across && slid
+    }
+    expect {
+        let expected: Result<Any, TestFailure> = .Ok(true)
+        return expected
+    }
+}
+
+// Off the element the drag stretches four times as fast as on it.
+construct MfADragOffTheEdgePullsHarder() extends Test {
+    test {
+        var state = flexFitted(100.0, 44.0, .Touch)
+        motionFlexPress(state, 90.0, 22.0)
+        motionFlexMove(state, 130.0, 22.0)
+        let frame = flexRun(state, 3.0)
+        let k = 30.0 / 2000.0 + 10.0 / 8000.0
+        return abs(frame.driftX - 100.0 * k) < 0.001
+    }
+    expect {
+        let expected: Result<Any, TestFailure> = .Ok(true)
+        return expected
+    }
+}
+
+// Let go, it springs home to rest and needs no more frames.
+construct MfAReleaseSettlesHome() extends Test {
+    test {
+        var state = flexFitted(100.0, 44.0, .Touch)
+        motionFlexPress(state, 50.0, 22.0)
+        motionFlexMove(state, 80.0, 30.0)
+        flexRun(state, 0.5)
+        motionFlexRelease(state)
+        let frame = flexRun(state, 4.0)
+        let home = abs(frame.scaleX - 1.0) < 0.001 && abs(frame.driftX) < 0.01
+        return home && !frame.moving
+    }
+    expect {
+        let expected: Result<Any, TestFailure> = .Ok(true)
+        return expected
+    }
+}
+
+// The small set's spring is underdamped: let go from a press, the element dips
+// under its resting size before it settles.
+construct MfAReleaseDipsBelowRest() extends Test {
+    test {
+        var state = flexFitted(100.0, 44.0, .Touch)
+        motionFlexPress(state, 50.0, 22.0)
+        flexRun(state, 2.0)
+        motionFlexRelease(state)
+        var lowest: Number = 2.0
+        for _ in 0..240 {
+            lowest = min(lowest, motionFlexAdvance(state, flexStep()).scaleX)
+        }
+        return lowest < 0.99
+    }
+    expect {
+        let expected: Result<Any, TestFailure> = .Ok(true)
+        return expected
+    }
+}
+
+// --- the glow --------------------------------------------------------------
+
+// Held, the little glow comes up to the set's opacity at the pointer, its size
+// one and a half times the shorter side.
+construct MfTheLittleGlowSitsUnderThePointer() extends Test {
+    test {
+        var state = flexFitted(100.0, 44.0, .Touch)
+        motionFlexPress(state, 30.0, 10.0)
+        let frame = flexRun(state, 2.0)
+        return round(frame.glowX) * 1000000 + round(frame.glowY) * 10000
+            + round(frame.glowSize) * 10 + round(frame.littleGlow)
+    }
+    expect { return .Ok(30100661) }
+}
+
+// Dragged past the dissipation distance, the glow halves and doubles.
+construct MfAFarDragDissipatesTheGlow() extends Test {
+    test {
+        var state = flexFitted(100.0, 44.0, .Touch)
+        motionFlexPress(state, 10.0, 22.0)
+        motionFlexMove(state, 90.0, 22.0)
+        let frame = flexRun(state, 2.0)
+        return scaled(frame.littleGlow, 2) * 100 + scaled(frame.glowScale, 1)
+    }
+    expect { return .Ok(5020) }
+}
+
+// The glow is a disc under a Gaussian as wide as the disc: 1 - e^(-1/2) in the
+// middle, 0.267 where the disc ends a quarter of the way out, nothing at the
+// rim.
+construct MfTheGlowIsABlurredDisc() extends Test {
+    test {
+        let middle = motionFlexGlowFalloff(0.0, 400.0)
+        let edge = motionFlexGlowFalloff(100.0, 400.0)
+        let rim = motionFlexGlowFalloff(400.0, 400.0)
+        return abs(middle - 0.3935) < 0.001 && abs(edge - 0.2671) < 0.002 && rim == 0.0
+    }
+    expect {
+        let expected: Result<Any, TestFailure> = .Ok(true)
+        return expected
+    }
+}
+
+// Both lights and the appearance ride the glass batch in one number: the
+// reach whole, the little glow in 255ths and the big glow in 31sts below it,
+// the sign for the dark dodge.
+construct MfBothLightsPackIntoOneNumber() extends Test {
+    test {
+        let light = packedGlow(1.0, 1.0, 320.0, false)
+        let dark = packedGlow(0.5, 0.0, 320.0, true)
+        let code = round((light - 320.0) * 8192.0 - 0.5)
+        let darkCode = round((abs(dark) - 320.0) * 8192.0 - 0.5)
+        return code * 10000 + darkCode + (dark < 0.0 ? 0 : 1) * 100000000
+            + (packedGlow(0.0, 0.0, 320.0, false) == 0.0 ? 0 : 1) * 1000000000
+    }
+    expect { return .Ok(81914096) }
+}

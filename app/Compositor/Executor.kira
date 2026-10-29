@@ -1,0 +1,332 @@
+import Foundation
+import Ember
+import KiraLayout
+
+public function passTextureHandle(texture: borrow GraphicsTexture) -> TextureHandle {
+    return TextureHandle(Number(texture.viewId))
+}
+
+public function passDeviceExtent(logical: Number, scale: Number) -> Number {
+    var extent = ceil(max(logical, 1.0) * max(scale, 1.0))
+    if extent < 1 {
+        extent = 1
+    }
+    return extent
+}
+
+extend CAPass {
+    function targetScale(texture: borrow GraphicsTexture) -> Number {
+        let width = max(self.bounds.width, 1.0)
+        let height = max(self.bounds.height, 1.0)
+        var textureWidth = texture.width
+        var textureHeight = texture.height
+        if textureWidth < 1 {
+            textureWidth = 1
+        }
+        if textureHeight < 1 {
+            textureHeight = 1
+        }
+        let sx = Number(textureWidth) / width
+        let sy = Number(textureHeight) / height
+        return max(min(sx, sy), 1.0)
+    }
+}
+
+extend CARenderPlan {
+    function containsOwner(owner: LayerId) -> Bool {
+        for passIndex in 1..self.passes.count {
+            if self.passes[passIndex].owner == owner {
+                return true
+            }
+        }
+        return false
+    }
+}
+
+extend Compositor {
+    // A pass target is destroyed, and every batch that may have bound it
+    // forgets it: the pass batches now, since a parent pass is encoded after
+    // its children are re-made, and the root batch before it next draws.
+    function retireTexture(graphics: borrow Graphics, texture: borrow GraphicsTexture) {
+        let handle = passTextureHandle(texture)
+        graphics.destroyTexture(texture)
+        for index in 0..self.passBatches.count {
+            let passBatch = UiBatch {
+                storage: nativeUserData(self.passBatches[index].batch.storage)
+            }
+            passBatch.forgetTexture(graphics, handle)
+        }
+        self.retiredTextures.append(handle)
+    }
+
+    // The textures of image files replaced on disk, decoded anew this frame.
+    // The frame just encoded may still sample them, so each waits
+    // `FileTextureCheck.retireAfter` frames before it is destroyed.
+    function retireFileTextures(stale: borrow [GraphicsTexture]) {
+        for texture in stale {
+            self.agingTextures.append(AgingTexture { texture: copy texture })
+        }
+    }
+
+    function retireAgedTextures(graphics: borrow Graphics) {
+        var waiting: [AgingTexture] = []
+        for aging in self.agingTextures {
+            if aging.frames >= FileTextureCheck.retireAfter {
+                self.retireTexture(graphics, aging.texture)
+            } else {
+                waiting.append(AgingTexture { texture: copy aging.texture, frames: aging.frames + 1 })
+            }
+        }
+        self.agingTextures = move waiting
+    }
+
+    function ensurePassBatch(passId: RenderPassId, graphics: borrow Graphics) -> Number {
+        let slot = passId.raw - 1
+        if slot < 0 {
+            return -1
+        }
+        while self.passBatches.count <= slot {
+            let batch = UiBatch { storage: createBatch(graphics) }
+            batch.setBackgroundPromotable(false)
+            self.passBatches.append(CAPassBatchSlot { batch: move batch })
+        }
+        return slot
+    }
+
+    function ensurePassTarget(
+        pass: borrow CAPass,
+        graphics: borrow Graphics,
+        renderScale: Number
+    ) -> Number {
+        var index = self.cachedTargetIndex(pass.owner)
+        if index < 0 {
+            self.cachedTargets.append(CACachedPassTarget { owner: pass.owner })
+            index = self.cachedTargets.count - 1
+        }
+
+        var cached = self.cachedTargets[index]
+        if pass.targetId.raw != 0 {
+            match self.renderTarget(pass.targetId) {
+                None -> {
+                    if cached.texture.id != 0 && !cached.external {
+                        self.retireTexture(graphics, cached.texture)
+                    }
+                    self.cachedTargets[index] = CACachedPassTarget {
+                        owner: pass.owner,
+                        targetId: pass.targetId,
+                        external: true,
+                        valid: false
+                    }
+                    return -1
+                }
+                Some(target) -> {
+                    if target.viewId == 0 || target.colorViewId == 0 || target.width <= 0 || target.height <= 0 {
+                        if cached.texture.id != 0 && !cached.external {
+                            self.retireTexture(graphics, cached.texture)
+                        }
+                        self.cachedTargets[index] = CACachedPassTarget {
+                            owner: pass.owner,
+                            targetId: pass.targetId,
+                            external: true,
+                            valid: false
+                        }
+                        return -1
+                    }
+                    let changed = !cached.external
+                        || cached.targetId != pass.targetId
+                        || cached.texture.id != target.id
+                        || cached.texture.viewId != target.viewId
+                        || cached.texture.colorViewId != target.colorViewId
+                    if changed && cached.texture.id != 0 && !cached.external {
+                        self.retireTexture(graphics, cached.texture)
+                    }
+                    cached.targetId = pass.targetId
+                    cached.texture = target
+                    cached.deviceWidth = target.width
+                    cached.deviceHeight = target.height
+                    cached.external = true
+                    if changed {
+                        cached.valid = false
+                    }
+                    self.cachedTargets[index] = cached
+                    return index
+                }
+            }
+        }
+
+        let width = passDeviceExtent(pass.bounds.width, renderScale)
+        let height = passDeviceExtent(pass.bounds.height, renderScale)
+        let mustAllocate = cached.external
+            || cached.texture.id == 0
+            || cached.deviceWidth != width
+            || cached.deviceHeight != height
+        if mustAllocate {
+            if cached.texture.id != 0 && !cached.external {
+                self.retireTexture(graphics, cached.texture)
+            }
+            let target = textureOrReport(
+                graphics.createTexture(
+                    TextureDescriptor {
+                        label: "kcoreanimation-pass-target",
+                        width: UN32(width),
+                        height: UN32(height),
+                        format: .Swapchain,
+                        usage: .RenderTargetSampled,
+                        sampleCount: 1,
+                        storage: .Transient
+                    }
+                ),
+                "KCoreAnimation pass target"
+            )
+            cached.targetId = RenderTargetId(0)
+            cached.texture = target
+            cached.deviceWidth = width
+            cached.deviceHeight = height
+            cached.external = false
+            cached.valid = false
+        }
+        self.cachedTargets[index] = cached
+        return index
+    }
+
+    function prunePassTargets(plan: borrow CARenderPlan, graphics: borrow Graphics) {
+        var kept: [CACachedPassTarget] = []
+        for cached in self.cachedTargets {
+            if plan.containsOwner(cached.owner) {
+                kept.append(cached)
+            } else if cached.texture.id != 0 && !cached.external {
+                self.retireTexture(graphics, cached.texture)
+            }
+        }
+        self.cachedTargets = move kept
+    }
+
+    // Execute every isolated pass in dependency order and return one sampled
+    // texture handle per render-plan pass. Pass 0 is the root and therefore has
+    // no texture. Nested isolated passes are appended after their parents, so a
+    // reverse walk renders every source before the pass that composites it.
+    function renderIsolatedPasses(
+        plan: borrow CARenderPlan,
+        frame: borrow mut RenderFrame,
+        graphics: borrow Graphics,
+        renderScale: Number,
+    ) -> [TextureHandle] {
+        var textures: [TextureHandle] = []
+        for passIndex in 0..plan.passes.count {
+            textures.append(TextureHandle(0))
+        }
+        if plan.passes.count <= 1 {
+            self.prunePassTargets(plan, graphics)
+            return textures
+        }
+
+        var passIndex = plan.passes.count - 1
+        while passIndex > 0 {
+            let pass = plan.passes[passIndex]
+            if pass.hasBounds {
+                let cacheIndex = self.ensurePassTarget(pass, graphics, renderScale)
+                if cacheIndex >= 0 {
+                    var cached = self.cachedTargets[cacheIndex]
+                    textures[passIndex] = passTextureHandle(cached.texture)
+                    let mustEncode = pass.dirty || !cached.valid || cached.signature != pass.signature
+                    let mustPresent = mustEncode || pass.requiresRefresh
+                    if mustPresent {
+                        let batchSlot = self.ensurePassBatch(pass.passId, graphics)
+                        if batchSlot >= 0 {
+                            let passBatch = UiBatch {
+                                storage: nativeUserData(self.passBatches[batchSlot].batch.storage)
+                            }
+                            var backend = EmberFoundationBackend {
+                                graphics: graphics,
+                                batch: move passBatch,
+                                fileTextures: move self.fileTextures
+                            }
+                            if mustEncode {
+                                let targetScale = pass.targetScale(cached.texture)
+                                backend.beginTargetFrame(
+                                    max(pass.bounds.width, 1.0),
+                                    max(pass.bounds.height, 1.0),
+                                    targetScale,
+                                    cached.texture.width,
+                                    cached.texture.height
+                                )
+                                let ignored = plan.submitPassAt(
+                                    pass.passId,
+                                    textures,
+                                    pass.bounds.x,
+                                    pass.bounds.y,
+                                    backend
+                                )
+                                cached.valid = true
+                                cached.signature = pass.signature
+                                self.cachedTargets[cacheIndex] = cached
+                            }
+                            self.fileTextures = move backend.fileTextures
+                            self.retireFileTextures(backend.staleTextures)
+                            backend.batch.presentBatchIntoTexture(
+                                frame,
+                                graphics,
+                                cached.texture,
+                                0.0,
+                                0.0,
+                                0.0,
+                                0.0
+                            )
+                        }
+                    }
+                }
+            }
+            passIndex -= 1
+        }
+        self.prunePassTargets(plan, graphics)
+        return textures
+    }
+}
+
+extend Compositor {
+    // Rebuild the root batch from the retained presentation tree. Isolated passes
+    // are refreshed first so every composite command samples this frame's texture.
+    // Presentation is deliberately separate: the window may append its HUD stream
+    // after this call without rebuilding the application draw streams.
+    function encode(
+        borrow mut self,
+        frame: borrow mut RenderFrame,
+        graphics: borrow Graphics,
+        batch: borrow UiBatch,
+        viewportWidth: Number,
+        viewportHeight: Number,
+        renderScale: Number,
+        windowTransparent: Bool
+    ) -> Number {
+        let plan = self.tree.plan()
+        self.retireAgedTextures(graphics)
+        let passTextures = self.renderIsolatedPasses(plan, frame, graphics, renderScale)
+        for retired in self.retiredTextures {
+            batch.forgetTexture(graphics, retired)
+        }
+        self.retiredTextures = []
+        let rootBatch = UiBatch { storage: nativeUserData(batch.storage) }
+        var backend = EmberFoundationBackend {
+            graphics: graphics,
+            batch: move rootBatch,
+            windowTransparent: windowTransparent,
+            fileTextures: move self.fileTextures
+        }
+        var drawableWidth = frame.drawableWidth()
+        var drawableHeight = frame.drawableHeight()
+        if drawableWidth <= 0 { drawableWidth = trunc(viewportWidth * renderScale) }
+        if drawableHeight <= 0 { drawableHeight = trunc(viewportHeight * renderScale) }
+        backend.beginFrameExtent(
+            viewportWidth,
+            viewportHeight,
+            renderScale,
+            drawableWidth,
+            drawableHeight
+        )
+        let drawn = plan.submitPass(plan.rootPass, passTextures, backend)
+        self.fileTextures = move backend.fileTextures
+        self.retireFileTextures(backend.staleTextures)
+        self.tree.clearDamage()
+        return drawn
+    }
+}

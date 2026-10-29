@@ -1,0 +1,454 @@
+import Ember
+import KiraLayout
+import Foundation
+public function foundationTextIntrinsicWidth(size: Number, characterCount: Number) -> Number {
+    let glyphWidth = size * 0.48
+    let gap = size * 0.18
+    if characterCount <= 0 {
+        return 0.0
+    }
+    let measured = Number(characterCount) * glyphWidth + Number(characterCount - 1) * gap
+    return measured + size * 0.02
+}
+
+public function foundationTextIntrinsicHeight(size: Number) -> Number {
+    return size * 1.20
+}
+
+// A run's advance, from the same face instance the compositor draws it with,
+// so the box layout builds and the glyphs that land in it are one width.
+// Measured at the oversampled size the rasterizer draws at and divided back
+// into points: one size for measuring and drawing is what keeps them equal.
+// Sets every proportional run in the face this framework ships, whatever the
+// host has: what a check of that face's own shaping runs under on a Mac,
+// which would otherwise set it in the host's face. Call it before measuring.
+public function foundationTextUseBundledFace() {
+    foundationTextUseFace(SystemFonts.bundled)
+}
+
+// Sets every proportional run in the face at `path`, as
+// `foundationTextUseBundledFace` does the bundled one.
+public function foundationTextUseFace(path: borrow String) {
+    var engine = nativeRecover<TextEngine>(textEngine())
+    if engine.onlyFace == path { return }
+    engine.onlyFace = copy path
+    engine.lookups = []
+}
+
+public function foundationTextRunWidth(
+    content: borrow String,
+    size: Number,
+    weight: Number,
+    design: borrow CAFontDesign = .Default
+) -> Number {
+    var engine = nativeRecover<TextEngine>(textEngine())
+    let raster = size * GlyphRaster.oversample
+    return engine.runWidth(design, content, raster, size, weight) / GlyphRaster.oversample
+}
+
+public function foundationTextRunLineHeight(
+    size: Number,
+    weight: Number,
+    design: borrow CAFontDesign = .Default
+) -> Number {
+    return foundationTextFaceMetric(
+        size,
+        weight,
+        design,
+        { instance in return instance.lineHeight }
+    )
+}
+
+// The face's own ascent and descent: baseline to the top of the line box, and
+// baseline to the bottom of it. The rasterizer places a run by these, so
+// anything that has to line up WITH the run — a glyph beside it, a second run at
+// another size — has to ask the same two questions rather than guess from ink.
+public function foundationTextAscent(
+    size: Number,
+    weight: Number,
+    design: borrow CAFontDesign = .Default
+) -> Number {
+    return textLineAscent(
+        foundationTextFaceMetric(size, weight, design, { instance in return instance.ascender })
+    )
+}
+
+public function foundationTextDescent(
+    size: Number,
+    weight: Number,
+    design: borrow CAFontDesign = .Default
+) -> Number {
+    return textLineDescent(
+        foundationTextFaceMetric(size, weight, design, { instance in return instance.descender })
+    )
+}
+
+// A line's ascent and descent in whole points, as TextKit sets them and so
+// SwiftUI's `Text`: the ascent rounded and the descent rounded up. SF at 13
+// stands 13 over its baseline and 3 under it, a line 16 tall, and at 17 it
+// stands 16 and 4. The face's own 12.57 and 2.74 put a label set in a
+// capsule half a point off where SwiftUI sets it.
+public function textLineAscent(ascent: Number) -> Number {
+    return round(ascent)
+}
+
+public function textLineDescent(descent: Number) -> Number {
+    return ceil(descent - 1.0 / 64.0)
+}
+
+// One of the face's line metrics at `size` and `weight`, in points; nothing
+// where no face can be read.
+function foundationTextFaceMetric(
+    size: Number,
+    weight: Number,
+    design: borrow CAFontDesign,
+    metric: (FaceInstance) -> Number
+) -> Number {
+    var engine = nativeRecover<TextEngine>(textEngine())
+    return match engine.runInstance(design, size * GlyphRaster.oversample, size, weight) {
+        Some(instance) -> metric(move instance) / GlyphRaster.oversample
+        None -> 0
+    }
+}
+
+// One edge of a run's visible ink, in points; nothing for a run with none.
+function foundationTextInkEdge(
+    content: borrow String,
+    size: Number,
+    weight: Number,
+    design: borrow CAFontDesign,
+    edge: (TextInk) -> Number
+) -> Number {
+    var engine = nativeRecover<TextEngine>(textEngine())
+    return match engine.runInk(design, content, size * GlyphRaster.oversample, size, weight) {
+        Some(ink) -> edge(move ink) / GlyphRaster.oversample
+        None -> 0
+    }
+}
+
+// Where a run's baseline sits inside a box `height` tall — the same arithmetic
+// the rasterizer does, in one place, so the two cannot drift apart.
+public function foundationTextBaseline(
+    size: Number,
+    weight: Number,
+    height: Number,
+    design: borrow CAFontDesign = .Default
+) -> Number {
+    let ascent = foundationTextAscent(size, weight, design)
+    let descent = foundationTextDescent(size, weight, design)
+    let lineBox = ascent + descent
+    if lineBox <= 0.0 {
+        return height
+    }
+    return (height - lineBox) / 2.0 + ascent
+}
+
+// A run's visible ink, in points: each edge, as the four functions below
+// answer them one at a time, from one measurement.
+public struct CATextInk {
+    var left: Number = 0
+    var right: Number = 0
+    var top: Number = 0
+    var bottom: Number = 0
+}
+
+public function foundationTextRunInkEdges(
+    content: borrow String,
+    size: Number,
+    weight: Number,
+    design: borrow CAFontDesign = .Default
+) -> CATextInk {
+    var engine = nativeRecover<TextEngine>(textEngine())
+    return match engine.runInk(design, content, size * GlyphRaster.oversample, size, weight) {
+        Some(ink) -> CATextInk {
+            left: ink.left / GlyphRaster.oversample,
+            right: ink.right / GlyphRaster.oversample,
+            top: ink.top / GlyphRaster.oversample,
+            bottom: ink.bottom / GlyphRaster.oversample
+        }
+        None -> CATextInk {}
+    }
+}
+
+// Visible glyph bounds relative to the baseline. These are deliberately kept
+// separate from line height: layout must not reserve the font's invisible
+// leading when a text leaf is placed inside a padded card or stack.
+public function foundationTextRunInkTop(
+    content: borrow String,
+    size: Number,
+    weight: Number,
+    design: borrow CAFontDesign = .Default
+) -> Number {
+    return foundationTextInkEdge(content, size, weight, design, { ink in return ink.top })
+}
+
+public function foundationTextRunInkBottom(
+    content: borrow String,
+    size: Number,
+    weight: Number,
+    design: borrow CAFontDesign = .Default
+) -> Number {
+    return foundationTextInkEdge(content, size, weight, design, { ink in return ink.bottom })
+}
+
+public function foundationTextRunInkLeft(
+    content: borrow String,
+    size: Number,
+    weight: Number,
+    design: borrow CAFontDesign = .Default
+) -> Number {
+    return foundationTextInkEdge(content, size, weight, design, { ink in return ink.left })
+}
+
+public function foundationTextRunInkRight(
+    content: borrow String,
+    size: Number,
+    weight: Number,
+    design: borrow CAFontDesign = .Default
+) -> Number {
+    return foundationTextInkEdge(content, size, weight, design, { ink in return ink.right })
+}
+
+// A String's Unicode scalars, so an editable text buffer can be seeded from
+// an existing String.
+public function foundationStringToCodepoints(content: borrow String) -> [Number] {
+    return textScalars(content)
+}
+
+// Build a display String from a codepoint slice [start, end) — the inverse of
+// foundationStringToCodepoints, for rendering/measuring an editable buffer.
+public function foundationStringFromCodepoints(
+    codes: borrow [Number],
+    start: Number,
+    end: Number
+) -> String {
+    var s = ""
+    for i in start..end {
+        if i >= 0 && i < codes.count {
+            // A number that names no scalar adds nothing.
+            match scalarText(codes[i]) {
+                Some(text) -> s += text
+                None -> {}
+            }
+        }
+    }
+    return s
+}
+
+public function foundationTextMeasure(
+    content: borrow String,
+    size: Number,
+    weight: Number,
+    design: borrow CAFontDesign = .Default
+) -> Size {
+    if content.count <= 0 {
+        return Size { width: 0.0, height: foundationTextIntrinsicHeight(size: size) }
+    }
+
+    var width = foundationTextRunWidth(content: content, size: size, weight: weight, design: design)
+    if width <= 0.0 {
+        width = foundationTextIntrinsicWidth(size: size, characterCount: content.count)
+    }
+
+    return Size { width: width, height: foundationTextLineBox(size, weight, design) }
+}
+
+// The height of one line of a run: the box the RASTERIZER treats as a full line,
+// which is `ascent + descent` — the two metrics it places the baseline from. The
+// face's reported line height is a different number, and where it is the smaller
+// of the two the rasterizer decides the box is tighter than a line and falls
+// back to centering the run's INK instead. That fallback exists for a leaf
+// deliberately sized under a line; reaching it by accident is how "Hide" ends up
+// a point below "Copy" beside it, because one of them has a descender and the
+// other does not. Ask for whichever is larger and the fallback is only ever
+// reached on purpose.
+public function foundationTextLineBox(
+    size: Number,
+    weight: Number,
+    design: borrow CAFontDesign = .Default
+) -> Number {
+    var height = foundationTextRunLineHeight(size: size, weight: weight, design: design)
+    let lineBox = foundationTextAscent(size, weight, design) + foundationTextDescent(
+        size,
+        weight,
+        design
+    )
+    if lineBox > height {
+        height = lineBox
+    }
+    if height <= 0.0 {
+        height = foundationTextIntrinsicHeight(size: size)
+    }
+    return height
+}
+
+// The lines a run breaks into to fit `width`: each line break in it ends a
+// line, and between them as many words go on each line as fit, broken at the
+// spaces between them. A word wider than the line stands on a line of its own
+// rather than being cut, and a run that fits is one line. Past `limit` lines,
+// when it names one, the last line that shows takes the rest and is cut short
+// under an ellipsis, as SwiftUI's `.lineLimit(_:)` truncates the tail.
+//
+// One function for both sides of a wrapped text: layout asks it how tall the
+// text stands at a width, and the compositor asks it what to draw, so the box
+// and the ink cannot disagree about where a line ends.
+public function foundationTextLines(
+    content: borrow String,
+    size: Number,
+    weight: Number,
+    width: Number,
+    design: borrow CAFontDesign = .Default,
+    limit: Number = 0
+) -> [String] {
+    var lines: [String] = []
+    let codes = foundationStringToCodepoints(content)
+    var paragraph = 0
+    for i in 0..(codes.count + 1) {
+        if i == codes.count || codes[i] == 10 {
+            foundationTextBreakParagraph(codes, paragraph, i, size, weight, width, design, lines)
+            paragraph = i + 1
+        }
+    }
+    if limit <= 0 || lines.count <= limit {
+        return move lines
+    }
+    var shown: [String] = []
+    for i in 0..(limit - 1) { shown.append(copy lines[i]) }
+    var rest = copy lines[limit - 1]
+    for i in limit..lines.count { rest = rest + " " + lines[i] }
+    shown.append(foundationTextTruncated(rest, size, weight, width, design))
+    return move shown
+}
+
+// The lines one paragraph, `codes[start..<end]`, breaks into at `width`,
+// added to `lines`. An empty paragraph is an empty line.
+function foundationTextBreakParagraph(
+    codes: borrow [Number],
+    start: Number,
+    end: Number,
+    size: Number,
+    weight: Number,
+    width: Number,
+    design: borrow CAFontDesign,
+    lines: borrow mut [String]
+) {
+    var lineStart = start
+    // The end of the longest prefix of this line known to fit, at a space.
+    var fitEnd = -1
+    var i = start
+    while i <= end {
+        if i < end && codes[i] != 32 {
+            i += 1
+        } else if foundationTextRunWidth(
+            content: foundationStringFromCodepoints(codes, lineStart, i),
+            size: size,
+            weight: weight,
+            design: design
+        ) <= width {
+            fitEnd = i
+            i += 1
+        } else if fitEnd > lineStart {
+            // Break at the last space that fitted, and measure this word again
+            // at the start of the next line.
+            lines.append(foundationStringFromCodepoints(codes, lineStart, fitEnd))
+            lineStart = fitEnd + 1
+            fitEnd = -1
+        } else {
+            lines.append(foundationStringFromCodepoints(codes, lineStart, i))
+            lineStart = i + 1
+            fitEnd = -1
+            i += 1
+        }
+    }
+    if lineStart < end || start == end {
+        lines.append(foundationStringFromCodepoints(codes, lineStart, end))
+    }
+}
+
+// `content` as one line `width` wide at most: whole when it fits, and
+// otherwise as much of it as fits before an ellipsis.
+function foundationTextTruncated(
+    content: borrow String,
+    size: Number,
+    weight: Number,
+    width: Number,
+    design: borrow CAFontDesign
+) -> String {
+    if foundationTextRunWidth(
+        content: content,
+        size: size,
+        weight: weight,
+        design: design
+    ) <= width {
+        return copy content
+    }
+    let codes = foundationStringToCodepoints(content)
+    // The most scalars that fit before the ellipsis, found by halving.
+    var fits = 0
+    var over = codes.count
+    while over - fits > 1 {
+        let middle = trunc((fits + over) / 2)
+        let shown = foundationStringFromCodepoints(codes, 0, middle) + "…"
+        if foundationTextRunWidth(
+            content: shown,
+            size: size,
+            weight: weight,
+            design: design
+        ) <= width {
+            fits = middle
+        } else {
+            over = middle
+        }
+    }
+    return foundationStringFromCodepoints(codes, 0, fits) + "…"
+}
+
+// Whether a run holds a line break, and so stands on more than one line
+// however wide it is set.
+public function foundationTextBreaks(content: borrow String) -> Bool {
+    for code in foundationStringToCodepoints(content) {
+        if code == 10 { return true }
+    }
+    return false
+}
+
+// The box a run takes when it wraps to `width`: its widest line across, and a
+// line box for every line down, `lineSpacing` apart, `limit` of them at most
+// when it names one.
+public function foundationTextWrappedSize(
+    content: borrow String,
+    size: Number,
+    weight: Number,
+    width: Number,
+    design: borrow CAFontDesign = .Default,
+    limit: Number = 0,
+    lineSpacing: Number = 0.0
+) -> Size {
+    let lines = foundationTextLines(content, size, weight, width, design, limit)
+    var widest: Number = 0.0
+    for line in lines {
+        widest = max(
+            widest,
+            foundationTextRunWidth(content: line, size: size, weight: weight, design: design)
+        )
+    }
+    let count = max(Number(lines.count), 1.0)
+    return Size {
+        width: widest,
+        height: foundationTextLineBox(size, weight, design) * count + lineSpacing * (count - 1.0)
+    }
+}
+
+public class FoundationTextMeasurer {
+    function intrinsicWidth(size: Number, characterCount: Number) -> Number {
+        return foundationTextIntrinsicWidth(size: size, characterCount: characterCount)
+    }
+
+    function intrinsicHeight(size: Number) -> Number {
+        return foundationTextIntrinsicHeight(size: size)
+    }
+
+    function measure(content: borrow String, size: Number, weight: Number) -> Size {
+        return foundationTextMeasure(content: content, size: size, weight: weight)
+    }
+}

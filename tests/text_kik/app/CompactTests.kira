@@ -1,0 +1,36 @@
+import Foundation
+import KCoreAnimation
+
+// Outlines out of `CFF `, read through a PostScript-flavoured face macOS
+// ships, STIX General: its capitals stand as tall as its cap height says
+// (662 of 1000 units, 26.48 pixels at 40) and its "g" hangs below the line.
+
+function stix() {
+    foundationTextUseFace("/System/Library/Fonts/Supplemental/STIXGeneral.otf")
+}
+
+construct CompactCapitalStands() extends Test {
+    test {
+        stix()
+        let top = foundationTextRunInkTop("H", 40, 400)
+        return top >= 26.0 && top <= 27.0 && foundationTextRunInkBottom("H", 40, 400) == 0
+    }
+    expect { let e: Result<Any, TestFailure> = .Ok(true) return e }
+}
+
+construct CompactDescenderHangs() extends Test {
+    test {
+        stix()
+        return foundationTextRunInkBottom("g", 40, 400) > 8.0
+    }
+    expect { let e: Result<Any, TestFailure> = .Ok(true) return e }
+}
+
+construct CompactRunAdvances() extends Test {
+    test {
+        stix()
+        return foundationTextRunWidth("Ho", 40, 400) == foundationTextRunWidth("H", 40, 400)
+            + foundationTextRunWidth("o", 40, 400)
+    }
+    expect { let e: Result<Any, TestFailure> = .Ok(true) return e }
+}

@@ -1,0 +1,75 @@
+import Foundation
+import Ember
+
+// Capture bounds already include the refraction and source-filter reach.
+// Round outward onto the blur grid and leave one texel for bilinear reads.
+// The backend adds the vertical kernel's halo to the horizontal dispatch only.
+function glassBlurRegions(state: borrow UiBatchState) -> [TextureComputeRegion] {
+    var regions: [TextureComputeRegion] = []
+    let sx = state.glassBlurW / state.viewportW
+    let sy = state.glassBlurH / state.viewportH
+    for i in 0..state.captureRectCount {
+        let base = i * 4
+        let x = max(floor(state.captureRects[base] * sx) - 1, 0)
+        let y = max(floor(state.captureRects[base + 1] * sy) - 1, 0)
+        let endX = min(ceil(state.captureRects[base + 2] * sx) + 1, state.glassBlurW)
+        let endY = min(ceil(state.captureRects[base + 3] * sy) + 1, state.glassBlurH)
+        if endX > x && endY > y {
+            regions.append(TextureComputeRegion {
+                x: UN32(x), y: UN32(y),
+                width: UN32(endX - x), height: UN32(endY - y)
+            })
+        }
+    }
+    // No bound metadata: preserve the full-grid fallback.
+    return regions
+}
+
+// Exact region equality matters here: a moved glass surface can expose blur
+// texels that were never written by an earlier region-limited dispatch.
+function glassBlurRegionsMatch(
+    cached: borrow [TextureComputeRegion],
+    current: borrow [TextureComputeRegion]
+) -> Bool {
+    if cached.count != current.count { return false }
+    for i in 0..current.count {
+        if cached[i].x != current[i].x || cached[i].y != current[i].y ||
+            cached[i].width != current[i].width || cached[i].height != current[i].height {
+            return false
+        }
+    }
+    return true
+}
+
+public struct GlassBlurWork {
+    let horizontal: Number
+    let vertical: Number
+}
+
+function glassBlurWork(
+    state: borrow UiBatchState,
+    regions: borrow [TextureComputeRegion],
+    halo: Number
+) -> GlassBlurWork {
+    let pair = TextureComputePair {
+        width: UN32(state.glassBlurW),
+        height: UN32(state.glassBlurH),
+        regions: copy regions,
+        verticalHalo: UN32(halo)
+    }
+    if regions.count == 0 {
+        return GlassBlurWork {
+            horizontal: state.glassBlurW * state.glassBlurH,
+            vertical: state.glassBlurW * state.glassBlurH
+        }
+    }
+    var horizontal: Number = 0
+    var vertical: Number = 0
+    for asked in regions {
+        let h = textureComputeRegion(pair, asked, true)
+        let v = textureComputeRegion(pair, asked, false)
+        vertical += Number(v.width) * Number(v.height)
+        horizontal += Number(h.width) * Number(h.height)
+    }
+    return GlassBlurWork { horizontal: horizontal, vertical: vertical }
+}

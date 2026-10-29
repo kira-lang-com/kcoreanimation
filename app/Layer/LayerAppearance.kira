@@ -1,0 +1,161 @@
+import Foundation
+
+// Per-node channel sampling, kept beside the tree rather than in it so the tree
+// file stays under the size ceiling. One node's geometry, opacity, transform and
+// appearance channels are all sampled at the frame's absolute clock here.
+
+extend CALayerNode {
+    // A fresh layer's appearance channels take their initial values from its
+    // content, so a `.Solid` built with a fill and a radius draws with them and a
+    // later `setFillColor`/`setCornerRadius` animates from there.
+    function initAppearanceFromContent(borrow mut self) {
+        match self.content {
+            Empty -> {
+                return
+            }
+            Solid(s) -> {
+                self.fillColor = s.fill.channel()
+                self.borderColor = s.border.channel()
+                self.cornerRadius = channel(s.cornerRadius)
+                self.borderWidth = channel(s.borderWidth)
+                return
+            }
+            Text(t) -> {
+                self.fillColor = t.color.channel()
+                self.textWeight = channel(t.weight)
+                return
+            }
+            Texture(x) -> {
+                return
+            }
+            Icon(i) -> {
+                self.fillColor = i.tint.channel()
+                return
+            }
+            Glass(g) -> {
+                self.fillColor = g.tint.channel()
+                return
+            }
+            Gradient(r) -> {
+                self.fillColor = r.start.channel()
+                return
+            }
+        }
+    }
+
+    function sample(borrow mut self, now: Number) -> Bool {
+        var moving = false
+        if self.posX.sampleAt(now) {
+            moving = true
+        }
+        if self.posY.sampleAt(now) {
+            moving = true
+        }
+        if self.boundsW.sampleAt(now) {
+            moving = true
+        }
+        if self.boundsH.sampleAt(now) {
+            moving = true
+        }
+        if self.opacity.sampleAt(now) {
+            moving = true
+        }
+        if self.scaleX.sampleAt(now) {
+            moving = true
+        }
+        if self.scaleY.sampleAt(now) {
+            moving = true
+        }
+        if self.rotation.sampleAt(now) {
+            moving = true
+        }
+        if self.cornerRadius.sampleAt(now) {
+            moving = true
+        }
+        if self.borderWidth.sampleAt(now) {
+            moving = true
+        }
+        if self.textWeight.sampleAt(now) {
+            moving = true
+        }
+        if self.shadowRadius.sampleAt(now) {
+            moving = true
+        }
+        if self.blur.sampleAt(now) {
+            moving = true
+        }
+        if self.shadowOpacity.sampleAt(now) {
+            moving = true
+        }
+        if self.shadowX.sampleAt(now) {
+            moving = true
+        }
+        if self.shadowY.sampleAt(now) {
+            moving = true
+        }
+        if self.fillColor.sampleAt(now) {
+            moving = true
+        }
+        if self.platterX.sampleAt(now) {
+            moving = true
+        }
+        if self.platterY.sampleAt(now) {
+            moving = true
+        }
+        if self.platterW.sampleAt(now) {
+            moving = true
+        }
+        if self.platterH.sampleAt(now) {
+            moving = true
+        }
+        if self.borderColor.sampleAt(now) {
+            moving = true
+        }
+        if self.shadowColor.sampleAt(now) {
+            moving = true
+        }
+        return moving
+    }
+}
+
+// A radius past this is a capsule's "as round as the box allows", never a
+// length a spring should travel: the curve would run through numbers no
+// layer is that large.
+namespace CornerLimits {
+    let springable: Number = 1000000
+}
+
+extend CALayerNode {
+    // Drives the corner radius toward `radius` under `timing`. A corner never
+    // reaches past half the layer's shorter side, so the target is fitted to
+    // the box first: a capsule's unbounded radius becomes the radius it draws
+    // with, and a capsule that turns into a rounded rectangle travels a real
+    // curve between the two. A radius still beyond any length, on a layer with
+    // no size yet, lands at once.
+    function driveCornerRadius(
+        borrow mut self,
+        timing: borrow CATiming,
+        radius: Number,
+        now: Number
+    ) -> Bool {
+        let limit = min(self.boundsW.model, self.boundsH.model) / 2
+        var target = radius
+        var changed = false
+        if limit > 0 {
+            target = min(radius, limit)
+            if self.cornerRadius.presentation > limit && !self.cornerRadius.animating {
+                changed = self.cornerRadius.presentation != limit
+                self.cornerRadius.setImmediate(limit)
+            }
+        }
+        let far = self.cornerRadius.presentation > CornerLimits.springable
+        if target > CornerLimits.springable || far {
+            let moved = self.cornerRadius.model != target
+                || self.cornerRadius.presentation != target
+                || self.cornerRadius.animating
+            self.cornerRadius.setImmediate(target)
+            return changed || moved
+        }
+        return self.cornerRadius.applyTiming(timing, target, now) || changed
+    }
+}

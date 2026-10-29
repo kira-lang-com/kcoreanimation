@@ -1,0 +1,504 @@
+import Foundation
+
+// A scrolling surface's motion: the finger, the throw, the edge, and the snap.
+//
+// This owns an OFFSET and nothing else. It does not know what is being
+// scrolled, how tall the content came out, or how any of it is drawn — the
+// hosting layer measures, calls in with the numbers, and applies the offset it
+// gets back. That is what lets the whole model be tested without a window: a
+// fling is a function of a velocity and a clock.
+//
+// Every curve here is the platform's own, as iPadOS 26 runs it: the velocity a
+// release is taken at, the speed below which it does not coast, the decay a
+// throw coasts under, the resistance past an end, and the way a surface thrown
+// past its end comes back.
+//
+// The offset is positive DOWN the content: increasing it moves the content up,
+// which is what pushing a list away from you does.
+
+public enum MotionScrollPhase {
+    // Nothing moving. No frames needed.
+    Idle
+    // A finger is down and the offset is following it.
+    Dragging
+    // Thrown, and coasting to a stop; or past an end, and being drawn back.
+    Decelerating
+    // Springing to a definite place: the snap position a throw picked out, or
+    // one asked for.
+    Settling
+    // Easing the short way a wheel's notch moves it.
+    Stepping
+}
+
+// What the surface currently measures. Passed in per call rather than stored,
+// because it is the layout's answer and it changes underneath this: a list that
+// grows while it is being flung must not be flinging against last frame's
+// length.
+public struct MotionScrollBounds {
+    let contentLength: Number = 0.0
+    let viewportLength: Number = 0.0
+}
+
+public struct MotionScrollState {
+    var offset: Number = 0.0
+    var phase: MotionScrollPhase = .Idle
+    // Points per second, signed like the offset. Carried across every phase
+    // change, which is what makes a release continue a gesture instead of
+    // starting a new motion.
+    var velocity: Number = 0.0
+
+    // Where the offset and the pointer both were when the drag began, and the
+    // un-resisted offset the finger currently implies.
+    var dragOrigin: Number = 0.0
+    var dragPointer: Number = 0.0
+    var rawOffset: Number = 0.0
+    // How hard the surface resists being pulled past an end under the gesture
+    // moving it: a finger's constant or a trackpad's.
+    var resistance: Number = 0.55
+
+    // The latest movement sample and how many have been taken, and how long it
+    // has been since the finger last moved.
+    var sample: Number = 0.0
+    var samples: Number = 0
+    var sinceMove: Number = 0.0
+    // Where the offset stood when the last sample was taken, and when the
+    // finger was there by the input's own clock -- negative where the input
+    // does not say, and the frames' time stands in.
+    var sampleRaw: Number = 0.0
+    var moveTime: Number = -1.0
+
+    var spring: MotionSpringState = MotionSpringState {}
+
+    // The wheel's step: where it set out from, where it is going, and how far in.
+    var stepFrom: Number = 0.0
+    var stepTo: Number = 0.0
+    var stepElapsed: Number = 0.0
+
+    // How fast a throw gives up. `MotionDecay.rateNormal` unless the surface
+    // asked for the short one.
+    var rate: Number = 0.998
+    // Zero for a free-scrolling surface; the item pitch for one that snaps.
+    var snapPitch: Number = 0.0
+    // Whether the surface may be pulled past its ends at all. A surface that
+    // cannot is CLAMPED, not resisted.
+    var bounces: Bool = true
+}
+
+// The largest offset that still shows only content.
+//
+// Zero when the content is shorter than the window: there is nowhere to scroll
+// to, and the range collapses to the single point both ends share.
+public function motionScrollMaxOffset(bounds: borrow MotionScrollBounds) -> Number {
+    return max(bounds.contentLength - bounds.viewportLength, 0.0)
+}
+
+// How far outside its own range an offset is: negative before the start,
+// positive past the end, zero anywhere inside.
+public function motionScrollOvershoot(offset: Number, bounds: borrow MotionScrollBounds) -> Number {
+    let limit = motionScrollMaxOffset(bounds)
+    if offset < 0.0 {
+        return offset
+    }
+    if offset > limit {
+        return offset - limit
+    }
+    return 0.0
+}
+
+public function motionScrollClamp(offset: Number, bounds: borrow MotionScrollBounds) -> Number {
+    return clamp(offset, 0.0, motionScrollMaxOffset(bounds))
+}
+
+// The offset a raw, un-resisted one actually shows: inside the range it is
+// itself, and outside it the edge plus the resisted remainder, scaled against
+// the window's own length.
+public function motionScrollResisted(
+    raw: Number,
+    bounds: borrow MotionScrollBounds,
+    constant: Number
+) -> Number {
+    let overshoot = motionScrollOvershoot(raw, bounds)
+    if overshoot == 0.0 {
+        return raw
+    }
+    return raw - overshoot + motionRubberBandSigned(overshoot, bounds.viewportLength, constant)
+}
+
+// The raw offset a shown one stands for — used when a drag PICKS UP a surface
+// that is already held past its edge, so the finger keeps the exact point of
+// content it grabbed.
+public function motionScrollRaw(
+    shown: Number,
+    bounds: borrow MotionScrollBounds,
+    constant: Number
+) -> Number {
+    let overshoot = motionScrollOvershoot(shown, bounds)
+    if overshoot == 0.0 {
+        return shown
+    }
+    return shown - overshoot + motionRubberBandInverseSigned(
+        overshoot,
+        bounds.viewportLength,
+        constant
+    )
+}
+
+// --- the gesture -----------------------------------------------------------
+
+// A finger goes down, resisted past an end by `constant`.
+//
+// Any animation in flight is CUT rather than allowed to finish: catching a
+// moving list stops it under your finger, which is the behavior that makes a
+// long list feel like an object rather than a playback.
+public function motionScrollDragBegin(
+    state: borrow mut MotionScrollState,
+    pointer: Number,
+    bounds: borrow MotionScrollBounds,
+    constant: Number,
+    time: Number = -1.0
+) {
+    state.phase = .Dragging
+    state.resistance = constant
+    state.dragPointer = pointer
+    state.rawOffset = motionScrollRaw(state.offset, bounds, constant)
+    state.dragOrigin = state.rawOffset
+    state.velocity = 0.0
+    state.sample = 0.0
+    state.samples = 0
+    state.sinceMove = 0.0
+    state.sampleRaw = state.rawOffset
+    state.moveTime = time
+}
+
+// The finger moves, at `time` on the input's clock where it says.
+public function motionScrollDragMove(
+    state: borrow mut MotionScrollState,
+    pointer: Number,
+    bounds: borrow MotionScrollBounds,
+    time: Number = -1.0
+) {
+    // Moving the pointer toward the top of the screen scrolls the content up,
+    // so the offset moves opposite the pointer.
+    let raw = state.dragOrigin + (state.dragPointer - pointer)
+    state.rawOffset = raw
+    if state.bounces {
+        state.offset = motionScrollResisted(raw, bounds, state.resistance)
+    } else {
+        state.offset = motionScrollClamp(raw, bounds)
+    }
+    motionScrollMoved(state, raw, time)
+}
+
+// The surface was carried to `raw`: a sample of how fast, over the time since
+// the last one -- the input's own when it gives one, else the frames'. Reports
+// that land at one instant are one movement, measured once time has passed:
+// a distance over no time is no speed at all.
+public function motionScrollMoved(state: borrow mut MotionScrollState, raw: Number, time: Number) {
+    var elapsed = state.sinceMove
+    if time >= 0.0 && state.moveTime >= 0.0 {
+        elapsed = time - state.moveTime
+    }
+    if elapsed <= 0.0 {
+        return
+    }
+    motionScrollSample(state, (raw - state.sampleRaw) / elapsed)
+    state.sampleRaw = raw
+    state.sinceMove = 0.0
+    if time >= 0.0 {
+        state.moveTime = time
+    }
+}
+
+// Takes one sample of how fast the finger is moving. The velocity a release
+// carries is the platform's: a fifth the latest sample and four fifths the one
+// before it, so one jittery report at the lift cannot decide the throw.
+public function motionScrollSample(state: borrow mut MotionScrollState, sample: Number) {
+    if state.samples == 0 {
+        state.velocity = sample
+    } else {
+        state.velocity = 0.2 * sample + 0.8 * state.sample
+    }
+    state.sample = sample
+    state.samples++
+}
+
+public namespace MotionScroll {
+    // How long a finger that has stopped moving is taken to be resting. A finger
+    // at rest on glass keeps reporting, and each report is a sample of no
+    // movement; a trackpad reports nothing, so each rest this long stands in for
+    // one, and a finger held still before it lifts throws nothing.
+    let stillness = 0.05
+
+    // The slowest release that throws: a quarter of a point a millisecond. Let go
+    // slower than that and the surface stays where the finger left it.
+    let flingThreshold = 250.0
+
+    // How long a wheel's notch takes to move the surface.
+    let stepDuration = 0.067
+
+    // The fastest a scrub lets go at: three points a millisecond, the platform's
+    // cap on its indicator's throw, since a pointer crossing a short track moves
+    // the content many times as far.
+    let scrubMaximumVelocity = 3000.0
+}
+
+// The finger lifts. What happens next is decided here, once, from where the
+// surface is and how fast it is going.
+public function motionScrollDragEnd(
+    state: borrow mut MotionScrollState,
+    bounds: borrow MotionScrollBounds,
+    reducedMotion: Bool
+) {
+    if motionScrollOvershoot(state.offset, bounds) != 0.0 {
+        // Released past an end: it is drawn back, carrying what speed it had.
+        state.phase = .Decelerating
+        return
+    }
+
+    if state.snapPitch > 0.0 {
+        // Snapped surfaces never decelerate freely. Where the throw WOULD have
+        // stopped picks the item, and the surface springs to that item instead
+        // — which is why a hard throw travels further than a flick rather than
+        // both landing one item along.
+        let projected = state.offset + motionDecayProjection(state.velocity, state.rate)
+        let snapped = motionSnapNearest(projected, state.snapPitch, 0.0)
+        motionScrollSettle(state, motionScrollClamp(snapped, bounds), .Snappy, reducedMotion)
+        return
+    }
+
+    if abs(state.velocity) < MotionScroll.flingThreshold {
+        state.phase = .Idle
+        state.velocity = 0.0
+        return
+    }
+    state.phase = .Decelerating
+}
+
+// Starts a spring toward a definite offset, carrying the velocity the surface
+// already has.
+public function motionScrollSettle(
+    state: borrow mut MotionScrollState,
+    destination: Number,
+    curve: borrow MotionCurveName,
+    reducedMotion: Bool,
+) {
+    let spring = motionCurveFor(curve, destination, reducedMotion)
+    state.spring = motionSpringStart(move spring, state.offset, state.velocity)
+    state.phase = .Settling
+}
+
+// A wheel's notch, which is a displacement and not a gesture.
+//
+// It eases the surface the notch's distance on from wherever the last notch
+// was taking it, so notches turned quickly add up rather than restart. It
+// cannot be released, so it clamps — a wheel that rubber-banded would leave
+// the surface held past its edge with no lift coming to release it.
+public function motionScrollWheel(
+    state: borrow mut MotionScrollState,
+    delta: Number,
+    bounds: borrow MotionScrollBounds
+) {
+    var from = state.offset
+    if state.phase == .Stepping {
+        from = state.stepTo
+    }
+    state.stepFrom = state.offset
+    state.stepTo = motionScrollClamp(from + delta, bounds)
+    state.stepElapsed = 0.0
+    state.velocity = 0.0
+    state.phase = .Stepping
+}
+
+// The surface's indicator is held: whatever it was doing stops, and the
+// offset is the pointer's from here.
+public function motionScrollScrubBegin(state: borrow mut MotionScrollState) {
+    state.phase = .Dragging
+    state.velocity = 0.0
+    state.sample = 0.0
+    state.samples = 0
+    state.sinceMove = 0.0
+    state.sampleRaw = state.offset
+    state.moveTime = -1.0
+}
+
+// The held indicator is dragged: the offset is put where the pointer says,
+// inside the range, and how fast it got there is sampled as a finger's is.
+public function motionScrollScrub(
+    state: borrow mut MotionScrollState,
+    offset: Number,
+    bounds: borrow MotionScrollBounds
+) {
+    let next = motionScrollClamp(offset, bounds)
+    if next == state.offset {
+        return
+    }
+    state.offset = next
+    state.rawOffset = next
+    motionScrollMoved(state, next, -1.0)
+}
+
+// The indicator is let go: the content coasts on from the scrub, as a throw
+// does, at no more than the scrub's cap.
+public function motionScrollScrubEnd(
+    state: borrow mut MotionScrollState,
+    bounds: borrow MotionScrollBounds,
+    reducedMotion: Bool
+) {
+    let cap = MotionScroll.scrubMaximumVelocity
+    state.velocity = clamp(state.velocity, -cap, cap)
+    motionScrollDragEnd(state, bounds, reducedMotion)
+}
+
+// --- the frame -------------------------------------------------------------
+
+// Advances whatever the surface is doing by one frame.
+//
+// Answers whether it is still moving, which is the signal a host needs to keep
+// asking for frames. A surface that always answered true would hold the display
+// awake for a list nobody is touching.
+public function motionScrollAdvance(
+    state: borrow mut MotionScrollState,
+    delta: Number,
+    bounds: borrow MotionScrollBounds,
+) -> Bool {
+    match state.phase {
+        Idle -> return false
+        Dragging -> {
+            // The finger drives the offset; the frame only keeps its time.
+            state.sinceMove = state.sinceMove + max(delta, 0.0)
+            if state.sinceMove >= MotionScroll.stillness {
+                motionScrollSample(state, 0.0)
+                state.sinceMove = 0.0
+            }
+            return true
+        }
+        Decelerating -> return motionScrollAdvanceFling(state, delta, bounds)
+        Settling -> return motionScrollAdvanceSettle(state, delta)
+        Stepping -> return motionScrollAdvanceStep(state, delta)
+    }
+}
+
+// One frame of a throw: coasting inside the range, and drawn back once past
+// an end. A frame in which it reaches the end is split where it does, so the
+// part of the frame after the edge is spent coming back.
+public function motionScrollAdvanceFling(
+    state: borrow mut MotionScrollState,
+    delta: Number,
+    bounds: borrow MotionScrollBounds,
+) -> Bool {
+    let rate = state.rate
+    let limit = motionScrollMaxOffset(bounds)
+    // The platform's units: milliseconds, and points per millisecond.
+    var remaining = max(delta, 0.0) * 1000.0
+    var velocity = state.velocity / 1000.0
+    var edge = state.offset < 0.0 ? 0.0 : limit
+
+    if motionScrollOvershoot(state.offset, bounds) == 0.0 {
+        let next = state.offset + motionDecayTravel(velocity, rate, remaining)
+        if motionScrollOvershoot(next, bounds) == 0.0 {
+            state.offset = next
+            state.rawOffset = next
+            state.velocity = velocity * motionDecayKept(rate, remaining) * 1000.0
+            if motionDecayIsSpent(state.velocity) {
+                state.phase = .Idle
+                state.velocity = 0.0
+                return false
+            }
+            return true
+        }
+        edge = next < 0.0 ? 0.0 : limit
+        let reached = motionScrollTimeToTravel(edge - state.offset, velocity, rate)
+        velocity = velocity * motionDecayKept(rate, reached)
+        remaining = max(remaining - reached, 0.0)
+        state.offset = edge
+        if !state.bounces {
+            state.rawOffset = edge
+            state.phase = .Idle
+            state.velocity = 0.0
+            return false
+        }
+    }
+
+    // Past the end, everything beyond it decays away while what speed is left
+    // carries it on: out, slowing, and home without overshooting.
+    let kept = motionBounceKept(remaining)
+    state.offset = edge + (state.offset - edge) * kept + kept * motionDecayTravel(
+        velocity,
+        rate,
+        remaining
+    )
+    state.rawOffset = state.offset
+    state.velocity = motionDecayKept(rate, remaining) * kept * velocity * 1000.0
+    if motionBounceIsHome(state.offset - edge) && motionDecayIsSpent(state.velocity) {
+        state.offset = edge
+        state.rawOffset = edge
+        state.velocity = 0.0
+        state.phase = .Idle
+        return false
+    }
+    return true
+}
+
+// How many milliseconds a throw at `velocity` points per millisecond takes to
+// cover `distance`: the decay's step solved for its time.
+public function motionScrollTimeToTravel(
+    distance: Number,
+    velocity: Number,
+    rate: Number
+) -> Number {
+    if velocity == 0.0 {
+        return 0.0
+    }
+    let f = clamp(rate, 0.0001, 0.9999)
+    let kept = 1.0 - distance * (1.0 - f) / (velocity * f)
+    return log(clamp(kept, 0.000001, 1.0)) / log(f)
+}
+
+public function motionScrollAdvanceSettle(
+    state: borrow mut MotionScrollState,
+    delta: Number
+) -> Bool {
+    let sample = motionSpringAdvance(state.spring, delta)
+    state.offset = sample.value
+    state.rawOffset = sample.value
+    state.velocity = sample.velocity
+    if motionSpringSettled(state.spring, sample, MotionSpringLimit.epsilon) {
+        // Landed exactly, rather than a thousandth of a point away: a snapped
+        // list that stopped near its item would drift by that much every time
+        // it was scrolled.
+        state.offset = state.spring.spring.target
+        state.rawOffset = state.offset
+        state.velocity = 0.0
+        state.phase = .Idle
+        return false
+    }
+    return true
+}
+
+public function motionScrollAdvanceStep(
+    state: borrow mut MotionScrollState,
+    delta: Number
+) -> Bool {
+    state.stepElapsed = state.stepElapsed + max(delta, 0.0)
+    let progress = state.stepElapsed / MotionScroll.stepDuration
+    state.offset = motionEaseBetween(.EaseOut, state.stepFrom, state.stepTo, progress)
+    state.rawOffset = state.offset
+    if progress >= 1.0 {
+        state.offset = state.stepTo
+        state.rawOffset = state.offset
+        state.phase = .Idle
+        return false
+    }
+    return true
+}
+
+// Scrolls to a definite offset under a spring — what a keyboard shortcut, a
+// "scroll to top", or a focus change asks for.
+public function motionScrollTo(
+    state: borrow mut MotionScrollState,
+    destination: Number,
+    bounds: borrow MotionScrollBounds,
+    reducedMotion: Bool,
+) {
+    motionScrollSettle(state, motionScrollClamp(destination, bounds), .Reposition, reducedMotion)
+}

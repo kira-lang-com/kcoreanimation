@@ -1,0 +1,340 @@
+import Foundation
+import Heap
+import Ember
+// Textures a quad samples from outside the batch -- a handed-over surface, a
+// secondary source -- and the quads that draw them.
+
+// The bind group a TextureView quad samples ITS OWN texture through.
+//
+// One per texture id, created on first sight and kept. A window compositing
+// several components draws a TextureView per component in the same stream, and
+// the single backdrop group cannot serve them: whichever texture was registered
+// last would be the one all of them showed.
+//
+// Kept rather than rebuilt because an id here names a shared surface, which
+// outlives the frame -- so a window holding three components pays three
+// creations for the run of the process, not three per frame.
+public function externalCacheEnsure(
+    state: borrow mut UiBatchState,
+    graphics: borrow Graphics,
+    textureId: TextureHandle
+) {
+    if textureId.raw <= 0 {
+        return
+    }
+    for entry in state.externalCache {
+        if entry.0 == textureId { return }
+    }
+    let texture = sampledTextureFromViewId(ViewId(UN32(textureId.raw)))
+    let outcome = optionalBindGroup(
+        graphics.beginBindGroup("kira-ui-batch-external-cached"),
+        "external cache group"
+    )
+    match outcome {
+        Some(group) -> {
+            glassAddSharpBackdrop(
+                graphics,
+                group,
+                texture,
+                texture,
+                state.sampler,
+                state.backdropBlend
+            )
+            state.externalCache.append((textureId, group))
+        }
+        None -> {}
+    }
+}
+
+public function externalCacheGroup(
+    state: borrow UiBatchState,
+    textureId: TextureHandle
+) -> BindGroup? {
+    for entry in state.externalCache {
+        if entry.0 == textureId { return .Some(copy entry.1) }
+    }
+    return .None
+}
+
+// The group a crossfading quad reads its TARGET through.
+//
+// Bound at the near group rather than beside the primary, because that is where
+// the generic shader's `backdrop` tap lives. Binding it beside the primary put
+// the texture in a slot mode 2 never reads, and the tap fell back to the group
+// underneath it -- which is the glyph atlas, so a sidebar mid-swipe crossfaded
+// into a page of packed glyphs.
+public function secondaryCacheEnsure(
+    state: borrow mut UiBatchState,
+    graphics: borrow Graphics,
+    textureId: TextureHandle
+) {
+    if textureId.raw <= 0 {
+        return
+    }
+    for entry in state.secondaryCache {
+        if entry.0 == textureId { return }
+    }
+    let texture = sampledTextureFromViewId(ViewId(UN32(textureId.raw)))
+    let outcome = optionalBindGroup(
+        graphics.beginBindGroup("kira-ui-batch-secondary-cached"),
+        "secondary cache group"
+    )
+    match outcome {
+        Some(group) -> {
+            graphics.bindGroupAddTexture(group, ShaderSlot.backdropTexture, texture)
+            graphics.bindGroupAddSampler(group, ShaderSlot.backdropSampler, state.sampler)
+            graphics.bindGroupAddTexture(group, ShaderSlot.nearTexture, texture)
+            graphics.bindGroupAddSampler(group, ShaderSlot.nearSampler, state.sampler)
+            state.secondaryCache.append((textureId, group))
+        }
+        None -> {}
+    }
+}
+
+public function secondaryCacheGroup(
+    state: borrow UiBatchState,
+    textureId: TextureHandle
+) -> BindGroup? {
+    for entry in state.secondaryCache {
+        if entry.0 == textureId { return .Some(copy entry.1) }
+    }
+    return .None
+}
+
+// The texture a given quad crossfades towards, or 0 for one that does not.
+public function quadSecondaryAt(
+    state: borrow UiBatchState,
+    modeStream: DrawStreamId,
+    quad: Number
+) -> TextureHandle {
+    if quad < 0 || quad >= state.streams[modeStream.raw].quads.count {
+        return TextureHandle(0)
+    }
+    return state.streams[modeStream.raw].quads[quad].secondary
+}
+
+// The external texture a given quad samples, or 0 for one that samples none.
+public function quadExternalAt(
+    state: borrow UiBatchState,
+    modeStream: DrawStreamId,
+    quad: Number
+) -> TextureHandle {
+    if quad < 0 || quad >= state.streams[modeStream.raw].quads.count {
+        return TextureHandle(0)
+    }
+    return state.streams[modeStream.raw].quads[quad].external
+}
+
+// A texture this batch may have bound is gone. Its id goes back into
+// circulation, and whatever the batch kept under it would bind the id's next
+// occupant -- or the freed slot itself, whose word is by then the link to the
+// next free id. So every group made for it goes with it.
+extend UiBatch {
+    function forgetTexture(graphics: borrow Graphics, textureId: TextureHandle) {
+        var state = nativeRecover<UiBatchState>(self.storage)
+        state.externalCache = withoutTexture(graphics, state.externalCache, textureId)
+        state.secondaryCache = withoutTexture(graphics, state.secondaryCache, textureId)
+        // The backdrop slots are filed under an id too; left bound, the next
+        // texture to take it would read as the same backdrop.
+        if state.externalBindReady && state.externalTextureId == textureId {
+            graphics.destroyBindGroup(state.externalGroup)
+            state.externalGroup = unboundBindGroup()
+            state.externalTextureId = TextureHandle(0)
+            state.externalBindReady = false
+        }
+        if state.secondaryExternalBindReady && state.secondaryExternalTextureId == textureId {
+            graphics.destroyBindGroup(state.secondaryExternalGroup)
+            state.secondaryExternalGroup = unboundBindGroup()
+            state.secondaryExternalTextureId = TextureHandle(0)
+            state.secondaryExternalBindReady = false
+        }
+    }
+}
+
+// Register the external texture the frame's BACKDROP reads: what glass blurs and
+// what the background pass draws. There is one of those per frame. The slot-1
+// bind group is cached per texture id, so a stable render-target id costs one
+// creation total.
+extend UiBatch {
+    function setExternalTextures(
+        graphics: borrow Graphics,
+        textureId: Number,
+        secondaryTextureId: Number
+    ) {
+        var state = nativeRecover<UiBatchState>(self.storage)
+        // Settled before the early-out below: the quads that follow sample THIS
+        // texture whether or not the backdrop slot already held it.
+        let primaryHandle = TextureHandle(textureId)
+        let secondaryHandle = TextureHandle(secondaryTextureId)
+        state.externalPending = primaryHandle
+        state.secondaryPending = secondaryHandle
+        externalCacheEnsure(state, graphics, primaryHandle)
+        secondaryCacheEnsure(state, graphics, secondaryHandle)
+        let primaryMatches = state.externalBindReady && state.externalTextureId == primaryHandle
+        let secondaryMatches =
+            (secondaryTextureId == 0 && !state.secondaryExternalBindReady) ||
+            (
+                state.secondaryExternalBindReady && state.secondaryExternalTextureId == secondaryHandle
+            )
+        if primaryMatches && secondaryMatches {
+            return
+        }
+        let sampler = state.sampler
+        if !primaryMatches {
+            if state.externalBindReady {
+                graphics.destroyBindGroup(state.externalGroup)
+            }
+            let texture = sampledTextureFromViewId(ViewId(UN32(textureId)))
+            let bindGroup = bindGroupOrReport(
+                graphics.beginBindGroup("kira-ui-batch-external"),
+                "bind group"
+            )
+            glassAddSharpBackdrop(
+                graphics,
+                bindGroup,
+                texture,
+                texture,
+                sampler,
+                state.backdropBlend
+            )
+            state.externalTextureId = primaryHandle
+            state.externalGroup = bindGroup
+            state.externalBindReady = true
+        }
+        if !secondaryMatches && state.secondaryExternalBindReady {
+            graphics.destroyBindGroup(state.secondaryExternalGroup)
+            state.secondaryExternalTextureId = TextureHandle(0)
+            // Unbound, not empty: nothing rebinds through this slot until a
+            // real group replaces it, and an empty group's state box would be
+            // orphaned by that replacement.
+            state.secondaryExternalGroup = unboundBindGroup()
+            state.secondaryExternalBindReady = false
+        }
+        if secondaryTextureId > 0 && !secondaryMatches {
+            let secondary = sampledTextureFromViewId(ViewId(UN32(secondaryTextureId)))
+            let secondaryGroup = bindGroupOrReport(
+                graphics.beginBindGroup("kira-ui-batch-external-secondary"),
+                "secondary group"
+            )
+            graphics.bindGroupAddTexture(secondaryGroup, ShaderSlot.backdropTexture, secondary)
+            graphics.bindGroupAddSampler(secondaryGroup, ShaderSlot.backdropSampler, sampler)
+            graphics.bindGroupAddTexture(secondaryGroup, ShaderSlot.nearTexture, secondary)
+            graphics.bindGroupAddSampler(secondaryGroup, ShaderSlot.nearSampler, sampler)
+            state.secondaryExternalTextureId = secondaryHandle
+            state.secondaryExternalGroup = secondaryGroup
+            state.secondaryExternalBindReady = true
+        }
+        // The sharp tap the composite reads a DIRECT backdrop through: both
+        // photographs at once, so a glass surface over a scheme change shades
+        // against the crossfade without the compositor ever rendering that
+        // crossfade into a full-resolution capture for it to read back.
+        glassDestroyBindGroup(graphics, state.backdropSharpGroup)
+        let primary = sampledTextureFromViewId(ViewId(UN32(state.externalTextureId.raw)))
+        var second = primary
+        if state.secondaryExternalBindReady {
+            second = sampledTextureFromViewId(ViewId(UN32(state.secondaryExternalTextureId.raw)))
+        }
+        let sharp = optionalBindGroup(
+            graphics.beginBindGroup("kira-ui-batch-backdrop-sharp"),
+            "backdrop sharp"
+        )
+        match sharp {
+            Some(group) -> glassAddSharpBackdrop(
+                graphics,
+                group,
+                primary,
+                second,
+                sampler,
+                state.backdropBlend
+            )
+            None -> {}
+        }
+        state.backdropSharpGroup = sharp
+    }
+}
+
+extend UiBatch {
+    function setExternalTexture(graphics: borrow Graphics, textureId: Number) {
+        self.setExternalTextures(graphics, textureId, 0)
+    }
+}
+
+// Emit an external-texture quad (mode 2): `local` spans uv 0..1 across the rect.
+extend UiBatch {
+    function pushExternalRect(
+        x: Number,
+        y: Number,
+        w: Number,
+        h: Number,
+        alpha: Number,
+        transition: Number,
+        radius: Number,
+        clipMinX: Number,
+        clipMinY: Number,
+        clipMaxX: Number,
+        clipMaxY: Number,
+    ) {
+        if w <= 0.0 || h <= 0.0 || alpha <= 0.0 {
+            return
+        }
+        var state = nativeRecover<UiBatchState>(self.storage)
+        let coversViewport =
+            x >= -0.01 && y >= -0.01 &&
+            x <= 0.01 && y <= 0.01 &&
+            w >= state.viewportW - 0.01 && h >= state.viewportH - 0.01 &&
+            radius <= 0.0 &&
+            clipMinX <= 0.01 && clipMinY <= 0.01 &&
+            clipMaxX >= state.viewportW - 0.01 && clipMaxY >= state.viewportH - 0.01
+        if state.backgroundPromotable && state.backgroundPipeline.id != 0 && state.streamIndex.raw == 0 && state.quadCount == 0 && alpha >= 0.999 && coversViewport {
+            state.backgroundActive = true
+            state.backgroundTransition = transition
+            return
+        }
+        self.emitQuad(
+            x,
+            y,
+            x + w,
+            y + h,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            w / 2.0,
+            h / 2.0,
+            radius,
+            0.0,
+            2.0,
+            transition,
+            1.0,
+            1.0,
+            1.0,
+            alpha,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            clipMinX,
+            clipMinY,
+            clipMaxX,
+            clipMaxY
+        )
+    }
+}
+
+// A bind-group cache without its entry for `textureId`, whose group is
+// destroyed: the id is going back into circulation.
+function withoutTexture(
+    graphics: borrow Graphics,
+    cache: borrow [(TextureHandle, BindGroup)],
+    textureId: TextureHandle
+) -> [(TextureHandle, BindGroup)] {
+    var kept: [(TextureHandle, BindGroup)] = []
+    for (id, group) in cache {
+        if id == textureId {
+            graphics.destroyBindGroup(group)
+        } else {
+            kept.append((id, copy group))
+        }
+    }
+    return kept
+}

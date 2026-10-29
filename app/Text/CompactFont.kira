@@ -1,0 +1,288 @@
+import Foundation
+
+// Where a PostScript-flavoured OpenType face ('OTTO') keeps its glyphs: the
+// `CFF ` table's charstrings and the subroutines they call, read out of its
+// INDEX and DICT structures (Adobe technical note 5176), or the `CFF2`
+// table's, which a variable face keeps them in: its INDEXes count in 32
+// bits, its Top DICT stands alone after the header, and its charstrings
+// blend their numbers by the face's item variation store.
+
+namespace CompactLayout {
+    let headerSize: Number = 2
+    let topDictLength: Number = 3
+    // DICT operators; an escaped operator (12 x) is 1200 + x.
+    let escape: Number = 12
+    let escaped: Number = 1200
+    let charStrings: Number = 17
+    let privateDict: Number = 18
+    let subroutines: Number = 19
+    let charstringType: Number = 1206
+    let fontDicts: Number = 1236
+    let fontSelect: Number = 1237
+    let variationIndex: Number = 22
+    let variationStore: Number = 24
+    // The highest byte that is an operator rather than an operand: 21 in
+    // `CFF `, 24 in `CFF2`, the bytes between them reserved.
+    let lastOperator: Number = 27
+}
+
+// A face's charstrings, as absolute offsets into the file. `localSubrs` has
+// one entry for each font dict, a plain face's alone, -1 where a dict has
+// none, and `regionSets` the item variation data each dict's charstrings
+// blend by unless they say otherwise; `fontSelect` maps a CID-keyed face's
+// glyphs to its dicts, or is -1. `wide` says the INDEXes are `CFF2`'s, and
+// `variationStore` is where its item variation store is, or zero.
+struct CompactOutlines {
+    let charStrings: Number
+    let globalSubrs: Number
+    let localSubrs: [Number]
+    let regionSets: [Number]
+    let fontSelect: Number
+    let wide: Bool
+    let variationStore: Number
+}
+
+// One operator of a DICT, with the operands before it.
+struct DictEntry {
+    let op: Number
+    let operands: [Float]
+}
+
+extend FontBytes {
+    // The charstrings of the `CFF ` or `CFF2` table, or none where the
+    // table is not one the engine reads.
+    function compactOutlines(table: borrow FontTable) -> CompactOutlines? {
+        let base = table.offset
+        let version = u8(base)
+        if version != 1 && version != 2 { return .None }
+        let wide = version == 2
+        let headerEnd = base + u8(base + CompactLayout.headerSize)
+        var top: [DictEntry] = []
+        var globals: Number = 0
+        if wide {
+            let topEnd = headerEnd + u16(base + CompactLayout.topDictLength)
+            top = dictEntries(headerEnd, topEnd)
+            globals = topEnd
+        } else {
+            let topDicts = indexEnd(headerEnd, false)
+            let (topStart, topEnd) = match indexEntry(topDicts, 0, false) {
+                Some(range) -> range
+                None -> return .None
+            }
+            top = dictEntries(topStart, topEnd)
+            globals = indexEnd(indexEnd(topDicts, false), false)
+        }
+        let charStrings = match dictOperand(top, CompactLayout.charStrings) {
+            Some(offset) -> base + Number(offset)
+            None -> return .None
+        }
+        let kind = match dictOperand(top, CompactLayout.charstringType) {
+            Some(value) -> Number(value)
+            None -> 2
+        }
+        if kind != 2 { return .None }
+        // A `CFF2` store is a length, then the item variation store itself.
+        let store = match dictOperand(top, CompactLayout.variationStore) {
+            Some(offset) -> wide ? base + Number(offset) + 2 : 0
+            None -> 0
+        }
+        var locals: [Number] = []
+        var regionSets: [Number] = []
+        var select: Number = -1
+        match dictOperand(top, CompactLayout.fontDicts) {
+            Some(offset) -> {
+                let dicts = base + Number(offset)
+                for index in 0..indexCountAt(dicts, wide) {
+                    match indexEntry(dicts, index, wide) {
+                        Some(range) -> {
+                            let (start, end) = range
+                            let (subrs, regions) = privateDict(base, dictEntries(start, end))
+                            locals.append(subrs)
+                            regionSets.append(regions)
+                        }
+                        None -> {
+                            locals.append(-1)
+                            regionSets.append(0)
+                        }
+                    }
+                }
+                select = match dictOperand(top, CompactLayout.fontSelect) {
+                    Some(value) -> base + Number(value)
+                    None -> -1
+                }
+            }
+            None -> {
+                let (subrs, regions) = privateDict(base, top)
+                locals.append(subrs)
+                regionSets.append(regions)
+            }
+        }
+        return .Some(
+            CompactOutlines {
+                charStrings: charStrings,
+                globalSubrs: globals,
+                localSubrs: locals,
+                regionSets: regionSets,
+                fontSelect: select,
+                wide: wide,
+                variationStore: store
+            }
+        )
+    }
+
+    // Where the local subroutines of the Private DICT `dict` names are, -1
+    // for none; and the item variation data its charstrings blend by.
+    function privateDict(base: Number, dict: borrow [DictEntry]) -> (Number, Number) {
+        for entry in dict {
+            if entry.op != CompactLayout.privateDict || entry.operands.count < 2 { continue }
+            let start = base + Number(entry.operands[1])
+            let private = dictEntries(start, start + Number(entry.operands[0]))
+            let subrs = match dictOperand(private, CompactLayout.subroutines) {
+                Some(offset) -> start + Number(offset)
+                None -> -1
+            }
+            let regions = match dictOperand(private, CompactLayout.variationIndex) {
+                Some(index) -> Number(index)
+                None -> 0
+            }
+            return (subrs, regions)
+        }
+        return (-1, 0)
+    }
+
+    // How many entries the INDEX at `at` has: counted in 32 bits where it is
+    // `wide`, as `CFF2`'s are, in 16 otherwise.
+    function indexCountAt(at: Number, wide: Bool) -> Number {
+        return wide ? u32(at) : u16(at)
+    }
+
+    // Entry `index` of the INDEX at `at`: where its bytes start and end.
+    function indexEntry(at: Number, index: Number, wide: Bool) -> (Number, Number)? {
+        let count = indexCountAt(at, wide)
+        if index < 0 || index >= count { return .None }
+        let head = wide ? 4 : 2
+        let size = u8(at + head)
+        let offsets = at + head + 1
+        let data = offsets + (count + 1) * size - 1
+        let start = data + sizedOffset(offsets + index * size, size)
+        let end = data + sizedOffset(offsets + (index + 1) * size, size)
+        if end < start || end > bytes.count { return .None }
+        return .Some((start, end))
+    }
+
+    // The first byte after the INDEX at `at`.
+    function indexEnd(at: Number, wide: Bool) -> Number {
+        let count = indexCountAt(at, wide)
+        let head = wide ? 4 : 2
+        if count == 0 { return at + head }
+        let size = u8(at + head)
+        let offsets = at + head + 1
+        return offsets + (count + 1) * size - 1 + sizedOffset(offsets + count * size, size)
+    }
+
+    // A big-endian offset `size` bytes long.
+    function sizedOffset(at: Number, size: Number) -> Number {
+        var value: Number = 0
+        for index in 0..size { value = (value << 8) | u8(at + index) }
+        return value
+    }
+
+    // How many local subroutines' numbers are moved by: what a charstring
+    // adds to the number it calls, as the INDEX's size decides.
+    function subroutineBias(index: Number, wide: Bool) -> Number {
+        let count = indexCountAt(index, wide)
+        if count < 1240 { return 107 }
+        if count < 33900 { return 1131 }
+        return 32768
+    }
+
+    // The glyph's font dict in a CID-keyed face, by an FDSelect of format 0
+    // or 3; the first dict otherwise.
+    function fontDict(select: Number, glyph: Number) -> Number {
+        if select < 0 { return 0 }
+        match u8(select) {
+            0 -> return u8(select + 1 + glyph)
+            3 -> {
+                let ranges = u16(select + 1)
+                var dict: Number = 0
+                for index in 0..ranges {
+                    let range = select + 3 + index * 3
+                    if u16(range) > glyph { break }
+                    dict = u8(range + 2)
+                }
+                return dict
+            }
+            else -> return 0
+        }
+    }
+
+    // The operators of the DICT between `start` and `end`.
+    function dictEntries(start: Number, end: Number) -> [DictEntry] {
+        var entries: [DictEntry] = []
+        var operands: [Float] = []
+        var at = start
+        while at < end && at < bytes.count {
+            let lead = u8(at)
+            if lead <= CompactLayout.lastOperator {
+                var op = lead
+                at += 1
+                if lead == CompactLayout.escape {
+                    op = CompactLayout.escaped + u8(at)
+                    at += 1
+                }
+                entries.append(DictEntry { op: op, operands: copy operands })
+                operands = []
+                continue
+            }
+            match lead {
+                28 -> {
+                    operands.append(Float(i16(at + 1)))
+                    at += 3
+                }
+                29 -> {
+                    let raw = u32(at + 1)
+                    operands.append(Float(raw >= 0x80000000 ? raw - 0x100000000 : raw))
+                    at += 5
+                }
+                // A real number, as nibbles up to a 0xf one. No offset is
+                // one, so its value is not read.
+                30 -> {
+                    at += 1
+                    while at < end {
+                        let pair = u8(at)
+                        at += 1
+                        if (pair & 0xf) == 0xf || (pair >> 4) == 0xf { break }
+                    }
+                    operands.append(0.0)
+                }
+                else -> {
+                    let (value, size) = compactNumber(at)
+                    operands.append(value)
+                    at += size
+                }
+            }
+        }
+        return entries
+    }
+
+    // The integer operand at `at` that DICTs and charstrings spell alike, in
+    // one, two or (as 255, in a charstring) five bytes; and how many.
+    function compactNumber(at: Number) -> (Float, Number) {
+        let lead = u8(at)
+        if lead >= 32 && lead <= 246 { return (Float(lead - 139), 1) }
+        if lead >= 247 && lead <= 250 { return (Float((lead - 247) * 256 + u8(at + 1) + 108), 2) }
+        if lead >= 251 && lead <= 254 {
+            return (Float(-(lead - 251) * 256 - u8(at + 1) - 108), 2)
+        }
+        if lead == 255 { return (fixed(at + 1), 5) }
+        return (0.0, 1)
+    }
+}
+
+// The first operand of the DICT's `op`, if it has it.
+function dictOperand(dict: borrow [DictEntry], op: Number) -> Float? {
+    for entry in dict {
+        if entry.op == op && entry.operands.count > 0 { return .Some(entry.operands[0]) }
+    }
+    return .None
+}

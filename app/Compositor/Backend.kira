@@ -1,0 +1,295 @@
+import Foundation
+import Ember
+import KiraLayout
+
+// The compositor's draw backend: the thin translation layer between the render
+// plan the executor walks and the batched-UI primitives that actually put
+// vertices on the GPU. It owns nothing but the frame's Graphics handle and the
+// UiBatch it emits into; every surface, glyph, texture and glass quad is one
+// call through to `batch`, which holds the geometry, the atlas and the liquid-
+// glass pipeline.
+//
+// The executor drives it per pass: `beginFrameExtent` for the root swapchain
+// frame, `beginTargetFrame` for an isolated pass rendering into an offscreen
+// texture, then `CARenderPlan.submitPass`/`submit` push the plan's commands through
+// `drawRetainedGlass`, `drawTextureFields` and the free `CAOrientedQuad.drawSurface`.
+// `drewVisibleUi` records whether the pass emitted anything the swapchain must
+// present.
+public class EmberFoundationBackend {
+    let graphics: Graphics
+    let batch: UiBatch
+    // Whether the host window is composited with holes in it. Carried for the
+    // surface-fill path; the page itself is cleared by the runner.
+    var windowTransparent: Bool = false
+    // Set the moment anything visible is emitted this pass, so the executor can
+    // skip presenting a pass that drew nothing.
+    var drewVisibleUi: Bool = false
+    // The compositor's decoded image files, lent for the pass.
+    var fileTextures: [FileTexture] = []
+    // Textures of files replaced on disk, for the compositor to retire.
+    var staleTextures: [GraphicsTexture] = []
+    // The pass's pixels to a point, which an image file's representation is
+    // chosen by.
+    var scale: Number = 1
+
+    // Begin the root swapchain frame: rewind the batch's streams to this frame's
+    // viewport and drawable extent, then claim each stream's ring slot.
+    function beginFrameExtent(
+        viewportW: Number,
+        viewportH: Number,
+        scale: Number,
+        drawableW: Number,
+        drawableH: Number
+    ) {
+        self.scale = scale
+        self.batch.beginBatch(viewportW, viewportH, scale, drawableW, drawableH)
+        self.batch.beginFrameSlots(self.graphics)
+    }
+
+    // Begin an isolated pass rendering into an offscreen target of the given
+    // physical extent. Identical batch setup to the root frame — the executor
+    // binds the target texture at encode time; the backend only sizes the frame.
+    function beginTargetFrame(
+        width: Number,
+        height: Number,
+        scale: Number,
+        targetW: Number,
+        targetH: Number
+    ) {
+        self.scale = scale
+        self.batch.beginBatch(width, height, scale, targetW, targetH)
+        self.batch.beginFrameSlots(self.graphics)
+    }
+
+    // Open a backdrop capture for the glass surface about to be drawn: park the
+    // active stream so the glass layer refracts everything emitted before it.
+    function beginRetainedBackdrop(bounds: borrow Rect) {
+        self.batch.beginGlassCapture(self.graphics, bounds.x, bounds.y, bounds.width, bounds.height)
+    }
+
+    // Opens a blending group's surface: a capture of everything drawn so far,
+    // taken even where no glass in the layer below would force one, since what
+    // the group puts back through a cut is what was there when it began.
+    function beginGroupSeed(bounds: borrow Rect) {
+        self.batch.beginGlassCapture(
+            self.graphics,
+            bounds.x,
+            bounds.y,
+            bounds.width,
+            bounds.height,
+            fresh: true
+        )
+    }
+
+    // The glass layer closes itself when the next capture opens or the frame
+    // ends — the stream split in `beginGlassCapture`/`pushGlass` carries the
+    // boundary — so nothing is bracketed shut here.
+    function endBackdrop(bounds: borrow Rect) {
+        let ignored = bounds.width
+    }
+
+    // Emit one liquid-glass quad. `fill` is the already-resolved wash color;
+    // the surface's own local extent and rotation come from the plan, the
+    // refraction dials and touch/morph state from the glass content.
+    function drawRetainedGlass(
+        quad: borrow CAOrientedQuad,
+        localWidth: Number,
+        localHeight: Number,
+        cornerRadius: Number,
+        fill: borrow RGBAColor,
+        glass: borrow CAGlass,
+        clipMinX: Number,
+        clipMinY: Number,
+        clipMaxX: Number,
+        clipMaxY: Number,
+        // How much of the finished glass shows over what is behind it.
+        opacity: Number = 1.0,
+        // The corner of the rounded box the clip is, and its kind.
+        clipRadius: Number = 0.0,
+        clipShapeKind: Number = 0.0,
+    ) {
+        self.drewVisibleUi = true
+        // The surface is drawn at the size it takes on screen, so a layer that
+        // swells under a press swells its glass. The content states its light
+        // and its second shape in the layer's own units from its top-leading
+        // corner: both are carried to screen units from where the surface
+        // starts, as the batch takes them.
+        let width = quad.halfW * 2.0
+        let height = quad.halfH * 2.0
+        var unitX: Number = 1.0
+        var unitY: Number = 1.0
+        if localWidth > 0.0 {
+            unitX = width / localWidth
+        }
+        if localHeight > 0.0 {
+            unitY = height / localHeight
+        }
+        let originX = quad.centerX - width * 0.5
+        let originY = quad.centerY - height * 0.5
+        match glass.style {
+            Some(style) -> {
+                // A recipe surface is laid out in the layer's space at the
+                // least of its two scales -- the scale `cornerRadius` already
+                // carries -- and stretched from there to the screen.
+                let least = max(min(unitX, unitY), 0.0001)
+                self.batch.pushRecipeGlass(
+                    originX,
+                    originY,
+                    width,
+                    height,
+                    GlassRecipeSurface {
+                        style: style,
+                        radius: cornerRadius,
+                        shapeKind: Number(glass.shapeKind),
+                        tint: copy fill,
+                        opacity: opacity,
+                        glowX: originX + glass.glowX * unitX,
+                        glowY: originY + glass.glowY * unitY,
+                        glowStrength: packedGlow(
+                            glass.glowStrength,
+                            glass.glowWash,
+                            glass.glowRadius * least,
+                            glass.glowDark
+                        ),
+                        morphX: originX + glass.morphX * unitX,
+                        morphY: originY + glass.morphY * unitY,
+                        morphW: glass.morphWidth * unitX,
+                        morphH: glass.morphHeight * unitY,
+                        morphRadius: glass.morphRadius * least,
+                        morphBlend: glass.morphBlend,
+                        warpAmount: glass.warpAmount * least,
+                        warpHeight: glass.warpHeight * least,
+                        warpOvalization: glass.warpOvalization,
+                        matrixOpacity: glass.matrixOpacity,
+                        matrixBlur: glass.matrixBlur,
+                        matrixScale: glass.matrixScale,
+                        matrixBlack: glass.matrixBlack,
+                        matrixWhite: glass.matrixWhite,
+                        matrixSaturation: glass.matrixSaturation,
+                        stretchX: unitX / least,
+                        stretchY: unitY / least
+                    },
+                    GlassRecipeClip {
+                        minX: clipMinX,
+                        minY: clipMinY,
+                        maxX: clipMaxX,
+                        maxY: clipMaxY,
+                        radius: clipRadius,
+                        shapeKind: clipShapeKind
+                    }
+                )
+                return
+            }
+            None -> {}
+        }
+        self.batch.pushGlass(
+            originX,
+            originY,
+            width,
+            height,
+            cornerRadius,
+            fill,
+            glass.blurAt(width, height),
+            glass.edgeRefraction,
+            clipMinX,
+            clipMinY,
+            clipMaxX,
+            clipMaxY,
+            glass.materialAt(width, height),
+            originX + glass.glowX * unitX,
+            originY + glass.glowY * unitY,
+            packedGlow(
+                glass.glowStrength,
+                glass.glowWash,
+                glass.glowRadius * (unitX + unitY) * 0.5,
+                glass.glowDark
+            ),
+            originX + glass.morphX * unitX,
+            originY + glass.morphY * unitY,
+            glass.morphWidth * unitX,
+            glass.morphHeight * unitY,
+            glass.morphRadius * unitY,
+            glass.morphBlend,
+            Number(glass.shapeKind),
+            quad.rotCos,
+            quad.rotSin,
+            opacity,
+            clipRadius,
+            clipShapeKind
+        )
+    }
+
+    // Composite an isolated pass's texture (or any external texture) over its
+    // bounds — the group-opacity / isolated-pass path — blurred by `blur`
+    // points.
+    function drawTextureFields(
+        bounds: borrow Rect,
+        texture: TextureHandle,
+        secondaryTexture: TextureHandle,
+        transition: Number,
+        opacity: Number,
+        radius: Number,
+        blur: Number = 0.0,
+        clip: Rect = Rect { x: -1000000.0, y: -1000000.0, width: 2000000.0, height: 2000000.0 },
+        clipRadius: Number = 0.0,
+        clipShapeKind: Number = 0.0,
+        // A displacement map to draw the texture through, read off the
+        // rounded box `element` with corners of `elementRadius`: centered in
+        // the same space as `bounds`, measured in the one that space times
+        // `elementScale` is. See `CADrawCmd.elementScale`.
+        displacement: borrow CADisplacement = CADisplacement {},
+        element: borrow CAOrientedQuad = CAOrientedQuad {},
+        elementRadius: Number = 0.0,
+        elementScale: borrow Point = Point { x: 1.0, y: 1.0 },
+        blurOpaque: Bool = false,
+    ) {
+        let empty = bounds.width <= 0.0 || bounds.height <= 0.0
+        if opacity <= 0.0 || empty || clip.width <= 0.0 || clip.height <= 0.0 {
+            return
+        }
+        self.drewVisibleUi = true
+        self.batch.setExternalTextures(self.graphics, texture.raw, secondaryTexture.raw)
+        let halfW = bounds.width * 0.5
+        let halfH = bounds.height * 0.5
+        self.batch.pushLayerTextureQuad(
+            bounds.x + halfW,
+            bounds.y + halfH,
+            halfW,
+            halfH,
+            1.0,
+            0.0,
+            opacity,
+            transition,
+            radius,
+            max(bounds.x, clip.x),
+            max(bounds.y, clip.y),
+            min(bounds.x + bounds.width, clip.x + clip.width),
+            min(bounds.y + bounds.height, clip.y + clip.height),
+            blur,
+            clipRadius,
+            clipShapeKind,
+            displacement,
+            element,
+            elementRadius,
+            elementScale,
+            blurOpaque
+        )
+    }
+}
+
+// The touch lights as the glass batch carries them, in one number: the
+// little glow's reach in the whole part, and in what is left its strength in
+// 255ths and the big glow's in 31sts -- thirteen bits, which a float keeps
+// exactly beside a reach under 2048 points. The sign is the appearance:
+// negative takes the dark dodge. The glass pipelines have no slot to spare
+// for another number. No light is zero.
+public function packedGlow(little: Number, wash: Number, radius: Number, dark: Bool) -> Number {
+    let littleSteps = round(clamp(little, 0.0, 1.0) * 255.0)
+    let washSteps = round(clamp(wash, 0.0, 1.0) * 31.0)
+    if littleSteps <= 0.0 && washSteps <= 0.0 {
+        return 0.0
+    }
+    let reach = clamp(floor(radius), 1.0, 2047.0)
+    let packed = reach + (littleSteps * 32.0 + washSteps + 0.5) / 8192.0
+    return dark ? -packed : packed
+}

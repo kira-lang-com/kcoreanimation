@@ -1,0 +1,7 @@
+import Foundation
+import KCoreAnimation
+
+// The retained-core suite runs with no window: every assertion reads a value.
+
+@Main
+function main() {}

@@ -1,0 +1,143 @@
+import Foundation
+
+// GPOS cursive attachment and contextual positioning (types 3, 7 and 8 of
+// the OpenType GPOS table), as HarfBuzz applies them. Cursive attachment
+// joins a glyph's entry anchor to the exit anchor of the glyph before it, as
+// a joined script's letters meet: the earlier glyph's advance ends at its
+// exit, and the later one hangs from it, as high as their anchors say.
+// Contextual positioning matches rules as contextual substitution does
+// (FontContext.kira) and runs the positioning lookups they name.
+
+// What every positioning lookup over a run reads: the instance's variation
+// coordinates, and whether the run is set right to left.
+struct PositioningRun {
+    let coordinates: [Float]
+    let backward: Bool
+}
+
+extend FontFile {
+    // Joins the glyph at `at` to the glyph before it that the lookup does not
+    // skip, by the entry and exit anchors a format 1 subtable gives them; how
+    // many glyphs it consumed, or -1 when it does not apply.
+    function attachCursive(
+        subtable: Number,
+        lookup: borrow LayoutLookup,
+        buffer: borrow ShapingBuffer,
+        at: Number,
+        run: borrow PositioningRun,
+        placement: borrow mut GlyphPlacement
+    ) -> Number {
+        if data.u16(subtable) != 1 { return -1 }
+        let entry = cursiveAnchor(subtable, buffer.glyphs[at], 0)
+        if entry < 0 { return -1 }
+        let before = previousUnskipped(buffer, at - 1, lookup)
+        if before < 0 { return -1 }
+        let exit = cursiveAnchor(subtable, buffer.glyphs[before], 2)
+        if exit < 0 { return -1 }
+        let entering = anchorPoint(entry, run.coordinates)
+        let leaving = anchorPoint(exit, run.coordinates)
+        // Along the line: the two anchors meet.
+        if run.backward {
+            let moved = leaving.x + placement.offsets[before]
+            placement.advances[before] = placement.advances[before] - moved
+            placement.offsets[before] = placement.offsets[before] - moved
+            setAdvance(placement, at, entering.x + placement.offsets[at])
+        } else {
+            setAdvance(placement, before, leaving.x + placement.offsets[before])
+            let moved = entering.x + placement.offsets[at]
+            placement.advances[at] = placement.advances[at] - moved
+            placement.offsets[at] = placement.offsets[at] - moved
+        }
+        // Across it: the later glyph hangs from the earlier, or the earlier
+        // from the later where the lookup says the chain runs right to left.
+        var child = at
+        var parent = before
+        var rise = leaving.y - entering.y
+        if (lookup.flag & LookupFlag.rightToLeft) != 0 {
+            child = before
+            parent = at
+            rise = entering.y - leaving.y
+        }
+        // A chain never loops: a parent that hung from its child lets go.
+        if placement.cursiveParent[parent] == child {
+            placement.cursiveParent[parent] = -1
+            placement.cursiveRise[parent] = 0.0
+        }
+        placement.cursiveParent[child] = parent
+        placement.cursiveRise[child] = rise
+        return 1
+    }
+
+    // The entry (`field` 0) or exit (`field` 2) anchor a cursive subtable
+    // gives `glyph`; -1 for none.
+    function cursiveAnchor(subtable: Number, glyph: Number, field: Number) -> Number {
+        let index = data.coverageIndex(subtable + data.u16(subtable + 2), glyph)
+        if index < 0 || index >= data.u16(subtable + 4) { return -1 }
+        let offset = data.u16(subtable + 6 + index * 4 + field)
+        return offset == 0 ? -1 : subtable + offset
+    }
+
+    // Matches a type 7 (or, when `chained`, type 8) subtable's rules at `at`
+    // and runs the positioning lookups the first that matches names; how many
+    // glyphs it consumed, or -1 when none matches.
+    function contextPositioning(
+        subtable: Number,
+        lookup: borrow LayoutLookup,
+        buffer: borrow ShapingBuffer,
+        at: Number,
+        run: borrow PositioningRun,
+        placement: borrow mut GlyphPlacement,
+        depth: Number,
+        chained: Bool
+    ) -> Number {
+        if depth >= ShapingLimits.nesting { return -1 }
+        let rules = chained ? chainedRules(subtable, buffer.glyphs[at]) : contextRules(
+            subtable,
+            buffer.glyphs[at]
+        )
+        for rule in rules {
+            let positions = matchedInput(rule, lookup, buffer, at)
+            if positions.count == 0 { continue }
+            for index in 0..rule.recordCount {
+                let record = rule.records + index * 4
+                let sequence = data.u16(record)
+                if sequence >= positions.count { continue }
+                let nested = data.lookupAt(layout.positionings.lookupList, data.u16(record + 2), 9)
+                let _ = positionAt(nested, buffer, positions[sequence], run, placement, depth + 1)
+            }
+            return positions[positions.count - 1] - at + 1
+        }
+        return -1
+    }
+}
+
+// Replaces the advance of glyph `at` with `advance`, in font units. What
+// later lookups add to it, kerning above all, still adds.
+function setAdvance(placement: borrow mut GlyphPlacement, at: Number, advance: Float) {
+    placement.advanceTo[at] = advance
+    placement.advanceSet[at] = true
+    placement.advances[at] = 0.0
+}
+
+// How far above the line each glyph of a run sits, in font units, from the
+// cursive chains it hangs in.
+function cursiveRises(placement: borrow GlyphPlacement) -> [Float] {
+    let count = placement.cursiveParent.count
+    var rises: [Float] = []
+    for index in 0..count { rises.append(0.0) }
+    for index in 0..count {
+        var rise: Float = 0.0
+        var at = index
+        var steps: Number = 0
+        // A chain is never longer than the run.
+        while at >= 0 && steps < count {
+            let parent = placement.cursiveParent[at]
+            if parent < 0 { break }
+            rise += placement.cursiveRise[at]
+            at = parent
+            steps += 1
+        }
+        rises[index] = rise
+    }
+    return rises
+}
