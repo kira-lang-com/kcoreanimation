@@ -293,117 +293,119 @@ public function glassEnsureLayerScene(
 // is installed.
 extend UiBatch {
     function ensureGlassResources(graphics: borrow Graphics) {
-        var state = nativeRecover<UiBatchState>(self.storage)
-        if !state.blurComputeHPipelineId.isPresent() {
-            // One `.ksl` holds one compute stage, so the two halves are two files
-            // sharing `Shaders/UiGlassBlurCommon.ksl` — the filters they both run
-            // are written once there.
-            //
-            // Compute is a requirement of the material, not a preference: a device
-            // that cannot dispatch cannot show Liquid Glass, and saying so is the
-            // whole of the handling. There is no second encoding of this blur to
-            // fall back onto, because a second encoding is a second image nobody
-            // looks at until it is already wrong.
-            if !graphics.supportsCompute() {
-                log fault(
-                    "Kira UI Foundation requires a render backend that can dispatch compute; Liquid Glass cannot be drawn on this device"
+        unsafe {
+            var state = nativeRecover<UiBatchState>(self.storage)
+            if !state.blurComputeHPipelineId.isPresent() {
+                // One `.ksl` holds one compute stage, so the two halves are two files
+                // sharing `Shaders/UiGlassBlurCommon.ksl` — the filters they both run
+                // are written once there.
+                //
+                // Compute is a requirement of the material, not a preference: a device
+                // that cannot dispatch cannot show Liquid Glass, and saying so is the
+                // whole of the handling. There is no second encoding of this blur to
+                // fall back onto, because a second encoding is a second image nobody
+                // looks at until it is already wrong.
+                if !graphics.supportsCompute() {
+                    log fault(
+                        "Kira UI Foundation requires a render backend that can dispatch compute; Liquid Glass cannot be drawn on this device"
+                    )
+                    return
+                }
+                let hArtifact = ksl!("Shaders/UiGlassBlurH.ksl")
+                let hShader = shaderOrReport(
+                    graphics.createShaderFromKslArtifact("kira-ui-glass-blur-h", hArtifact),
+                    "h shader"
                 )
+                state.blurComputeHPipelineId = graphics.createComputePipeline(
+                    "kira-ui-glass-blur-h",
+                    hShader,
+                    hArtifact.computeEntry
+                )
+
+                let vArtifact = ksl!("Shaders/UiGlassBlurV.ksl")
+                let vShader = shaderOrReport(
+                    graphics.createShaderFromKslArtifact("kira-ui-glass-blur-v", vArtifact),
+                    "v shader"
+                )
+                state.blurComputeVPipelineId = graphics.createComputePipeline(
+                    "kira-ui-glass-blur-v",
+                    vShader,
+                    vArtifact.computeEntry
+                )
+                if !state.blurComputeHPipelineId.isPresent() || !state.blurComputeVPipelineId.isPresent() {
+                    log fault("Kira UI Foundation could not build the Liquid Glass blur kernels")
+                    return
+                }
+            }
+
+            // The blur's capture is a texel a point and its levels a quarter of that,
+            // so a level texel is the divisor's points on both axes; the sharp
+            // capture is the drawable's pixels.
+            let texW = max(ceil(state.viewportW), 1)
+            let texH = max(ceil(state.viewportH), 1)
+            let sharpW = max(state.drawableW, texW)
+            let sharpH = max(state.drawableH, texH)
+            if state.glassReady && texW == state.glassTexW && texH == state.glassTexH
+                && sharpW == state.glassSharpW && sharpH == state.glassSharpH {
                 return
             }
-            let hArtifact = ksl!("Shaders/UiGlassBlurH.ksl")
-            let hShader = shaderOrReport(
-                graphics.createShaderFromKslArtifact("kira-ui-glass-blur-h", hArtifact),
-                "h shader"
-            )
-            state.blurComputeHPipelineId = graphics.createComputePipeline(
-                "kira-ui-glass-blur-h",
-                hShader,
-                hArtifact.computeEntry
-            )
-
-            let vArtifact = ksl!("Shaders/UiGlassBlurV.ksl")
-            let vShader = shaderOrReport(
-                graphics.createShaderFromKslArtifact("kira-ui-glass-blur-v", vArtifact),
-                "v shader"
-            )
-            state.blurComputeVPipelineId = graphics.createComputePipeline(
-                "kira-ui-glass-blur-v",
-                vShader,
-                vArtifact.computeEntry
-            )
-            if !state.blurComputeHPipelineId.isPresent() || !state.blurComputeVPipelineId.isPresent() {
-                log fault("Kira UI Foundation could not build the Liquid Glass blur kernels")
-                return
+            // The kernel steps in level texels, so the divisor sets the physical blur
+            // radius and not just its quality: a finer level is a *narrower* blur.
+            let blurDiv = GlassBlur.divisor
+            var blurW = trunc(texW / blurDiv)
+            if blurW < 1 {
+                blurW = 1
             }
-        }
+            var blurH = trunc(texH / blurDiv)
+            if blurH < 1 {
+                blurH = 1
+            }
+            glassDestroyTargets(state, graphics)
+            let blurA = textureOrReport(
+                graphics.createTexture(
+                    TextureDescriptor {
+                        label: "kira-ui-glass-blur-a",
+                        width: UN32(blurW),
+                        height: UN32(blurH),
+                        format: .Rgba8Unorm,
+                        usage: .SampledStorage,
+                        sampleCount: 1,
+                        storage: .Transient
+                    }
+                ),
+                "glass blur ping target"
+            )
+            let blurB = textureOrReport(
+                graphics.createTexture(
+                    TextureDescriptor {
+                        label: "kira-ui-glass-blur-b",
+                        width: UN32(blurW),
+                        height: UN32(blurH),
+                        format: .Rgba8Unorm,
+                        usage: .SampledStorage,
+                        sampleCount: 1,
+                        storage: .Transient
+                    }
+                ),
+                "glass blur pong target"
+            )
+            state.blurTextureA = blurA
+            state.blurTextureB = blurB
+            state.glassTexW = texW
+            state.glassTexH = texH
+            state.glassSharpW = sharpW
+            state.glassSharpH = sharpH
+            state.glassBlurW = blurW
+            state.glassBlurH = blurH
 
-        // The blur's capture is a texel a point and its levels a quarter of that,
-        // so a level texel is the divisor's points on both axes; the sharp
-        // capture is the drawable's pixels.
-        let texW = max(ceil(state.viewportW), 1)
-        let texH = max(ceil(state.viewportH), 1)
-        let sharpW = max(state.drawableW, texW)
-        let sharpH = max(state.drawableH, texH)
-        if state.glassReady && texW == state.glassTexW && texH == state.glassTexH
-            && sharpW == state.glassSharpW && sharpH == state.glassSharpH {
-            return
+            // Reserve only the lightweight layer records. Their scene, far-blur and
+            // near-blur textures are allocated together on first use by
+            // glassEnsureLayerScene, rather than eagerly reserving the maximum stack.
+            for _ in 0..DrawStreams.initialHud - 1 {
+                state.glassLayers.append(UiGlassLayer {})
+            }
+            glassEnsureLayerScene(state, graphics, GlassLayerId(0))
+            state.glassReady = true
         }
-        // The kernel steps in level texels, so the divisor sets the physical blur
-        // radius and not just its quality: a finer level is a *narrower* blur.
-        let blurDiv = GlassBlur.divisor
-        var blurW = trunc(texW / blurDiv)
-        if blurW < 1 {
-            blurW = 1
-        }
-        var blurH = trunc(texH / blurDiv)
-        if blurH < 1 {
-            blurH = 1
-        }
-        glassDestroyTargets(state, graphics)
-        let blurA = textureOrReport(
-            graphics.createTexture(
-                TextureDescriptor {
-                    label: "kira-ui-glass-blur-a",
-                    width: UN32(blurW),
-                    height: UN32(blurH),
-                    format: .Rgba8Unorm,
-                    usage: .SampledStorage,
-                    sampleCount: 1,
-                    storage: .Transient
-                }
-            ),
-            "glass blur ping target"
-        )
-        let blurB = textureOrReport(
-            graphics.createTexture(
-                TextureDescriptor {
-                    label: "kira-ui-glass-blur-b",
-                    width: UN32(blurW),
-                    height: UN32(blurH),
-                    format: .Rgba8Unorm,
-                    usage: .SampledStorage,
-                    sampleCount: 1,
-                    storage: .Transient
-                }
-            ),
-            "glass blur pong target"
-        )
-        state.blurTextureA = blurA
-        state.blurTextureB = blurB
-        state.glassTexW = texW
-        state.glassTexH = texH
-        state.glassSharpW = sharpW
-        state.glassSharpH = sharpH
-        state.glassBlurW = blurW
-        state.glassBlurH = blurH
-
-        // Reserve only the lightweight layer records. Their scene, far-blur and
-        // near-blur textures are allocated together on first use by
-        // glassEnsureLayerScene, rather than eagerly reserving the maximum stack.
-        for _ in 0..DrawStreams.initialHud - 1 {
-            state.glassLayers.append(UiGlassLayer {})
-        }
-        glassEnsureLayerScene(state, graphics, GlassLayerId(0))
-        state.glassReady = true
     }
 }

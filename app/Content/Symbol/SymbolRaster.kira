@@ -93,20 +93,22 @@ function symbolCoverage(
 
 // `source` parsed, once for every size it is drawn at.
 function parsedSymbol(source: borrow String) -> Result<SymbolDocument, SymbolFailure> {
-    var engine = nativeRecover<TextEngine>(textEngine())
-    match engine.symbolDocuments.value(source) {
-        Some(document) -> return .Ok(document)
-        None -> {}
+    unsafe {
+        var engine = nativeRecover<TextEngine>(textEngine())
+        match engine.symbolDocuments.value(source) {
+            Some(document) -> return .Ok(document)
+            None -> {}
+        }
+        let document = match symbolDocument(source) {
+            Ok(document) -> document
+            Error(failure) -> return .Error(failure)
+        }
+        if engine.symbolDocuments.count() >= SymbolInkProbe.cached {
+            engine.symbolDocuments.removeAll()
+        }
+        engine.symbolDocuments.set(copy source, copy document)
+        return .Ok(document)
     }
-    let document = match symbolDocument(source) {
-        Ok(document) -> document
-        Error(failure) -> return .Error(failure)
-    }
-    if engine.symbolDocuments.count() >= SymbolInkProbe.cached {
-        engine.symbolDocuments.removeAll()
-    }
-    engine.symbolDocuments.set(copy source, copy document)
-    return .Ok(document)
 }
 
 // A crossing of a scanline with an edge, and which way the edge runs.

@@ -37,21 +37,23 @@ public struct SymbolInk {
 
 // Where `source`'s ink sits, or nothing when it draws no ink.
 public function symbolInk(source: borrow String) -> SymbolInk? {
-    var engine = nativeRecover<TextEngine>(textEngine())
-    match engine.symbolInks.value(source) {
-        Some(ink) -> return .Some(ink)
-        None -> {}
-    }
-    let ink = match measuredInk(source) {
-        Ok(ink) -> ink
-        Error(failure) -> {
-            log warn("symbol cannot be measured", traceText(failure))
-            return .None
+    unsafe {
+        var engine = nativeRecover<TextEngine>(textEngine())
+        match engine.symbolInks.value(source) {
+            Some(ink) -> return .Some(ink)
+            None -> {}
         }
+        let ink = match measuredInk(source) {
+            Ok(ink) -> ink
+            Error(failure) -> {
+                log warn("symbol cannot be measured", traceText(failure))
+                return .None
+            }
+        }
+        if engine.symbolInks.count() >= SymbolInkProbe.cached { engine.symbolInks.removeAll() }
+        engine.symbolInks.set(copy source, copy ink)
+        return .Some(ink)
     }
-    if engine.symbolInks.count() >= SymbolInkProbe.cached { engine.symbolInks.removeAll() }
-    engine.symbolInks.set(copy source, copy ink)
-    return .Some(ink)
 }
 
 function measuredInk(source: borrow String) -> Result<SymbolInk, SymbolFailure> {

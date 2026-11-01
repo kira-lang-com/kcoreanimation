@@ -131,22 +131,24 @@ public function quadExternalAt(
 // next free id. So every group made for it goes with it.
 extend UiBatch {
     function forgetTexture(graphics: borrow Graphics, textureId: TextureHandle) {
-        var state = nativeRecover<UiBatchState>(self.storage)
-        state.externalCache = withoutTexture(graphics, state.externalCache, textureId)
-        state.secondaryCache = withoutTexture(graphics, state.secondaryCache, textureId)
-        // The backdrop slots are filed under an id too; left bound, the next
-        // texture to take it would read as the same backdrop.
-        if state.externalBindReady && state.externalTextureId == textureId {
-            graphics.destroyBindGroup(state.externalGroup)
-            state.externalGroup = unboundBindGroup()
-            state.externalTextureId = TextureHandle(0)
-            state.externalBindReady = false
-        }
-        if state.secondaryExternalBindReady && state.secondaryExternalTextureId == textureId {
-            graphics.destroyBindGroup(state.secondaryExternalGroup)
-            state.secondaryExternalGroup = unboundBindGroup()
-            state.secondaryExternalTextureId = TextureHandle(0)
-            state.secondaryExternalBindReady = false
+        unsafe {
+            var state = nativeRecover<UiBatchState>(self.storage)
+            state.externalCache = withoutTexture(graphics, state.externalCache, textureId)
+            state.secondaryCache = withoutTexture(graphics, state.secondaryCache, textureId)
+            // The backdrop slots are filed under an id too; left bound, the next
+            // texture to take it would read as the same backdrop.
+            if state.externalBindReady && state.externalTextureId == textureId {
+                graphics.destroyBindGroup(state.externalGroup)
+                state.externalGroup = unboundBindGroup()
+                state.externalTextureId = TextureHandle(0)
+                state.externalBindReady = false
+            }
+            if state.secondaryExternalBindReady && state.secondaryExternalTextureId == textureId {
+                graphics.destroyBindGroup(state.secondaryExternalGroup)
+                state.secondaryExternalGroup = unboundBindGroup()
+                state.secondaryExternalTextureId = TextureHandle(0)
+                state.secondaryExternalBindReady = false
+            }
         }
     }
 }
@@ -161,95 +163,97 @@ extend UiBatch {
         textureId: Number,
         secondaryTextureId: Number
     ) {
-        var state = nativeRecover<UiBatchState>(self.storage)
-        // Settled before the early-out below: the quads that follow sample THIS
-        // texture whether or not the backdrop slot already held it.
-        let primaryHandle = TextureHandle(textureId)
-        let secondaryHandle = TextureHandle(secondaryTextureId)
-        state.externalPending = primaryHandle
-        state.secondaryPending = secondaryHandle
-        externalCacheEnsure(state, graphics, primaryHandle)
-        secondaryCacheEnsure(state, graphics, secondaryHandle)
-        let primaryMatches = state.externalBindReady && state.externalTextureId == primaryHandle
-        let secondaryMatches =
-            (secondaryTextureId == 0 && !state.secondaryExternalBindReady) ||
-            (
-                state.secondaryExternalBindReady && state.secondaryExternalTextureId == secondaryHandle
-            )
-        if primaryMatches && secondaryMatches {
-            return
-        }
-        let sampler = state.sampler
-        if !primaryMatches {
-            if state.externalBindReady {
-                graphics.destroyBindGroup(state.externalGroup)
+        unsafe {
+            var state = nativeRecover<UiBatchState>(self.storage)
+            // Settled before the early-out below: the quads that follow sample THIS
+            // texture whether or not the backdrop slot already held it.
+            let primaryHandle = TextureHandle(textureId)
+            let secondaryHandle = TextureHandle(secondaryTextureId)
+            state.externalPending = primaryHandle
+            state.secondaryPending = secondaryHandle
+            externalCacheEnsure(state, graphics, primaryHandle)
+            secondaryCacheEnsure(state, graphics, secondaryHandle)
+            let primaryMatches = state.externalBindReady && state.externalTextureId == primaryHandle
+            let secondaryMatches =
+                (secondaryTextureId == 0 && !state.secondaryExternalBindReady) ||
+                (
+                    state.secondaryExternalBindReady && state.secondaryExternalTextureId == secondaryHandle
+                )
+            if primaryMatches && secondaryMatches {
+                return
             }
-            let texture = sampledTextureFromViewId(ViewId(UN32(textureId)))
-            let bindGroup = bindGroupOrReport(
-                graphics.beginBindGroup("kira-ui-batch-external"),
-                "bind group"
+            let sampler = state.sampler
+            if !primaryMatches {
+                if state.externalBindReady {
+                    graphics.destroyBindGroup(state.externalGroup)
+                }
+                let texture = sampledTextureFromViewId(ViewId(UN32(textureId)))
+                let bindGroup = bindGroupOrReport(
+                    graphics.beginBindGroup("kira-ui-batch-external"),
+                    "bind group"
+                )
+                glassAddSharpBackdrop(
+                    graphics,
+                    bindGroup,
+                    texture,
+                    texture,
+                    sampler,
+                    state.backdropBlend
+                )
+                state.externalTextureId = primaryHandle
+                state.externalGroup = bindGroup
+                state.externalBindReady = true
+            }
+            if !secondaryMatches && state.secondaryExternalBindReady {
+                graphics.destroyBindGroup(state.secondaryExternalGroup)
+                state.secondaryExternalTextureId = TextureHandle(0)
+                // Unbound, not empty: nothing rebinds through this slot until a
+                // real group replaces it, and an empty group's state box would be
+                // orphaned by that replacement.
+                state.secondaryExternalGroup = unboundBindGroup()
+                state.secondaryExternalBindReady = false
+            }
+            if secondaryTextureId > 0 && !secondaryMatches {
+                let secondary = sampledTextureFromViewId(ViewId(UN32(secondaryTextureId)))
+                let secondaryGroup = bindGroupOrReport(
+                    graphics.beginBindGroup("kira-ui-batch-external-secondary"),
+                    "secondary group"
+                )
+                graphics.bindGroupAddTexture(secondaryGroup, ShaderSlot.backdropTexture, secondary)
+                graphics.bindGroupAddSampler(secondaryGroup, ShaderSlot.backdropSampler, sampler)
+                graphics.bindGroupAddTexture(secondaryGroup, ShaderSlot.nearTexture, secondary)
+                graphics.bindGroupAddSampler(secondaryGroup, ShaderSlot.nearSampler, sampler)
+                state.secondaryExternalTextureId = secondaryHandle
+                state.secondaryExternalGroup = secondaryGroup
+                state.secondaryExternalBindReady = true
+            }
+            // The sharp tap the composite reads a DIRECT backdrop through: both
+            // photographs at once, so a glass surface over a scheme change shades
+            // against the crossfade without the compositor ever rendering that
+            // crossfade into a full-resolution capture for it to read back.
+            glassDestroyBindGroup(graphics, state.backdropSharpGroup)
+            let primary = sampledTextureFromViewId(ViewId(UN32(state.externalTextureId.raw)))
+            var second = primary
+            if state.secondaryExternalBindReady {
+                second = sampledTextureFromViewId(ViewId(UN32(state.secondaryExternalTextureId.raw)))
+            }
+            let sharp = optionalBindGroup(
+                graphics.beginBindGroup("kira-ui-batch-backdrop-sharp"),
+                "backdrop sharp"
             )
-            glassAddSharpBackdrop(
-                graphics,
-                bindGroup,
-                texture,
-                texture,
-                sampler,
-                state.backdropBlend
-            )
-            state.externalTextureId = primaryHandle
-            state.externalGroup = bindGroup
-            state.externalBindReady = true
+            match sharp {
+                Some(group) -> glassAddSharpBackdrop(
+                    graphics,
+                    group,
+                    primary,
+                    second,
+                    sampler,
+                    state.backdropBlend
+                )
+                None -> {}
+            }
+            state.backdropSharpGroup = sharp
         }
-        if !secondaryMatches && state.secondaryExternalBindReady {
-            graphics.destroyBindGroup(state.secondaryExternalGroup)
-            state.secondaryExternalTextureId = TextureHandle(0)
-            // Unbound, not empty: nothing rebinds through this slot until a
-            // real group replaces it, and an empty group's state box would be
-            // orphaned by that replacement.
-            state.secondaryExternalGroup = unboundBindGroup()
-            state.secondaryExternalBindReady = false
-        }
-        if secondaryTextureId > 0 && !secondaryMatches {
-            let secondary = sampledTextureFromViewId(ViewId(UN32(secondaryTextureId)))
-            let secondaryGroup = bindGroupOrReport(
-                graphics.beginBindGroup("kira-ui-batch-external-secondary"),
-                "secondary group"
-            )
-            graphics.bindGroupAddTexture(secondaryGroup, ShaderSlot.backdropTexture, secondary)
-            graphics.bindGroupAddSampler(secondaryGroup, ShaderSlot.backdropSampler, sampler)
-            graphics.bindGroupAddTexture(secondaryGroup, ShaderSlot.nearTexture, secondary)
-            graphics.bindGroupAddSampler(secondaryGroup, ShaderSlot.nearSampler, sampler)
-            state.secondaryExternalTextureId = secondaryHandle
-            state.secondaryExternalGroup = secondaryGroup
-            state.secondaryExternalBindReady = true
-        }
-        // The sharp tap the composite reads a DIRECT backdrop through: both
-        // photographs at once, so a glass surface over a scheme change shades
-        // against the crossfade without the compositor ever rendering that
-        // crossfade into a full-resolution capture for it to read back.
-        glassDestroyBindGroup(graphics, state.backdropSharpGroup)
-        let primary = sampledTextureFromViewId(ViewId(UN32(state.externalTextureId.raw)))
-        var second = primary
-        if state.secondaryExternalBindReady {
-            second = sampledTextureFromViewId(ViewId(UN32(state.secondaryExternalTextureId.raw)))
-        }
-        let sharp = optionalBindGroup(
-            graphics.beginBindGroup("kira-ui-batch-backdrop-sharp"),
-            "backdrop sharp"
-        )
-        match sharp {
-            Some(group) -> glassAddSharpBackdrop(
-                graphics,
-                group,
-                primary,
-                second,
-                sampler,
-                state.backdropBlend
-            )
-            None -> {}
-        }
-        state.backdropSharpGroup = sharp
     }
 }
 
@@ -274,50 +278,52 @@ extend UiBatch {
         clipMaxX: Number,
         clipMaxY: Number,
     ) {
-        if w <= 0.0 || h <= 0.0 || alpha <= 0.0 {
-            return
+        unsafe {
+            if w <= 0.0 || h <= 0.0 || alpha <= 0.0 {
+                return
+            }
+            var state = nativeRecover<UiBatchState>(self.storage)
+            let coversViewport =
+                x >= -0.01 && y >= -0.01 &&
+                x <= 0.01 && y <= 0.01 &&
+                w >= state.viewportW - 0.01 && h >= state.viewportH - 0.01 &&
+                radius <= 0.0 &&
+                clipMinX <= 0.01 && clipMinY <= 0.01 &&
+                clipMaxX >= state.viewportW - 0.01 && clipMaxY >= state.viewportH - 0.01
+            if state.backgroundPromotable && state.backgroundPipeline.id != 0 && state.streamIndex.raw == 0 && state.quadCount == 0 && alpha >= 0.999 && coversViewport {
+                state.backgroundActive = true
+                state.backgroundTransition = transition
+                return
+            }
+            self.emitQuad(
+                x,
+                y,
+                x + w,
+                y + h,
+                0.0,
+                0.0,
+                1.0,
+                1.0,
+                w / 2.0,
+                h / 2.0,
+                radius,
+                0.0,
+                2.0,
+                transition,
+                1.0,
+                1.0,
+                1.0,
+                alpha,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY
+            )
         }
-        var state = nativeRecover<UiBatchState>(self.storage)
-        let coversViewport =
-            x >= -0.01 && y >= -0.01 &&
-            x <= 0.01 && y <= 0.01 &&
-            w >= state.viewportW - 0.01 && h >= state.viewportH - 0.01 &&
-            radius <= 0.0 &&
-            clipMinX <= 0.01 && clipMinY <= 0.01 &&
-            clipMaxX >= state.viewportW - 0.01 && clipMaxY >= state.viewportH - 0.01
-        if state.backgroundPromotable && state.backgroundPipeline.id != 0 && state.streamIndex.raw == 0 && state.quadCount == 0 && alpha >= 0.999 && coversViewport {
-            state.backgroundActive = true
-            state.backgroundTransition = transition
-            return
-        }
-        self.emitQuad(
-            x,
-            y,
-            x + w,
-            y + h,
-            0.0,
-            0.0,
-            1.0,
-            1.0,
-            w / 2.0,
-            h / 2.0,
-            radius,
-            0.0,
-            2.0,
-            transition,
-            1.0,
-            1.0,
-            1.0,
-            alpha,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            clipMinX,
-            clipMinY,
-            clipMaxX,
-            clipMaxY
-        )
     }
 }
 

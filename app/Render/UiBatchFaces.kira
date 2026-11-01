@@ -53,34 +53,36 @@ extend UiBatchState {
     // in points, the raster pixels divided back by the backing scale and the
     // oversample, as the runs are laid out.
     function setFace(borrow mut self, sizeKey: Number, weightKey: Number, faceKey: Number) -> Bool {
-        if self.fontSizeSet == sizeKey && self.fontWeightSet == weightKey && self.fontFaceSet == faceKey {
+        unsafe {
+            if self.fontSizeSet == sizeKey && self.fontWeightSet == weightKey && self.fontFaceSet == faceKey {
+                return true
+            }
+            let face = match faceKey == 1 ? self.monoFace : self.textFace {
+                Some(face) -> face
+                None -> return false
+            }
+            var scale = self.scale
+            if scale <= 0.0 {
+                scale = 1.0
+            }
+            let points = sizeKey / (scale * textOversampleAt(scale))
+            var engine = nativeRecover<TextEngine>(textEngine())
+            let instance = engine.instance(
+                face,
+                sizeKey,
+                points,
+                glyphWeightAxis(weightKey),
+                faceKey == 2
+            )
+            self.ascender = instance.ascender
+            self.descender = instance.descender
+            self.lineAscent = instance.lineAscent
+            self.lineDescent = instance.lineDescent
+            self.faceInstance = .Some(instance)
+            self.fontSizeSet = sizeKey
+            self.fontWeightSet = weightKey
+            self.fontFaceSet = faceKey
             return true
         }
-        let face = match faceKey == 1 ? self.monoFace : self.textFace {
-            Some(face) -> face
-            None -> return false
-        }
-        var scale = self.scale
-        if scale <= 0.0 {
-            scale = 1.0
-        }
-        let points = sizeKey / (scale * textOversampleAt(scale))
-        var engine = nativeRecover<TextEngine>(textEngine())
-        let instance = engine.instance(
-            face,
-            sizeKey,
-            points,
-            glyphWeightAxis(weightKey),
-            faceKey == 2
-        )
-        self.ascender = instance.ascender
-        self.descender = instance.descender
-        self.lineAscent = instance.lineAscent
-        self.lineDescent = instance.lineDescent
-        self.faceInstance = .Some(instance)
-        self.fontSizeSet = sizeKey
-        self.fontWeightSet = weightKey
-        self.fontFaceSet = faceKey
-        return true
     }
 }

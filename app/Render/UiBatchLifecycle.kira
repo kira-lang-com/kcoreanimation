@@ -9,27 +9,31 @@ extend UiBatch {
     // batch: it has no external texture bound, and the background pass does not
     // run without one.
     function setBackgroundPromotable(allowed: Bool) {
-        var state = nativeRecover<UiBatchState>(self.storage)
-        state.backgroundPromotable = allowed
+        unsafe {
+            var state = nativeRecover<UiBatchState>(self.storage)
+            state.backgroundPromotable = allowed
+        }
     }
 
     function beginFrameSlots(graphics: borrow Graphics) {
-        var state = nativeRecover<UiBatchState>(self.storage)
-        for i in 0..state.streams.count {
-            // A slot with no buffer yet claims nothing, and the HUD claims its own in
-            // beginHud: its stream is rewritten on the HUD's cadence, not this
-            // frame's, and advancing its ring twice in one frame would hand a running
-            // frame's slot back out.
-            if state.streams[i].buffer.id != 0 && i != state.hudStream.raw {
-                // Byte offset to float index: a slot stride is a multiple of the 256-byte
-                // binding alignment, so this division is exact.
-                state.streams[i].frameBase = trunc(
-                    graphics.dynamicBufferFrameStart(state.streams[i].buffer) / 4
-                )
+        unsafe {
+            var state = nativeRecover<UiBatchState>(self.storage)
+            for i in 0..state.streams.count {
+                // A slot with no buffer yet claims nothing, and the HUD claims its own in
+                // beginHud: its stream is rewritten on the HUD's cadence, not this
+                // frame's, and advancing its ring twice in one frame would hand a running
+                // frame's slot back out.
+                if state.streams[i].buffer.id != 0 && i != state.hudStream.raw {
+                    // Byte offset to float index: a slot stride is a multiple of the 256-byte
+                    // binding alignment, so this division is exact.
+                    state.streams[i].frameBase = trunc(
+                        graphics.dynamicBufferFrameStart(state.streams[i].buffer) / 4
+                    )
+                }
             }
-        }
-        if state.streams.count > 0 {
-            state.frameBase = state.streams[state.streamIndex.raw].frameBase
+            if state.streams.count > 0 {
+                state.frameBase = state.streams[state.streamIndex.raw].frameBase
+            }
         }
     }
 }
@@ -45,60 +49,62 @@ extend UiBatch {
         drawableW: Number,
         drawableH: Number
     ) {
-        var state = nativeRecover<UiBatchState>(self.storage)
-        var i = 0
-        // Everything but the HUD: its stream is rewritten only when the HUD itself
-        // refreshes, so a frame that rebuilds the UI without touching the HUD keeps
-        // showing the HUD it last wrote instead of blinking it away for a frame.
-        while i < state.hudStream.raw && i < state.streams.count {
-            state.streams[i].quadCount = 0
-            state.streams[i].glassBoundCount = 0
-            i += 1
+        unsafe {
+            var state = nativeRecover<UiBatchState>(self.storage)
+            var i = 0
+            // Everything but the HUD: its stream is rewritten only when the HUD itself
+            // refreshes, so a frame that rebuilds the UI without touching the HUD keeps
+            // showing the HUD it last wrote instead of blinking it away for a frame.
+            while i < state.hudStream.raw && i < state.streams.count {
+                state.streams[i].quadCount = 0
+                state.streams[i].glassBoundCount = 0
+                i += 1
+            }
+            state.streamIndex = DrawStreamId(0)
+            state.hudReturnStream = DrawStreamId(0)
+            if state.streams.count > 0 {
+                state.contentsPtr = state.streams[0].contentsPtr
+                state.frameBase = state.streams[0].frameBase
+            }
+            state.quadCount = 0
+            state.backgroundActive = false
+            state.holeR = 0.0
+            state.holeG = 0.0
+            state.holeB = 0.0
+            if state.atlasExhausted {
+                resetGlyphAtlas(state)
+            }
+            state.framesBegun += 1
+            state.viewportW = viewportW
+            if viewportW <= 0.0 {
+                state.viewportW = 1.0
+            }
+            state.viewportH = viewportH
+            if viewportH <= 0.0 {
+                state.viewportH = 1.0
+            }
+            state.scale = scale
+            if scale <= 0.0 {
+                state.scale = 1.0
+            }
+            state.drawableW = drawableW
+            if drawableW <= 0 {
+                state.drawableW = 1
+            }
+            state.drawableH = drawableH
+            if drawableH <= 0 {
+                state.drawableH = 1
+            }
+            // Interior cache: entries are matched by content and claimed at most
+            // once each, so the claims are what restarts with the frame. Ranges list
+            // this frame's dirty interiors only.
+            state.glassSurfaceCursor = 0
+            for slot in 0..state.glassCacheSlots.count {
+                state.glassCacheSlots[slot].claimed = false
+            }
+            state.glassCacheRangeCount = 0
+            state.resetGlassEmissionStats()
         }
-        state.streamIndex = DrawStreamId(0)
-        state.hudReturnStream = DrawStreamId(0)
-        if state.streams.count > 0 {
-            state.contentsPtr = state.streams[0].contentsPtr
-            state.frameBase = state.streams[0].frameBase
-        }
-        state.quadCount = 0
-        state.backgroundActive = false
-        state.holeR = 0.0
-        state.holeG = 0.0
-        state.holeB = 0.0
-        if state.atlasExhausted {
-            resetGlyphAtlas(state)
-        }
-        state.framesBegun += 1
-        state.viewportW = viewportW
-        if viewportW <= 0.0 {
-            state.viewportW = 1.0
-        }
-        state.viewportH = viewportH
-        if viewportH <= 0.0 {
-            state.viewportH = 1.0
-        }
-        state.scale = scale
-        if scale <= 0.0 {
-            state.scale = 1.0
-        }
-        state.drawableW = drawableW
-        if drawableW <= 0 {
-            state.drawableW = 1
-        }
-        state.drawableH = drawableH
-        if drawableH <= 0 {
-            state.drawableH = 1
-        }
-        // Interior cache: entries are matched by content and claimed at most
-        // once each, so the claims are what restarts with the frame. Ranges list
-        // this frame's dirty interiors only.
-        state.glassSurfaceCursor = 0
-        for slot in 0..state.glassCacheSlots.count {
-            state.glassCacheSlots[slot].claimed = false
-        }
-        state.glassCacheRangeCount = 0
-        state.resetGlassEmissionStats()
     }
 }
 
@@ -110,27 +116,29 @@ extend UiBatch {
 // rather than at each draw that reads one.
 extend UiBatch {
     function commitStream(graphics: borrow Graphics, index: DrawStreamId) {
-        var state = nativeRecover<UiBatchState>(self.storage)
-        if index.raw < 0 || index.raw >= state.streams.count {
-            return
+        unsafe {
+            var state = nativeRecover<UiBatchState>(self.storage)
+            if index.raw < 0 || index.raw >= state.streams.count {
+                return
+            }
+            if state.streams[index.raw].buffer.id == 0 {
+                return
+            }
+            // The active stream's live count is mirrored on the state, not yet on
+            // its entry, so read it from wherever it currently is.
+            var quads = state.streams[index.raw].quadCount
+            if index == state.streamIndex {
+                quads = state.quadCount
+            }
+            if quads <= 0 {
+                return
+            }
+            graphics.commitDynamicBuffer(
+                state.streams[index.raw].buffer,
+                state.streams[index.raw].contentsPtr,
+                state.streams[index.raw].frameBase + quads * QuadLayout.floatCount
+            )
         }
-        if state.streams[index.raw].buffer.id == 0 {
-            return
-        }
-        // The active stream's live count is mirrored on the state, not yet on
-        // its entry, so read it from wherever it currently is.
-        var quads = state.streams[index.raw].quadCount
-        if index == state.streamIndex {
-            quads = state.quadCount
-        }
-        if quads <= 0 {
-            return
-        }
-        graphics.commitDynamicBuffer(
-            state.streams[index.raw].buffer,
-            state.streams[index.raw].contentsPtr,
-            state.streams[index.raw].frameBase + quads * QuadLayout.floatCount
-        )
     }
 }
 
@@ -141,34 +149,40 @@ extend UiBatch {
 // A steady screen packs no new glyphs and pays nothing.
 extend UiBatch {
     function commitAtlas(graphics: borrow Graphics) {
-        var state = nativeRecover<UiBatchState>(self.storage)
-        if !state.atlasDirty || state.atlasTexture.id == 0 || isNull(state.atlasPixels) {
-            return
+        unsafe {
+            var state = nativeRecover<UiBatchState>(self.storage)
+            if !state.atlasDirty || state.atlasTexture.id == 0 || isNull(state.atlasPixels) {
+                return
+            }
+            // Only the shelves written since the last upload go up.
+            let top = state.atlasDirtyTop < 0 ? 0 : state.atlasDirtyTop
+            let bottom = state.atlasDirtyBottom > state.atlasH ? state.atlasH : state.atlasDirtyBottom
+            if bottom > top {
+                graphics.updateTextureRows(
+                    state.atlasTexture,
+                    state.atlasPixels,
+                    UN32(top),
+                    UN32(bottom - top)
+                )
+            }
+            state.atlasDirty = false
         }
-        // Only the shelves written since the last upload go up.
-        let top = state.atlasDirtyTop < 0 ? 0 : state.atlasDirtyTop
-        let bottom = state.atlasDirtyBottom > state.atlasH ? state.atlasH : state.atlasDirtyBottom
-        if bottom > top {
-            graphics.updateTextureRows(
-                state.atlasTexture,
-                state.atlasPixels,
-                UN32(top),
-                UN32(bottom - top)
-            )
-        }
-        state.atlasDirty = false
     }
 }
 
 extend UiBatch {
     function batchScale() -> Number {
-        var state = nativeRecover<UiBatchState>(self.storage)
-        return state.scale
+        unsafe {
+            var state = nativeRecover<UiBatchState>(self.storage)
+            return state.scale
+        }
     }
 
     function layoutDebugEnabled() -> Bool {
-        var state = nativeRecover<UiBatchState>(self.storage)
-        return state.layoutDebug
+        unsafe {
+            var state = nativeRecover<UiBatchState>(self.storage)
+            return state.layoutDebug
+        }
     }
 }
 
@@ -221,33 +235,37 @@ function moveHudPast(state: borrow mut UiBatchState) {
 // nothing else at all — nothing here reads or resets the UI's per-frame state.
 extend UiBatch {
     function beginHud(graphics: borrow Graphics) {
-        var state = nativeRecover<UiBatchState>(self.storage)
-        let hud = state.hudStream
-        createDrawStream(state, graphics, hud)
-        // Hand the live count back to the stream the caller was emitting into. Only the
-        // mirrored hot fields move; the entry itself is left as the walk left it.
-        state.streams[state.streamIndex.raw].quadCount = state.quadCount
-        state.hudReturnStream = state.streamIndex
-        state.streams[hud.raw].frameBase = trunc(
-            graphics.dynamicBufferFrameStart(state.streams[hud.raw].buffer) / 4
-        )
-        state.streamIndex = hud
-        state.contentsPtr = state.streams[hud.raw].contentsPtr
-        state.frameBase = state.streams[hud.raw].frameBase
-        state.quadCount = 0
+        unsafe {
+            var state = nativeRecover<UiBatchState>(self.storage)
+            let hud = state.hudStream
+            createDrawStream(state, graphics, hud)
+            // Hand the live count back to the stream the caller was emitting into. Only the
+            // mirrored hot fields move; the entry itself is left as the walk left it.
+            state.streams[state.streamIndex.raw].quadCount = state.quadCount
+            state.hudReturnStream = state.streamIndex
+            state.streams[hud.raw].frameBase = trunc(
+                graphics.dynamicBufferFrameStart(state.streams[hud.raw].buffer) / 4
+            )
+            state.streamIndex = hud
+            state.contentsPtr = state.streams[hud.raw].contentsPtr
+            state.frameBase = state.streams[hud.raw].frameBase
+            state.quadCount = 0
+        }
     }
 }
 
 // Close the HUD stream and put emission back where beginHud found it.
 extend UiBatch {
     function endHud() {
-        var state = nativeRecover<UiBatchState>(self.storage)
-        state.streams[state.hudStream.raw].quadCount = state.quadCount
-        let back = state.hudReturnStream
-        state.streamIndex = back
-        state.contentsPtr = state.streams[back.raw].contentsPtr
-        state.frameBase = state.streams[back.raw].frameBase
-        state.quadCount = state.streams[back.raw].quadCount
+        unsafe {
+            var state = nativeRecover<UiBatchState>(self.storage)
+            state.streams[state.hudStream.raw].quadCount = state.quadCount
+            let back = state.hudReturnStream
+            state.streamIndex = back
+            state.contentsPtr = state.streams[back.raw].contentsPtr
+            state.frameBase = state.streams[back.raw].frameBase
+            state.quadCount = state.streams[back.raw].quadCount
+        }
     }
 }
 
@@ -255,13 +273,15 @@ extend UiBatch {
     // Release resources whose ownership cannot be expressed by RawPtr fields.
     // GPU resources remain typed values and are released by UiBatchState drop glue.
     function releaseOwnedCpuMemory() {
-        var state = nativeRecover<UiBatchState>(self.storage)
-        if !isNull(state.atlasPixels) {
-            freeBytes(state.atlasPixels)
-            state.atlasPixels = nullPointer()
+        unsafe {
+            var state = nativeRecover<UiBatchState>(self.storage)
+            if !isNull(state.atlasPixels) {
+                freeBytes(state.atlasPixels)
+                state.atlasPixels = nullPointer()
+            }
+            state.textFace = .None
+            state.monoFace = .None
+            state.faceInstance = .None
         }
-        state.textFace = .None
-        state.monoFace = .None
-        state.faceInstance = .None
     }
 }

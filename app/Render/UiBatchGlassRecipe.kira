@@ -80,112 +80,114 @@ extend UiBatch {
         surface: borrow GlassRecipeSurface,
         clip: borrow GlassRecipeClip
     ) {
-        if w <= 0.0 || h <= 0.0 || surface.opacity <= 0.0 {
-            return
+        unsafe {
+            if w <= 0.0 || h <= 0.0 || surface.opacity <= 0.0 {
+                return
+            }
+            var state = nativeRecover<UiBatchState>(self.storage)
+            if state.streamIndex.raw == 0 || state.glassRecipeValues.count == 0 {
+                return
+            }
+            state.glassStatSurfaces += 1
+            let record = glassRecipeRecord(surface.style)
+            let reach = glassRecipeReach(state.glassRecipeValues, surface.style)
+            let kx = max(surface.stretchX, 0.0001)
+            let ky = max(surface.stretchY, 0.0001)
+            // Everything below is in the layer's space but for the quad's corners,
+            // the capture and the backdrop coordinates, which are the screen's.
+            // The shader reads a point of the layer's as `uv.zw / hsize` of the
+            // backdrop, so the stretch reaches every offset it samples at. The
+            // anti-aliasing band is the screen's two pixels, at the mean stretch.
+            let edgeBand = glassHairline(2.0, state.scale) / sqrt(kx * ky)
+            let cx = x + w / 2.0
+            let cy = y + h / 2.0
+            let halfW = w / 2.0 / kx
+            let halfH = h / 2.0 / ky
+            let morphX = cx + (surface.morphX - cx) / kx
+            let morphY = cy + (surface.morphY - cy) / ky
+            let morphW = surface.morphW / kx
+            let morphH = surface.morphH / ky
+            // The quad covers the shape, the recipe's shadows and the shape this
+            // one is fusing with; everything else leaves on the coverage test.
+            var pad = reach.shadow + edgeBand
+            if surface.morphBlend > 0.0 && morphW > 0.0 && morphH > 0.0 {
+                let bulge = surface.morphBlend * 0.25
+                let left = cx - halfW
+                let top = cy - halfH
+                pad += max(
+                    max(left - min(left, morphX), max(cx + halfW, morphX + morphW) - cx - halfW),
+                    max(top - min(top, morphY), max(cy + halfH, morphY + morphH) - cy - halfH)
+                ) + bulge
+            }
+            // The warp beneath a lifted lens reads past its rim as well.
+            let captureHalfW = (halfW + pad + reach.capture + surface.warpAmount) * kx
+            let captureHalfH = (halfH + pad + reach.capture + surface.warpAmount) * ky
+            state.recordGlassCapture(
+                cx - captureHalfW,
+                cy - captureHalfH,
+                cx + captureHalfW,
+                cy + captureHalfH
+            )
+            let lhx = halfW + pad
+            let lhy = halfH + pad
+            let widening = surface.shapeKind > 1.5
+            let radius = min(surface.radius, widening ? max(halfW, halfH) : min(halfW, halfH))
+            let vw = state.viewportW
+            let vh = state.viewportH
+            self.emitQuad(
+                cx - lhx * kx,
+                cy - lhy * ky,
+                cx + lhx * kx,
+                cy + lhy * ky,
+                -lhx,
+                -lhy,
+                lhx,
+                lhy,
+                halfW,
+                halfH,
+                radius,
+                surface.tint.a,
+                glassRecipeMode,
+                record,
+                surface.tint.r,
+                surface.tint.g,
+                surface.tint.b,
+                0.0,
+                cx / vw,
+                cy / vh,
+                halfW * kx / vw,
+                halfH * ky / vh,
+                clip.minX,
+                clip.minY,
+                clip.maxX,
+                clip.maxY,
+                // The material block: unread here but for the warp, the backdrop
+                // matrix, the fade and the anti-aliasing band.
+                m0: surface.warpAmount,
+                m1: surface.warpHeight,
+                m2: surface.warpOvalization,
+                m4: surface.matrixOpacity,
+                m5: surface.matrixBlur,
+                m6: surface.matrixScale,
+                m7: surface.matrixBlack,
+                m8: surface.matrixWhite,
+                m9: surface.matrixSaturation,
+                m21: 1.0 - min(surface.opacity, 1.0),
+                m23: edgeBand,
+                gradR: (surface.glowX - cx) / kx,
+                gradG: (surface.glowY - cy) / ky,
+                gradB: surface.glowStrength,
+                morphX: (morphX + morphW * 0.5) - cx,
+                morphY: (morphY + morphH * 0.5) - cy,
+                morphHalfW: morphW * 0.5,
+                morphHalfH: morphH * 0.5,
+                morphRadius: surface.morphRadius,
+                morphBlend: surface.morphBlend,
+                shapeKind: surface.shapeKind,
+                clipRadius: clip.radius,
+                clipShapeKind: clip.shapeKind
+            )
         }
-        var state = nativeRecover<UiBatchState>(self.storage)
-        if state.streamIndex.raw == 0 || state.glassRecipeValues.count == 0 {
-            return
-        }
-        state.glassStatSurfaces += 1
-        let record = glassRecipeRecord(surface.style)
-        let reach = glassRecipeReach(state.glassRecipeValues, surface.style)
-        let kx = max(surface.stretchX, 0.0001)
-        let ky = max(surface.stretchY, 0.0001)
-        // Everything below is in the layer's space but for the quad's corners,
-        // the capture and the backdrop coordinates, which are the screen's.
-        // The shader reads a point of the layer's as `uv.zw / hsize` of the
-        // backdrop, so the stretch reaches every offset it samples at. The
-        // anti-aliasing band is the screen's two pixels, at the mean stretch.
-        let edgeBand = glassHairline(2.0, state.scale) / sqrt(kx * ky)
-        let cx = x + w / 2.0
-        let cy = y + h / 2.0
-        let halfW = w / 2.0 / kx
-        let halfH = h / 2.0 / ky
-        let morphX = cx + (surface.morphX - cx) / kx
-        let morphY = cy + (surface.morphY - cy) / ky
-        let morphW = surface.morphW / kx
-        let morphH = surface.morphH / ky
-        // The quad covers the shape, the recipe's shadows and the shape this
-        // one is fusing with; everything else leaves on the coverage test.
-        var pad = reach.shadow + edgeBand
-        if surface.morphBlend > 0.0 && morphW > 0.0 && morphH > 0.0 {
-            let bulge = surface.morphBlend * 0.25
-            let left = cx - halfW
-            let top = cy - halfH
-            pad += max(
-                max(left - min(left, morphX), max(cx + halfW, morphX + morphW) - cx - halfW),
-                max(top - min(top, morphY), max(cy + halfH, morphY + morphH) - cy - halfH)
-            ) + bulge
-        }
-        // The warp beneath a lifted lens reads past its rim as well.
-        let captureHalfW = (halfW + pad + reach.capture + surface.warpAmount) * kx
-        let captureHalfH = (halfH + pad + reach.capture + surface.warpAmount) * ky
-        state.recordGlassCapture(
-            cx - captureHalfW,
-            cy - captureHalfH,
-            cx + captureHalfW,
-            cy + captureHalfH
-        )
-        let lhx = halfW + pad
-        let lhy = halfH + pad
-        let widening = surface.shapeKind > 1.5
-        let radius = min(surface.radius, widening ? max(halfW, halfH) : min(halfW, halfH))
-        let vw = state.viewportW
-        let vh = state.viewportH
-        self.emitQuad(
-            cx - lhx * kx,
-            cy - lhy * ky,
-            cx + lhx * kx,
-            cy + lhy * ky,
-            -lhx,
-            -lhy,
-            lhx,
-            lhy,
-            halfW,
-            halfH,
-            radius,
-            surface.tint.a,
-            glassRecipeMode,
-            record,
-            surface.tint.r,
-            surface.tint.g,
-            surface.tint.b,
-            0.0,
-            cx / vw,
-            cy / vh,
-            halfW * kx / vw,
-            halfH * ky / vh,
-            clip.minX,
-            clip.minY,
-            clip.maxX,
-            clip.maxY,
-            // The material block: unread here but for the warp, the backdrop
-            // matrix, the fade and the anti-aliasing band.
-            m0: surface.warpAmount,
-            m1: surface.warpHeight,
-            m2: surface.warpOvalization,
-            m4: surface.matrixOpacity,
-            m5: surface.matrixBlur,
-            m6: surface.matrixScale,
-            m7: surface.matrixBlack,
-            m8: surface.matrixWhite,
-            m9: surface.matrixSaturation,
-            m21: 1.0 - min(surface.opacity, 1.0),
-            m23: edgeBand,
-            gradR: (surface.glowX - cx) / kx,
-            gradG: (surface.glowY - cy) / ky,
-            gradB: surface.glowStrength,
-            morphX: (morphX + morphW * 0.5) - cx,
-            morphY: (morphY + morphH * 0.5) - cy,
-            morphHalfW: morphW * 0.5,
-            morphHalfH: morphH * 0.5,
-            morphRadius: surface.morphRadius,
-            morphBlend: surface.morphBlend,
-            shapeKind: surface.shapeKind,
-            clipRadius: clip.radius,
-            clipShapeKind: clip.shapeKind
-        )
     }
 }
 

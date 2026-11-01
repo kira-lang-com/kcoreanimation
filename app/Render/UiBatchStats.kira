@@ -114,21 +114,23 @@ extend UiBatchState {
 // This frame's Liquid Glass workload, as the compositor counted it.
 extend UiBatch {
     function glassFrameStats() -> UiGlassFrameStats {
-        var state = nativeRecover<UiBatchState>(self.storage)
-        return UiGlassFrameStats {
-            surfaces: state.glassStatSurfaces,
-            patchQuads: state.glassStatPatchQuads,
-            layers: state.glassStatLayers,
-            captureReplays: state.glassStatCaptureReplays,
-            captureRegions: state.glassStatCaptureRegions,
-            blurDispatches: state.glassStatBlurDispatches,
-            blurHorizontalTexels: state.glassStatBlurHorizontalTexels,
-            blurVerticalTexels: state.glassStatBlurVerticalTexels,
-            blurCacheHits: state.glassStatBlurCacheHits,
-            blurCacheMisses: state.glassStatBlurCacheMisses,
-            staticBackdropLayers: state.glassStatStaticBackdropLayers,
-            cachedInteriors: state.glassStatCachedInteriors,
-            liveInteriors: state.glassStatLiveInteriors
+        unsafe {
+            var state = nativeRecover<UiBatchState>(self.storage)
+            return UiGlassFrameStats {
+                surfaces: state.glassStatSurfaces,
+                patchQuads: state.glassStatPatchQuads,
+                layers: state.glassStatLayers,
+                captureReplays: state.glassStatCaptureReplays,
+                captureRegions: state.glassStatCaptureRegions,
+                blurDispatches: state.glassStatBlurDispatches,
+                blurHorizontalTexels: state.glassStatBlurHorizontalTexels,
+                blurVerticalTexels: state.glassStatBlurVerticalTexels,
+                blurCacheHits: state.glassStatBlurCacheHits,
+                blurCacheMisses: state.glassStatBlurCacheMisses,
+                staticBackdropLayers: state.glassStatStaticBackdropLayers,
+                cachedInteriors: state.glassStatCachedInteriors,
+                liveInteriors: state.glassStatLiveInteriors
+            }
         }
     }
 }
@@ -136,12 +138,14 @@ extend UiBatch {
 // Where the frame just presented spent the present phase.
 extend UiBatch {
     function presentPhaseTimes() -> UiBatchPhaseTimes {
-        var state = nativeRecover<UiBatchState>(self.storage)
-        return UiBatchPhaseTimes {
-            uploadNs: state.presentUploadNs,
-            captureNs: state.presentCaptureNs,
-            blurNs: state.presentBlurNs,
-            compositeNs: state.presentCompositeNs
+        unsafe {
+            var state = nativeRecover<UiBatchState>(self.storage)
+            return UiBatchPhaseTimes {
+                uploadNs: state.presentUploadNs,
+                captureNs: state.presentCaptureNs,
+                blurNs: state.presentBlurNs,
+                compositeNs: state.presentCompositeNs
+            }
         }
     }
 }

@@ -133,14 +133,16 @@ function textEngine() -> RawPtr {
 }
 
 public function textEngineCounts() -> TextEngineCounts {
-    var engine = nativeRecover<TextEngine>(textEngine())
-    return TextEngineCounts {
-        instances: engine.instances.count(),
-        advances: engine.advances.count(),
-        runs: engine.runs.count(),
-        shapes: engine.shapes.count(),
-        inks: engine.inks.count(),
-        symbols: engine.symbolDocuments.count()
+    unsafe {
+        var engine = nativeRecover<TextEngine>(textEngine())
+        return TextEngineCounts {
+            instances: engine.instances.count(),
+            advances: engine.advances.count(),
+            runs: engine.runs.count(),
+            shapes: engine.shapes.count(),
+            inks: engine.inks.count(),
+            symbols: engine.symbolDocuments.count()
+        }
     }
 }
 

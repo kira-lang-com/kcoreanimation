@@ -29,10 +29,12 @@ public function foundationTextUseBundledFace() {
 // Sets every proportional run in the face at `path`, as
 // `foundationTextUseBundledFace` does the bundled one.
 public function foundationTextUseFace(path: borrow String) {
-    var engine = nativeRecover<TextEngine>(textEngine())
-    if engine.onlyFace == path { return }
-    engine.onlyFace = copy path
-    engine.lookups = []
+    unsafe {
+        var engine = nativeRecover<TextEngine>(textEngine())
+        if engine.onlyFace == path { return }
+        engine.onlyFace = copy path
+        engine.lookups = []
+    }
 }
 
 public function foundationTextRunWidth(
@@ -41,9 +43,11 @@ public function foundationTextRunWidth(
     weight: Number,
     design: borrow CAFontDesign = .Default
 ) -> Number {
-    var engine = nativeRecover<TextEngine>(textEngine())
-    let raster = size * GlyphRaster.oversample
-    return engine.runWidth(design, content, raster, size, weight) / GlyphRaster.oversample
+    unsafe {
+        var engine = nativeRecover<TextEngine>(textEngine())
+        let raster = size * GlyphRaster.oversample
+        return engine.runWidth(design, content, raster, size, weight) / GlyphRaster.oversample
+    }
 }
 
 public function foundationTextRunLineHeight(
@@ -104,10 +108,12 @@ function foundationTextFaceMetric(
     design: borrow CAFontDesign,
     metric: (FaceInstance) -> Number
 ) -> Number {
-    var engine = nativeRecover<TextEngine>(textEngine())
-    return match engine.runInstance(design, size * GlyphRaster.oversample, size, weight) {
-        Some(instance) -> metric(move instance) / GlyphRaster.oversample
-        None -> 0
+    unsafe {
+        var engine = nativeRecover<TextEngine>(textEngine())
+        return match engine.runInstance(design, size * GlyphRaster.oversample, size, weight) {
+            Some(instance) -> metric(move instance) / GlyphRaster.oversample
+            None -> 0
+        }
     }
 }
 
@@ -119,10 +125,12 @@ function foundationTextInkEdge(
     design: borrow CAFontDesign,
     edge: (TextInk) -> Number
 ) -> Number {
-    var engine = nativeRecover<TextEngine>(textEngine())
-    return match engine.runInk(design, content, size * GlyphRaster.oversample, size, weight) {
-        Some(ink) -> edge(move ink) / GlyphRaster.oversample
-        None -> 0
+    unsafe {
+        var engine = nativeRecover<TextEngine>(textEngine())
+        return match engine.runInk(design, content, size * GlyphRaster.oversample, size, weight) {
+            Some(ink) -> edge(move ink) / GlyphRaster.oversample
+            None -> 0
+        }
     }
 }
 
@@ -158,15 +166,17 @@ public function foundationTextRunInkEdges(
     weight: Number,
     design: borrow CAFontDesign = .Default
 ) -> CATextInk {
-    var engine = nativeRecover<TextEngine>(textEngine())
-    return match engine.runInk(design, content, size * GlyphRaster.oversample, size, weight) {
-        Some(ink) -> CATextInk {
-            left: ink.left / GlyphRaster.oversample,
-            right: ink.right / GlyphRaster.oversample,
-            top: ink.top / GlyphRaster.oversample,
-            bottom: ink.bottom / GlyphRaster.oversample
+    unsafe {
+        var engine = nativeRecover<TextEngine>(textEngine())
+        return match engine.runInk(design, content, size * GlyphRaster.oversample, size, weight) {
+            Some(ink) -> CATextInk {
+                left: ink.left / GlyphRaster.oversample,
+                right: ink.right / GlyphRaster.oversample,
+                top: ink.top / GlyphRaster.oversample,
+                bottom: ink.bottom / GlyphRaster.oversample
+            }
+            None -> CATextInk {}
         }
-        None -> CATextInk {}
     }
 }
 

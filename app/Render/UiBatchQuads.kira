@@ -93,175 +93,177 @@ extend UiBatch {
         clipRadius: Number = 0.0,
         clipShapeKind: Number = 0.0,
     ) {
-        var state = nativeRecover<UiBatchState>(self.storage)
-        if state.quadCount >= QuadLayout.maxPerBatch {
-            return
-        }
-        let modeCode = trunc(mode * 10.0)
-        // The plain texture pipeline keeps the exact copy/crossfade math. A
-        // mode inside this bucket that requests blur retains the generic path.
-        let requiresGeneric = rotSin != 0.0 || rotCos != 1.0 || (modeCode == 20 && mode > 2.05)
-        state.streams[state.streamIndex.raw].recordMode(state.quadCount, modeCode, requiresGeneric)
-        if modeCode >= 100 { state.blendWanted = true }
-        // Which texture this quad samples, recorded beside its mode. Only a
-        // mode-2 quad samples one; every other quad records nothing, so a run
-        // of them never breaks a draw call in two.
-        var externalId = TextureHandle(0)
-        if modeCode == 20 || modeCode == 21 || modeCode == 22 {
-            externalId = state.externalPending
-        }
-        var secondaryId = TextureHandle(0)
-        if modeCode == 20 || modeCode == 21 || modeCode == 22 {
-            secondaryId = state.secondaryPending
-        }
-        state.streams[state.streamIndex.raw].recordTextures(
-            state.quadCount,
-            externalId,
-            secondaryId
-        )
-        if state.streamIndex.raw == 0 && state.probeQuads {
-            print(636363)
-            print(trunc(mode * 10.0))
-            print(trunc(px0))
-            print(trunc(py0))
-            print(trunc(px1))
-            print(trunc(py1))
-            print(trunc(fr * 1000.0))
-            print(trunc(fg * 1000.0))
-            print(trunc(fb * 1000.0))
-            print(trunc(fa * 1000.0))
-            print(trunc(edgeRefraction * 1000.0))
-        }
-        if state.probeCost && (mode < 0.5 || mode > 1.5) {
-            print(656565)
-            print(state.streamIndex.raw)
-            print(trunc(mode * 10.0))
-            print(trunc(px0))
-            print(trunc(py0))
-            print(trunc(px1 - px0))
-            print(trunc(py1 - py0))
-        }
-        let contents = state.contentsPtr
-        if isNull(contents) {
-            return
-        }
-        let vw = state.viewportW
-        let vh = state.viewportH
-        // Base float index of this quad's record, inside this frame's ring slot.
-        let base = state.frameBase + state.quadCount * QuadLayout.floatCount
-        writeQuadRecord(
-            contents,
-            base,
-            px0,
-            py0,
-            px1,
-            py1,
-            lx0,
-            ly0,
-            lx1,
-            ly1,
-            vw,
-            vh,
-            halfW,
-            halfH,
-            radius,
-            borderWidth,
-            mode,
-            edgeRefraction,
-            fr,
-            fg,
-            fb,
-            fa,
-            br,
-            bg,
-            bb,
-            ba,
-            clipMinX,
-            clipMinY,
-            clipMaxX,
-            clipMaxY,
-            rotCos: rotCos,
-            rotSin: rotSin,
-            clipRadius: clipRadius,
-            clipShapeKind: clipShapeKind,
-        )
-        // Written for every quad, flat ones included: the slot is reused, and an
-        // unwritten block carries whatever gradient last occupied it.
-        writeQuadGradient(contents, base, gradR, gradG, gradB, gradA, gradAxis)
-        // Unconditional for the same reason the gradient is: the slot is reused
-        // and an unwritten morph block is a second shape left over from
-        // whatever quad held this slot last.
-        writeQuadMorph(
-            contents,
-            base,
-            morphX,
-            morphY,
-            morphHalfW,
-            morphHalfH,
-            morphRadius,
-            morphBlend
-        )
-        writeQuadShapeKind(contents, base, shapeKind)
-        writeQuadRotation(contents, base, rotCos, rotSin)
-        // The material block too: glass shades itself with it, and a flat
-        // surface carries its touch highlight in the block's spare slots. Left
-        // to glass alone, a rule drawn where a glass quad had been took that
-        // quad's spares as a highlight and burned brighter than its siblings.
-        writeQuadMaterial(
-            contents,
-            base,
-            m0,
-            m1,
-            m2,
-            m3,
-            m4,
-            m5,
-            m6,
-            m7,
-            m8,
-            m9,
-            m10,
-            m11,
-            m12,
-            m13,
-            m14,
-            m15,
-            m16,
-            m17,
-            m18,
-            m19,
-            m20,
-            m21,
-            m22,
-            m23,
-        )
-        // With a glass layer open, remember the (clipped) footprint this quad covers:
-        // the next glass surface reads the grid to decide whether it is stacked over
-        // this layer and therefore needs a capture of its own. The HUD's stream is
-        // exempt: it is drawn after every glass decision of the frame has been taken,
-        // so no glass surface can ever read what it would record.
-        if state.streamIndex.raw > 0 && state.streamIndex != state.hudStream {
-            var mx0 = px0
-            if mx0 < clipMinX {
-                mx0 = clipMinX
+        unsafe {
+            var state = nativeRecover<UiBatchState>(self.storage)
+            if state.quadCount >= QuadLayout.maxPerBatch {
+                return
             }
-            var my0 = py0
-            if my0 < clipMinY {
-                my0 = clipMinY
+            let modeCode = trunc(mode * 10.0)
+            // The plain texture pipeline keeps the exact copy/crossfade math. A
+            // mode inside this bucket that requests blur retains the generic path.
+            let requiresGeneric = rotSin != 0.0 || rotCos != 1.0 || (modeCode == 20 && mode > 2.05)
+            state.streams[state.streamIndex.raw].recordMode(state.quadCount, modeCode, requiresGeneric)
+            if modeCode >= 100 { state.blendWanted = true }
+            // Which texture this quad samples, recorded beside its mode. Only a
+            // mode-2 quad samples one; every other quad records nothing, so a run
+            // of them never breaks a draw call in two.
+            var externalId = TextureHandle(0)
+            if modeCode == 20 || modeCode == 21 || modeCode == 22 {
+                externalId = state.externalPending
             }
-            var mx1 = px1
-            if mx1 > clipMaxX {
-                mx1 = clipMaxX
+            var secondaryId = TextureHandle(0)
+            if modeCode == 20 || modeCode == 21 || modeCode == 22 {
+                secondaryId = state.secondaryPending
             }
-            var my1 = py1
-            if my1 > clipMaxY {
-                my1 = clipMaxY
+            state.streams[state.streamIndex.raw].recordTextures(
+                state.quadCount,
+                externalId,
+                secondaryId
+            )
+            if state.streamIndex.raw == 0 && state.probeQuads {
+                print(636363)
+                print(trunc(mode * 10.0))
+                print(trunc(px0))
+                print(trunc(py0))
+                print(trunc(px1))
+                print(trunc(py1))
+                print(trunc(fr * 1000.0))
+                print(trunc(fg * 1000.0))
+                print(trunc(fb * 1000.0))
+                print(trunc(fa * 1000.0))
+                print(trunc(edgeRefraction * 1000.0))
             }
-            if mx1 > mx0 && my1 > my0 {
-                glassMarkRect(state, mx0, my0, mx1, my1)
+            if state.probeCost && (mode < 0.5 || mode > 1.5) {
+                print(656565)
+                print(state.streamIndex.raw)
+                print(trunc(mode * 10.0))
+                print(trunc(px0))
+                print(trunc(py0))
+                print(trunc(px1 - px0))
+                print(trunc(py1 - py0))
             }
+            let contents = state.contentsPtr
+            if isNull(contents) {
+                return
+            }
+            let vw = state.viewportW
+            let vh = state.viewportH
+            // Base float index of this quad's record, inside this frame's ring slot.
+            let base = state.frameBase + state.quadCount * QuadLayout.floatCount
+            writeQuadRecord(
+                contents,
+                base,
+                px0,
+                py0,
+                px1,
+                py1,
+                lx0,
+                ly0,
+                lx1,
+                ly1,
+                vw,
+                vh,
+                halfW,
+                halfH,
+                radius,
+                borderWidth,
+                mode,
+                edgeRefraction,
+                fr,
+                fg,
+                fb,
+                fa,
+                br,
+                bg,
+                bb,
+                ba,
+                clipMinX,
+                clipMinY,
+                clipMaxX,
+                clipMaxY,
+                rotCos: rotCos,
+                rotSin: rotSin,
+                clipRadius: clipRadius,
+                clipShapeKind: clipShapeKind,
+            )
+            // Written for every quad, flat ones included: the slot is reused, and an
+            // unwritten block carries whatever gradient last occupied it.
+            writeQuadGradient(contents, base, gradR, gradG, gradB, gradA, gradAxis)
+            // Unconditional for the same reason the gradient is: the slot is reused
+            // and an unwritten morph block is a second shape left over from
+            // whatever quad held this slot last.
+            writeQuadMorph(
+                contents,
+                base,
+                morphX,
+                morphY,
+                morphHalfW,
+                morphHalfH,
+                morphRadius,
+                morphBlend
+            )
+            writeQuadShapeKind(contents, base, shapeKind)
+            writeQuadRotation(contents, base, rotCos, rotSin)
+            // The material block too: glass shades itself with it, and a flat
+            // surface carries its touch highlight in the block's spare slots. Left
+            // to glass alone, a rule drawn where a glass quad had been took that
+            // quad's spares as a highlight and burned brighter than its siblings.
+            writeQuadMaterial(
+                contents,
+                base,
+                m0,
+                m1,
+                m2,
+                m3,
+                m4,
+                m5,
+                m6,
+                m7,
+                m8,
+                m9,
+                m10,
+                m11,
+                m12,
+                m13,
+                m14,
+                m15,
+                m16,
+                m17,
+                m18,
+                m19,
+                m20,
+                m21,
+                m22,
+                m23,
+            )
+            // With a glass layer open, remember the (clipped) footprint this quad covers:
+            // the next glass surface reads the grid to decide whether it is stacked over
+            // this layer and therefore needs a capture of its own. The HUD's stream is
+            // exempt: it is drawn after every glass decision of the frame has been taken,
+            // so no glass surface can ever read what it would record.
+            if state.streamIndex.raw > 0 && state.streamIndex != state.hudStream {
+                var mx0 = px0
+                if mx0 < clipMinX {
+                    mx0 = clipMinX
+                }
+                var my0 = py0
+                if my0 < clipMinY {
+                    my0 = clipMinY
+                }
+                var mx1 = px1
+                if mx1 > clipMaxX {
+                    mx1 = clipMaxX
+                }
+                var my1 = py1
+                if my1 > clipMaxY {
+                    my1 = clipMaxY
+                }
+                if mx1 > mx0 && my1 > my0 {
+                    glassMarkRect(state, mx0, my0, mx1, my1)
+                }
+            }
+            state.quadCount += 1
         }
-        state.quadCount += 1
     }
 }
 
@@ -407,37 +409,43 @@ extend UiBatch {
     }
 
     function quadCount() -> Number {
-        let state = nativeRecover<UiBatchState>(self.storage)
-        return state.quadCount
+        unsafe {
+            let state = nativeRecover<UiBatchState>(self.storage)
+            return state.quadCount
+        }
     }
 
     // A destination-out fill takes only its alpha from what is under it; its
     // color names the material the host lays in the hole it cuts, which the
     // glass over the hole samples in the cut's place.
     function noteHole(fill: borrow RGBAColor, blend: borrow CABlendMode) {
-        if blend != .DestinationOut {
-            return
+        unsafe {
+            if blend != .DestinationOut {
+                return
+            }
+            var state = nativeRecover<UiBatchState>(self.storage)
+            state.holeR = fill.r
+            state.holeG = fill.g
+            state.holeB = fill.b
         }
-        var state = nativeRecover<UiBatchState>(self.storage)
-        state.holeR = fill.r
-        state.holeG = fill.g
-        state.holeB = fill.b
     }
 
     // Sends the quad just emitted, if one was, to the pipeline its blend draws
     // through: the hundred the blend names, over the mode it shades in.
     function routeBlend(before: Number, blend: borrow CABlendMode) {
-        if blend == .Normal {
-            return
+        unsafe {
+            if blend == .Normal {
+                return
+            }
+            var state = nativeRecover<UiBatchState>(self.storage)
+            if state.quadCount <= before {
+                return
+            }
+            let index = state.quadCount - 1
+            let mode = state.streams[state.streamIndex.raw].quads[index].mode
+            state.streams[state.streamIndex.raw].quads[index].mode = mode + blend.route()
+            state.blendWanted = true
         }
-        var state = nativeRecover<UiBatchState>(self.storage)
-        if state.quadCount <= before {
-            return
-        }
-        let index = state.quadCount - 1
-        let mode = state.streams[state.streamIndex.raw].quads[index].mode
-        state.streams[state.streamIndex.raw].quads[index].mode = mode + blend.route()
-        state.blendWanted = true
     }
 }
 
@@ -446,15 +454,17 @@ extend UiBatch {
     // blend draws them through. Only a plain glyph has one: an adaptive glyph
     // decides its own ink against the glass and stays as it is.
     function routeBlendRange(before: Number, blend: borrow CABlendMode) {
-        if blend == .Normal {
-            return
-        }
-        var state = nativeRecover<UiBatchState>(self.storage)
-        let stream = state.streamIndex.raw
-        let route = blend.route()
-        for index in before..state.quadCount {
-            if index < state.streams[stream].quads.count && state.streams[stream].quads[index].mode == 10 {
-                state.streams[stream].quads[index].mode = 10 + route
+        unsafe {
+            if blend == .Normal {
+                return
+            }
+            var state = nativeRecover<UiBatchState>(self.storage)
+            let stream = state.streamIndex.raw
+            let route = blend.route()
+            for index in before..state.quadCount {
+                if index < state.streams[stream].quads.count && state.streams[stream].quads[index].mode == 10 {
+                    state.streams[stream].quads[index].mode = 10 + route
+                }
             }
         }
     }

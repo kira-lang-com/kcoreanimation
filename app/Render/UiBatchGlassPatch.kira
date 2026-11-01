@@ -150,135 +150,137 @@ extend UiBatch {
         clipRadius: Number = 0.0,
         clipShapeKind: Number = 0.0,
     ) {
-        // Put every CUT between patches on a whole device pixel — see
-        // `glassSnapToDevicePixel` for what goes wrong when one lands on a pixel
-        // center instead. A cut is an edge two patches share, and every one of
-        // them is an inset measured from the shape's own rectangular extent, so
-        // an edge at or beyond that extent is not a cut: it is the outer boundary
-        // of the surface's skirt, which borders nothing, is drawn by one pipeline
-        // and is never cached. Moving it would move the pixels of every glass
-        // surface for no reason at all.
-        //
-        // The clip rectangle bounds a rasterized extent as much as a cut does —
-        // it truncates a patch, and the shader tests fragments against the same
-        // numbers — so it lands on the grid too, and a patch clamped to it is
-        // still snapped.
-        //
-        // The grid is the DRAWABLE's, per axis: a quad's clip position is its
-        // point position over the viewport in points, so what one point is worth
-        // in pixels is drawable over viewport and not the backing scale — those
-        // two differ whenever the drawable is not a whole number of points, and
-        // snapping to the wrong grid snaps to no grid at all.
-        var state = nativeRecover<UiBatchState>(self.storage)
-        let scaleX = Number(state.drawableW) / state.viewportW
-        let scaleY = Number(state.drawableH) / state.viewportH
-        let clipX0 = glassSnapToDevicePixel(clipMinX, scaleX)
-        let clipY0 = glassSnapToDevicePixel(clipMinY, scaleY)
-        let clipX1 = glassSnapToDevicePixel(clipMaxX, scaleX)
-        let clipY1 = glassSnapToDevicePixel(clipMaxY, scaleY)
-        // Clip the patch geometrically. The interior pipelines write with blending
-        // off (an opaque interior replaces its pixel), so a fragment cannot opt
-        // out by returning transparent the way the blended path could — a patch
-        // must simply never rasterize outside its clip. The rectangles are both
-        // axis-aligned, so the intersection is exact; `local` follows because it
-        // is the pixel position minus the center.
-        var px0 = cx + lx0
-        var py0 = cy + ly0
-        var px1 = cx + lx1
-        var py1 = cy + ly1
-        let rotated = rotSin != 0.0 || rotCos != 1.0
-        if !rotated {
-            if lx0 > -halfW { px0 = glassSnapToDevicePixel(px0, scaleX) }
-            if ly0 > -halfH { py0 = glassSnapToDevicePixel(py0, scaleY) }
-            if lx1 < halfW { px1 = glassSnapToDevicePixel(px1, scaleX) }
-            if ly1 < halfH { py1 = glassSnapToDevicePixel(py1, scaleY) }
-            if px0 < clipX0 { px0 = clipX0 }
-            if py0 < clipY0 { py0 = clipY0 }
-            if px1 > clipX1 { px1 = clipX1 }
-            if py1 > clipY1 { py1 = clipY1 }
+        unsafe {
+            // Put every CUT between patches on a whole device pixel — see
+            // `glassSnapToDevicePixel` for what goes wrong when one lands on a pixel
+            // center instead. A cut is an edge two patches share, and every one of
+            // them is an inset measured from the shape's own rectangular extent, so
+            // an edge at or beyond that extent is not a cut: it is the outer boundary
+            // of the surface's skirt, which borders nothing, is drawn by one pipeline
+            // and is never cached. Moving it would move the pixels of every glass
+            // surface for no reason at all.
+            //
+            // The clip rectangle bounds a rasterized extent as much as a cut does —
+            // it truncates a patch, and the shader tests fragments against the same
+            // numbers — so it lands on the grid too, and a patch clamped to it is
+            // still snapped.
+            //
+            // The grid is the DRAWABLE's, per axis: a quad's clip position is its
+            // point position over the viewport in points, so what one point is worth
+            // in pixels is drawable over viewport and not the backing scale — those
+            // two differ whenever the drawable is not a whole number of points, and
+            // snapping to the wrong grid snaps to no grid at all.
+            var state = nativeRecover<UiBatchState>(self.storage)
+            let scaleX = Number(state.drawableW) / state.viewportW
+            let scaleY = Number(state.drawableH) / state.viewportH
+            let clipX0 = glassSnapToDevicePixel(clipMinX, scaleX)
+            let clipY0 = glassSnapToDevicePixel(clipMinY, scaleY)
+            let clipX1 = glassSnapToDevicePixel(clipMaxX, scaleX)
+            let clipY1 = glassSnapToDevicePixel(clipMaxY, scaleY)
+            // Clip the patch geometrically. The interior pipelines write with blending
+            // off (an opaque interior replaces its pixel), so a fragment cannot opt
+            // out by returning transparent the way the blended path could — a patch
+            // must simply never rasterize outside its clip. The rectangles are both
+            // axis-aligned, so the intersection is exact; `local` follows because it
+            // is the pixel position minus the center.
+            var px0 = cx + lx0
+            var py0 = cy + ly0
+            var px1 = cx + lx1
+            var py1 = cy + ly1
+            let rotated = rotSin != 0.0 || rotCos != 1.0
+            if !rotated {
+                if lx0 > -halfW { px0 = glassSnapToDevicePixel(px0, scaleX) }
+                if ly0 > -halfH { py0 = glassSnapToDevicePixel(py0, scaleY) }
+                if lx1 < halfW { px1 = glassSnapToDevicePixel(px1, scaleX) }
+                if ly1 < halfH { py1 = glassSnapToDevicePixel(py1, scaleY) }
+                if px0 < clipX0 { px0 = clipX0 }
+                if py0 < clipY0 { py0 = clipY0 }
+                if px1 > clipX1 { px1 = clipX1 }
+                if py1 > clipY1 { py1 = clipY1 }
+            }
+            if px1 <= px0 || py1 <= py0 {
+                return
+            }
+            state.glassStatPatchQuads += 1
+            self.emitQuad(
+                px0,
+                py0,
+                px1,
+                py1,
+                px0 - cx,
+                py0 - cy,
+                px1 - cx,
+                py1 - cy,
+                halfW,
+                halfH,
+                radius,
+                tint.a,
+                mode,
+                edgeRefraction,
+                tint.r,
+                tint.g,
+                tint.b,
+                blur,
+                cx / vw,
+                cy / vh,
+                halfW / vw,
+                halfH / vh,
+                clipX0,
+                clipY0,
+                clipX1,
+                clipY1,
+                material.edgeStrokeStrength,
+                material.edgeStrokeDarken,
+                material.edgeStrokePeak,
+                material.edgeStrokeFade,
+                material.sheenStrength,
+                glassReachFor(material.lensMaxBend, halfW, halfH),
+                glassReachFor(material.refractionReach, halfW, halfH),
+                material.blurNearSplit,
+                // Device pixels, converted. The design document measures the ring at
+                // one pixel and the side edge at two, off a 2x capture; carrying the
+                // point values that happened to produce those on a 2x display made
+                // the border thin with the backing scale, so at 1.25x it came out at
+                // 0.6 of a pixel — a fainter line, not the same one.
+                borderSpread,
+                borderSideOffset,
+                borderSideSpread,
+                material.borderGray,
+                material.borderSideGray,
+                material.innerRimStrength,
+                rimWidth,
+                // The wash: how `fill` blends (the lower layer), then the upper layer whole.
+                material.washBlend,
+                material.washUpperR,
+                material.washUpperG,
+                material.washUpperB,
+                material.washUpperAlpha,
+                material.washUpperBlend,
+                // Spares: the copy patches carry 1/drawable-size in the first two
+                // (UiGlassCopy turns its device position into the cache texel through
+                // them), and a full patch carries in the first how far its surface
+                // has faded; the third is the anti-aliasing band every glass
+                // pipeline ramps its coverage over.
+                spare0,
+                spare1,
+                edgeBand,
+                glowX - cx,
+                glowY - cy,
+                glowStrength,
+                material.edgeLightDodge,
+                material.edgeLightBurn,
+                morphX,
+                morphY,
+                morphHalfW,
+                morphHalfH,
+                morphRadius,
+                morphBlend,
+                shapeKind,
+                rotCos,
+                rotSin,
+                clipRadius,
+                clipShapeKind
+            )
         }
-        if px1 <= px0 || py1 <= py0 {
-            return
-        }
-        state.glassStatPatchQuads += 1
-        self.emitQuad(
-            px0,
-            py0,
-            px1,
-            py1,
-            px0 - cx,
-            py0 - cy,
-            px1 - cx,
-            py1 - cy,
-            halfW,
-            halfH,
-            radius,
-            tint.a,
-            mode,
-            edgeRefraction,
-            tint.r,
-            tint.g,
-            tint.b,
-            blur,
-            cx / vw,
-            cy / vh,
-            halfW / vw,
-            halfH / vh,
-            clipX0,
-            clipY0,
-            clipX1,
-            clipY1,
-            material.edgeStrokeStrength,
-            material.edgeStrokeDarken,
-            material.edgeStrokePeak,
-            material.edgeStrokeFade,
-            material.sheenStrength,
-            glassReachFor(material.lensMaxBend, halfW, halfH),
-            glassReachFor(material.refractionReach, halfW, halfH),
-            material.blurNearSplit,
-            // Device pixels, converted. The design document measures the ring at
-            // one pixel and the side edge at two, off a 2x capture; carrying the
-            // point values that happened to produce those on a 2x display made
-            // the border thin with the backing scale, so at 1.25x it came out at
-            // 0.6 of a pixel — a fainter line, not the same one.
-            borderSpread,
-            borderSideOffset,
-            borderSideSpread,
-            material.borderGray,
-            material.borderSideGray,
-            material.innerRimStrength,
-            rimWidth,
-            // The wash: how `fill` blends (the lower layer), then the upper layer whole.
-            material.washBlend,
-            material.washUpperR,
-            material.washUpperG,
-            material.washUpperB,
-            material.washUpperAlpha,
-            material.washUpperBlend,
-            // Spares: the copy patches carry 1/drawable-size in the first two
-            // (UiGlassCopy turns its device position into the cache texel through
-            // them), and a full patch carries in the first how far its surface
-            // has faded; the third is the anti-aliasing band every glass
-            // pipeline ramps its coverage over.
-            spare0,
-            spare1,
-            edgeBand,
-            glowX - cx,
-            glowY - cy,
-            glowStrength,
-            material.edgeLightDodge,
-            material.edgeLightBurn,
-            morphX,
-            morphY,
-            morphHalfW,
-            morphHalfH,
-            morphRadius,
-            morphBlend,
-            shapeKind,
-            rotCos,
-            rotSin,
-            clipRadius,
-            clipShapeKind
-        )
     }
 }

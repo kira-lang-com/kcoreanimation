@@ -266,9 +266,11 @@ public function quadIndices(quadCount: Number) -> [UN32] {
 // monospaced one where it has one. Monospaced runs are set in the default face
 // where it has none.
 public function loadBatchFont(state: borrow mut UiBatchState) {
-    var engine = nativeRecover<TextEngine>(textEngine())
-    state.textFace = engine.face(.Default)
-    state.monoFace = engine.lookupFont(.Monospaced)
+    unsafe {
+        var engine = nativeRecover<TextEngine>(textEngine())
+        state.textFace = engine.face(.Default)
+        state.monoFace = engine.lookupFont(.Monospaced)
+    }
 }
 
 // Claim every stream's slot for this frame. Runs right after beginBatch, before
