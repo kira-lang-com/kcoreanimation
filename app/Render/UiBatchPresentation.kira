@@ -24,6 +24,18 @@ extend UiBatch {
         self.presentBatchTarget(frame, graphics, target, true, bgR, bgG, bgB, bgA)
     }
 
+    // Puts what `presentBatchIntoTexture` draws at `x`, `y` pixels into the
+    // texture rather than at its corner. The texture may be larger than the
+    // drawable `beginBatch` was given; what lies outside it is the background
+    // color. Zero for both puts it back at the corner.
+    function setTargetOrigin(x: UNumber, y: UNumber) {
+        unsafe {
+            var state = nativeRecover<UiBatchState>(self.storage)
+            state.targetOriginX = x
+            state.targetOriginY = y
+        }
+    }
+
     function presentBatch(
         frame: borrow mut RenderFrame,
         graphics: borrow Graphics,
@@ -108,6 +120,16 @@ extend UiBatch {
             var presentationPass = clearSwapchainRenderPass(bg)
             if intoTexture {
                 presentationPass = clearTextureRenderPass(target, bg)
+                if state.targetOriginX > 0 || state.targetOriginY > 0 {
+                    presentationPass.drawArea = .Some(
+                        ScissorRect {
+                            x: N32(state.targetOriginX),
+                            y: N32(state.targetOriginY),
+                            width: UN32(state.drawableW),
+                            height: UN32(state.drawableH)
+                        }
+                    )
+                }
             }
             presentationPass.label = "kira-ui-present"
             if layers == 0 || !state.glassReady {

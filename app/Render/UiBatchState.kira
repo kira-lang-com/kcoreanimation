@@ -565,6 +565,12 @@ public struct UiBatchState {
     // scale difference to exceed half a pixel.
     var drawableW: Number = 1
     var drawableH: Number = 1
+    // Where a batch presented into a texture puts its drawable, in pixels from
+    // the texture's top-left corner: a compositor drawing an output smaller than
+    // the screen it scans out sets it (`setTargetOrigin`). The rest of the
+    // texture is the background color.
+    var targetOriginX: Number = 0
+    var targetOriginY: Number = 0
     // Retina backing scale (physical pixels per point). Glyphs are rasterized at
     // point-size x scale and positioned in points, so text is crisp at native
     // resolution; surfaces are SDF-shaded per physical pixel and need no extra scale.

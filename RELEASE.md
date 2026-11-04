@@ -14,6 +14,8 @@ The first source release of KCoreAnimation includes:
 
 ## Changed
 
+- Added `textImage` and `TextImage`: a line of text set in the default face and drawn as coverage on the CPU, for a caller that paints pixels itself, such as a boot screen before there is a GPU to draw with.
+- Added `UiBatch.setTargetOrigin`: a batch presented into a texture can be drawn at an offset inside a texture larger than its drawable, through Ember's pass draw area. A compositor uses it to keep part of the screen unused.
 - Scoped raw-pointer and native-state operations in the `UiBatch` compositor, text and symbol rendering, and runtime input handling.
 
 ## Known limitations

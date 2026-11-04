@@ -1,0 +1,97 @@
+import Foundation
+
+// A line of text drawn on the CPU, for a caller that paints pixels itself
+// rather than through a batch: a boot screen, a framebuffer console, a
+// picture made before there is a GPU to draw with. The glyphs are the ones
+// the batch draws, from the same rasterizer (GlyphCoverage.kira), each put at
+// the fraction of a pixel its pen stands at.
+
+/// A line of text as coverage, which the caller blends in its own colour.
+///
+/// Made by [`textImage`].
+public struct TextImage {
+    /// The image's width in pixels: the line's advance, rounded up.
+    let width: Number
+    /// Its height in pixels: the face's line at the size it was set at.
+    let rows: Number
+    /// The baseline's row, counted down from the top.
+    let baseline: Number
+    /// Coverage, 0 to 255, `width` to a row, top row first.
+    let levels: [UN8]
+}
+
+/// `text` set in the default face at `size` pixels and `weight`, drawn as
+/// coverage on the CPU.
+///
+/// Each Unicode scalar is drawn with the glyph the face maps it to, one after
+/// another, without shaping: what a line of log text or a label in Latin
+/// script needs, not a paragraph in a script that joins. A scalar the face
+/// has no glyph for draws its missing-glyph box.
+///
+/// # Examples
+///
+/// ```kira
+/// let line = textImage("[    0.45] init: started", 28, 400)
+/// for row in 0..line.rows {
+///     for column in 0..line.width {
+///         let cover = line.levels[row * line.width + column]
+///     }
+/// }
+/// ```
+///
+/// An image with no width where no face can be read, or `text` is empty.
+public function textImage(text: borrow String, size: Number, weight: Number) -> TextImage {
+    unsafe {
+        var engine = nativeRecover<TextEngine>(textEngine())
+        let face = try engine.face(.Default) otherwise return emptyTextImage()
+        let instance = engine.instance(face, size, size, weight, false)
+        let font = engine.fonts[face.raw]
+        var glyphs: [GlyphId] = []
+        var pens: [Number] = []
+        var pen: Number = 0
+        for scalar in textScalars(text) {
+            let glyph = font.glyph(scalar)
+            glyphs.append(glyph)
+            pens.append(pen)
+            pen += engine.advance(instance, glyph) + instance.tracking
+        }
+        let width = Number(ceil(Float(pen)))
+        let rows = instance.lineHeight
+        if width <= 0 || rows <= 0 { return emptyTextImage() }
+        let baseline = instance.ascender
+        var levels: [UN8] = filled(width * rows, UN8(0))
+        for (index, glyph) in glyphs.enumerated() {
+            let whole = floor(pens[index])
+            let bitmap = engine.glyphBitmap(instance, glyph, pens[index] - whole)
+            placeGlyph(levels, width, rows, bitmap, whole + bitmap.left, baseline - bitmap.top)
+        }
+        return TextImage { width: width, rows: rows, baseline: baseline, levels: levels }
+    }
+}
+
+function emptyTextImage() -> TextImage {
+    return TextImage { width: 0, rows: 0, baseline: 0, levels: [] }
+}
+
+// Puts `bitmap` into `levels` with its top left at `left`, `top`, keeping the
+// greater coverage where two glyphs meet. What falls outside is cut off.
+function placeGlyph(
+    levels: borrow mut [UN8],
+    width: Number,
+    rows: Number,
+    bitmap: borrow GlyphBitmap,
+    left: Number,
+    top: Number
+) {
+    for row in 0..bitmap.rows {
+        let y = top + row
+        if y < 0 || y >= rows { continue }
+        for column in 0..bitmap.width {
+            let x = left + column
+            if x < 0 || x >= width { continue }
+            let cover = bitmap.levels[row * bitmap.width + column]
+            let at = y * width + x
+            if cover > levels[at] { levels[at] = cover }
+        }
+    }
+}
