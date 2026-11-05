@@ -1,5 +1,5 @@
 construct KCoreAnimation extends Package {
-    let version: String = "26.10.4"
+    let version: String = "26.11.1"
     let kind: PackageKind = .Library
     let dependencies: [Dependency] = [
         Dependency { name: "KiraLayout", path: "../kira-layout" },
