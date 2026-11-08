@@ -41,12 +41,18 @@ public function foundationTextRunWidth(
     content: borrow String,
     size: Number,
     weight: Number,
-    design: borrow CAFontDesign = .Default
+    design: borrow CAFontDesign = .Default,
+    spacing: Number = 0.0,
+    trailingSpacing: Bool = false,
+    widthRatio: Number = 1.0
 ) -> Number {
     unsafe {
         var engine = nativeRecover<TextEngine>(textEngine())
         let raster = size * GlyphRaster.oversample
-        return engine.runWidth(design, content, raster, size, weight) / GlyphRaster.oversample
+        return engine.runWidth(
+            design, content, raster, size, weight,
+            spacing * GlyphRaster.oversample, trailingSpacing, widthRatio
+        ) / GlyphRaster.oversample
     }
 }
 
@@ -164,11 +170,14 @@ public function foundationTextRunInkEdges(
     content: borrow String,
     size: Number,
     weight: Number,
-    design: borrow CAFontDesign = .Default
+    design: borrow CAFontDesign = .Default,
+    widthRatio: Number = 1.0
 ) -> CATextInk {
     unsafe {
         var engine = nativeRecover<TextEngine>(textEngine())
-        return match engine.runInk(design, content, size * GlyphRaster.oversample, size, weight) {
+        return match engine.runInk(
+            design, content, size * GlyphRaster.oversample, size, weight, widthRatio
+        ) {
             Some(ink) -> CATextInk {
                 left: ink.left / GlyphRaster.oversample,
                 right: ink.right / GlyphRaster.oversample,
@@ -249,13 +258,19 @@ public function foundationTextMeasure(
     content: borrow String,
     size: Number,
     weight: Number,
-    design: borrow CAFontDesign = .Default
+    design: borrow CAFontDesign = .Default,
+    spacing: Number = 0.0,
+    trailingSpacing: Bool = false,
+    widthRatio: Number = 1.0
 ) -> Size {
     if content.count <= 0 {
         return Size { width: 0.0, height: foundationTextIntrinsicHeight(size: size) }
     }
 
-    var width = foundationTextRunWidth(content: content, size: size, weight: weight, design: design)
+    var width = foundationTextRunWidth(
+        content: content, size: size, weight: weight, design: design,
+        spacing: spacing, trailingSpacing: trailingSpacing, widthRatio: widthRatio
+    )
     if width <= 0.0 {
         width = foundationTextIntrinsicWidth(size: size, characterCount: content.count)
     }
@@ -292,6 +307,29 @@ public function foundationTextLineBox(
     return height
 }
 
+// AttributedString.LineHeight describes the distance between neighboring
+// baselines, not the size of the glyph ink. Retain the native font box for
+// glyph rasterization and use this pitch for the surrounding line layout.
+// Named tight/normal/loose styles have no public numerical factors in Apple's
+// SDK; these are theme-neutral approximate optical spacing choices.
+public function foundationTextResolvedLineHeight(
+    size: Number,
+    weight: Number,
+    design: borrow CAFontDesign,
+    mode: CATextLineHeight = .Variable
+) -> Number {
+    let natural = foundationTextLineBox(size, weight, design)
+    return match mode {
+        Variable -> natural
+        Tight -> max(1.0, size * 1.05)
+        Normal -> max(1.0, size * 1.20)
+        Loose -> max(1.0, size * 1.50)
+        Exact(points) -> max(1.0, points)
+        Leading(increase) -> max(1.0, size + increase)
+        Multiple(factor) -> max(1.0, size * factor)
+    }
+}
+
 // The lines a run breaks into to fit `width`: each line break in it ends a
 // line, and between them as many words go on each line as fit, broken at the
 // spaces between them. A word wider than the line stands on a line of its own
@@ -308,26 +346,205 @@ public function foundationTextLines(
     weight: Number,
     width: Number,
     design: borrow CAFontDesign = .Default,
-    limit: Number = 0
+    limit: Number = 0,
+    mode: CATextTruncationMode = .Tail,
+    spacing: Number = 0.0,
+    trailingSpacing: Bool = false,
+    widthRatio: Number = 1.0
 ) -> [String] {
     var lines: [String] = []
     let codes = foundationStringToCodepoints(content)
     var paragraph = 0
     for i in 0..(codes.count + 1) {
         if i == codes.count || codes[i] == 10 {
-            foundationTextBreakParagraph(codes, paragraph, i, size, weight, width, design, lines)
+            foundationTextBreakParagraph(
+                codes, paragraph, i, size, weight, width, design,
+                lines, spacing, trailingSpacing, widthRatio
+            )
             paragraph = i + 1
         }
     }
-    if limit <= 0 || lines.count <= limit {
+    if limit <= 0 {
+        return move lines
+    }
+    if lines.count <= limit {
+        // A single unbreakable word may still be wider than the line box.
+        // lineLimit(1) must truncate it rather than let a glyph overflow.
+        if lines.count > 0 {
+            let last = lines.count - 1
+            lines[last] = foundationTextTruncated(
+                lines[last], size, weight, width, design, mode, false,
+                spacing, trailingSpacing, widthRatio
+            )
+        }
         return move lines
     }
     var shown: [String] = []
-    for i in 0..(limit - 1) { shown.append(copy lines[i]) }
-    var rest = copy lines[limit - 1]
-    for i in limit..lines.count { rest = rest + " " + lines[i] }
-    shown.append(foundationTextTruncated(rest, size, weight, width, design))
+    if mode == .Head {
+        let firstKept = lines.count - limit + 1
+        var rest = copy lines[0]
+        for i in 1..firstKept { rest = rest + " " + lines[i] }
+        shown.append(foundationTextTruncated(
+            rest, size, weight, width, design, mode, true,
+            spacing, trailingSpacing, widthRatio
+        ))
+        for i in firstKept..lines.count { shown.append(copy lines[i]) }
+    } else {
+        for i in 0..(limit - 1) { shown.append(copy lines[i]) }
+        var rest = copy lines[limit - 1]
+        for i in limit..lines.count { rest = rest + " " + lines[i] }
+        shown.append(foundationTextTruncated(
+            rest, size, weight, width, design, mode, true,
+            spacing, trailingSpacing, widthRatio
+        ))
+    }
     return move shown
+}
+
+// The largest font size in [size*minimumScaleFactor, size] whose full source
+// text fits in `limit` lines at the given width. A line too long to fit even
+// at that minimum size still uses normal ellipsis truncation. This candidate
+// search precedes line-limit truncation: otherwise it could erroneously claim
+// that all source text fit merely because the last line had an ellipsis.
+//
+// Font metrics are measured by the same native text engine used for both
+// layout and rasterization. Computing this in KCoreAnimation also handles the
+// long single-word case where there are no legal word-wrap boundaries.
+public function foundationTextFittedSize(
+    content: borrow String,
+    size: Number,
+    weight: Number,
+    width: Number,
+    design: borrow CAFontDesign,
+    lineLimit: Number,
+    minimumScaleFactor: Number,
+    spacing: Number = 0.0,
+    trailingSpacing: Bool = false,
+    widthRatio: Number = 1.0
+) -> Number {
+    let floor = clamp(minimumScaleFactor, 0.01, 1.0)
+    if floor >= 1.0 || lineLimit <= 0.0 || width <= 0.0 {
+        return size
+    }
+    let full = foundationTextLines(
+        content, size, weight, width, design, spacing: spacing,
+        trailingSpacing: trailingSpacing, widthRatio: widthRatio
+    )
+    var fits = full.count <= lineLimit
+    if fits {
+        for line in full {
+            if foundationTextRunWidth(
+                content: line, size: size, weight: weight, design: design,
+                spacing: spacing, trailingSpacing: trailingSpacing,
+                widthRatio: widthRatio
+            ) > width + 0.5 {
+                fits = false
+                break
+            }
+        }
+    }
+    if fits { return size }
+
+    // Search from the minimum allowed size up to the largest candidate that
+    // fully fits. Fixed bisection count prevents glyph jitter between frames.
+    var low = floor
+    var high = 1.0
+    for iteration in 0..12 {
+        let trial = (low + high) / 2.0
+        let scaledSize = size * trial
+        let lines = foundationTextLines(
+            content, scaledSize, weight, width, design, spacing: spacing,
+            trailingSpacing: trailingSpacing, widthRatio: widthRatio
+        )
+        var fitsTrial = lines.count <= lineLimit
+        if fitsTrial {
+            for line in lines {
+                if foundationTextRunWidth(
+                    content: line, size: scaledSize, weight: weight, design: design,
+                    spacing: spacing, trailingSpacing: trailingSpacing,
+                    widthRatio: widthRatio
+                ) > width + 0.5 {
+                    fitsTrial = false
+                    break
+                }
+            }
+        }
+        if fitsTrial { low = trial } else { high = trial }
+    }
+    return size * low
+}
+
+// A text paragraph is allowed to tighten its inter-cluster spacing a little
+// BEFORE giving up glyphs to an ellipsis. Calculate the largest spacing that
+// still fits the complete source in the requested line limit, bounded by four
+// percent of the current font size. This keeps all glyphs their original size
+// and avoids changing line breaks when the paragraph already fits.
+//
+// Both the KiraUI measure pass and KCoreAnimation's glyph draw pass use this
+// function at their own offered width. It never edits the original String,
+// suppresses ligatures or invents a separately rasterized scaled view.
+public function foundationTextTightenedSpacing(
+    content: borrow String,
+    size: Number,
+    weight: Number,
+    width: Number,
+    design: borrow CAFontDesign,
+    lineLimit: Number,
+    spacing: Number,
+    trailingSpacing: Bool,
+    enabled: Bool,
+    widthRatio: Number = 1.0
+) -> Number {
+    if !enabled || lineLimit <= 0.0 || width <= 0.0 {
+        return spacing
+    }
+    let full = foundationTextLines(
+        content, size, weight, width, design,
+        spacing: spacing, trailingSpacing: trailingSpacing, widthRatio: widthRatio
+    )
+    var fits = full.count <= lineLimit
+    if fits {
+        for line in full {
+            if foundationTextRunWidth(
+                content: line, size: size, weight: weight,
+                design: design, spacing: spacing, trailingSpacing: trailingSpacing,
+                widthRatio: widthRatio
+            ) > width + 0.5 {
+                fits = false
+                break
+            }
+        }
+    }
+    if fits { return spacing }
+
+    // Tightening is subtle, not a substitute for an explicitly smaller font
+    // or a nonzero minimumScaleFactor. If the full run still cannot fit at
+    // the lower bound, ordinary wrap/truncation will handle the remainder.
+    var low = spacing - size * 0.04
+    var high = spacing
+    for iteration in 0..11 {
+        let trial = (low + high) / 2.0
+        let lines = foundationTextLines(
+            content, size, weight, width, design,
+            spacing: trial, trailingSpacing: trailingSpacing,
+            widthRatio: widthRatio
+        )
+        var fitsTrial = lines.count <= lineLimit
+        if fitsTrial {
+            for line in lines {
+                if foundationTextRunWidth(
+                    content: line, size: size, weight: weight,
+                    design: design, spacing: trial, trailingSpacing: trailingSpacing,
+                    widthRatio: widthRatio
+                ) > width + 0.5 {
+                    fitsTrial = false
+                    break
+                }
+            }
+        }
+        if fitsTrial { low = trial } else { high = trial }
+    }
+    return low
 }
 
 // The lines one paragraph, `codes[start..<end]`, breaks into at `width`,
@@ -340,7 +557,10 @@ function foundationTextBreakParagraph(
     weight: Number,
     width: Number,
     design: borrow CAFontDesign,
-    lines: borrow mut [String]
+    lines: borrow mut [String],
+    spacing: Number = 0.0,
+    trailingSpacing: Bool = false,
+    widthRatio: Number = 1.0
 ) {
     var lineStart = start
     // The end of the longest prefix of this line known to fit, at a space.
@@ -353,7 +573,10 @@ function foundationTextBreakParagraph(
             content: foundationStringFromCodepoints(codes, lineStart, i),
             size: size,
             weight: weight,
-            design: design
+            design: design,
+            spacing: spacing,
+            trailingSpacing: trailingSpacing,
+            widthRatio: widthRatio
         ) <= width {
             fitEnd = i
             i += 1
@@ -377,40 +600,71 @@ function foundationTextBreakParagraph(
 
 // `content` as one line `width` wide at most: whole when it fits, and
 // otherwise as much of it as fits before an ellipsis.
+// A Unicode scalar prefix, suffix, or balanced pair around the ellipsis.
+// Build one candidate at each bisection so all three styles use the same font
+// advance metrics as text measurement and drawing (not character counts).
+function foundationTextTruncationCandidate(
+    codes: borrow [Number],
+    kept: Number,
+    mode: CATextTruncationMode
+) -> String {
+    match mode {
+        Head -> return "…" + foundationStringFromCodepoints(
+            codes, codes.count - kept, codes.count
+        )
+        Middle -> {
+            let before = trunc((kept + 1) / 2)
+            let after = kept - before
+            return foundationStringFromCodepoints(codes, 0, before) + "…"
+                + foundationStringFromCodepoints(codes, codes.count - after, codes.count)
+        }
+        Tail -> return foundationStringFromCodepoints(codes, 0, kept) + "…"
+    }
+}
+
 function foundationTextTruncated(
     content: borrow String,
     size: Number,
     weight: Number,
     width: Number,
-    design: borrow CAFontDesign
+    design: borrow CAFontDesign,
+    mode: CATextTruncationMode = .Tail,
+    force: Bool = false,
+    spacing: Number = 0.0,
+    trailingSpacing: Bool = false,
+    widthRatio: Number = 1.0
 ) -> String {
-    if foundationTextRunWidth(
+    if !force && foundationTextRunWidth(
         content: content,
         size: size,
         weight: weight,
-        design: design
+        design: design,
+        spacing: spacing,
+        trailingSpacing: trailingSpacing, widthRatio: widthRatio
     ) <= width {
         return copy content
     }
     let codes = foundationStringToCodepoints(content)
     // The most scalars that fit before the ellipsis, found by halving.
     var fits = 0
-    var over = codes.count
+    var over = codes.count + 1
     while over - fits > 1 {
         let middle = trunc((fits + over) / 2)
-        let shown = foundationStringFromCodepoints(codes, 0, middle) + "…"
+        let shown = foundationTextTruncationCandidate(codes, middle, mode)
         if foundationTextRunWidth(
             content: shown,
             size: size,
             weight: weight,
-            design: design
+            design: design,
+            spacing: spacing,
+            trailingSpacing: trailingSpacing, widthRatio: widthRatio
         ) <= width {
             fits = middle
         } else {
             over = middle
         }
     }
-    return foundationStringFromCodepoints(codes, 0, fits) + "…"
+    return foundationTextTruncationCandidate(codes, fits, mode)
 }
 
 // Whether a run holds a line break, and so stands on more than one line
@@ -432,20 +686,33 @@ public function foundationTextWrappedSize(
     width: Number,
     design: borrow CAFontDesign = .Default,
     limit: Number = 0,
-    lineSpacing: Number = 0.0
+    lineSpacing: Number = 0.0,
+    mode: CATextTruncationMode = .Tail,
+    spacing: Number = 0.0,
+    trailingSpacing: Bool = false,
+    widthRatio: Number = 1.0,
+    lineHeight: CATextLineHeight = .Variable
 ) -> Size {
-    let lines = foundationTextLines(content, size, weight, width, design, limit)
+    let lines = foundationTextLines(
+        content, size, weight, width, design, limit, mode,
+        spacing, trailingSpacing, widthRatio
+    )
     var widest: Number = 0.0
     for line in lines {
         widest = max(
             widest,
-            foundationTextRunWidth(content: line, size: size, weight: weight, design: design)
+            foundationTextRunWidth(
+                content: line, size: size, weight: weight, design: design,
+                spacing: spacing, trailingSpacing: trailingSpacing,
+                widthRatio: widthRatio
+            )
         )
     }
     let count = max(Number(lines.count), 1.0)
     return Size {
         width: widest,
-        height: foundationTextLineBox(size, weight, design) * count + lineSpacing * (count - 1.0)
+        height: foundationTextResolvedLineHeight(size, weight, design, copy lineHeight) * count
+            + lineSpacing * (count - 1.0)
     }
 }
 

@@ -18,6 +18,103 @@ public function glyphSizeKey(sizePx: Number) -> Number {
     return s
 }
 
+// Rasterize at the run's authored size, independent of any in-flight layer
+// transform. The transform is applied to the finished glyph quads instead.
+// Do not recover the authored size via `(points * displayScale) / displayScale`:
+// floating-point cancellation can put an exactly integral raster size a hair
+// below the integer, and `glyphSizeKey` then truncates it one pixel smaller.
+public function glyphRasterSizeKey(points: Number, backingScale: Number) -> Number {
+    let scale = backingScale > 0 ? backingScale : 1.0
+    return glyphSizeKey(points * scale * textOversampleAt(scale))
+}
+
+// A text run is transformed around the center of its visible layout box.
+// The renderer quantizes the glyph's LOCAL baseline, then carries it through
+// the continuously moving/scaling anchor. Quantizing the *screen-space* origin
+// of every frame made animated labels jump a device pixel whenever their top
+// crossed a half-pixel threshold. That was most visible near scale = 1, where
+// the previous path abruptly changed its origin from rounded(y) to zero.
+public function textVerticalRunPlacement(
+    y: Number,
+    height: Number,
+    presentationScale: Number
+) -> (Number, Number, Number) {
+    let shown = presentationScale > 0.0 ? presentationScale : 1.0
+    let origin = y + height * 0.5
+    return (origin, -height * 0.5 / shown, height / shown)
+}
+
+// A line whose animated box crosses its nominal line height must not switch
+// abruptly between font-metric and ink-metric baselines. Tight content boxes
+// still align their painted ink; the adjustment blends into that placement
+// continuously as the box becomes shorter than the font's line box.
+public function textRunBaseline(
+    runY: Number,
+    runHeight: Number,
+    ascender: Number,
+    descender: Number,
+    inkTop: Number,
+    inkBottom: Number,
+    hasInk: Bool
+) -> Number {
+    let lineHeight = ascender + descender
+    let lineBaseline = runY + (runHeight - lineHeight) * 0.5 + ascender
+    if !hasInk || runHeight >= lineHeight { return lineBaseline }
+    let inkHeight = inkTop + inkBottom
+    let inkBaseline = runHeight > inkHeight
+        ? runY + (runHeight - inkHeight) * 0.5 + inkTop
+        : runY + inkTop
+    let blend = clamp((lineHeight - runHeight) / max(lineHeight - inkHeight, 1.0), 0.0, 1.0)
+    return lineBaseline + (inkBaseline - lineBaseline) * blend
+}
+
+// The bitmap origin's UV slack already handles fractional glyph positions.
+// Rounding this baseline separately to device pixels caused a 0.5pt jump on
+// Retina every time an animated height or ink metric crossed a pixel boundary.
+// Keep the baseline fractional; only the atlas quad's outer bounds are snapped
+// and their UVs compensate for the extra transparent texels.
+public function textGlyphBaselineDevice(baseline: Number, backingScale: Number) -> Number {
+    return baseline * backingScale
+}
+
+// Glyph layout happens around the center of the text run, so the glyph's
+// LOCAL pixel coordinates are commonly negative. `trunc` rounds negative
+// values toward zero and used to clip away part of the top/left glyph pixel:
+// as a spring crossed the next integer the lost pixel appeared abruptly.
+// Floor both edges, retaining one extra transparent pixel on the far side,
+// so the atlas UV slack can cover the whole outline at every subpixel phase.
+public function glyphOuterPixelBounds(
+    left: Float,
+    top: Float,
+    right: Float,
+    bottom: Float,
+    pad: Float
+) -> (Float, Float, Float, Float) {
+    return (
+        floor(left) - pad,
+        floor(top) - pad,
+        floor(right) + 1.0 + pad,
+        floor(bottom) + 1.0 + pad
+    )
+}
+
+// Horizontal text must use the SAME stable center as the vertical baseline.
+// The old implementation rounded the screen-space X origin every frame, then
+// switched it to zero exactly at a 1x presentation scale. As an animated tab
+// moved by fractions of a point, that changed the glyph pen's pixel phase and
+// made individual letters jump while the control's outline moved smoothly.
+// Keep the phase in the run's stationary local coordinates; transform the
+// completed glyph quads about the current center with the rest of the UI.
+public function textHorizontalRunPlacement(
+    x: Number,
+    width: Number,
+    presentationScale: Number
+) -> (Number, Number, Number) {
+    let shown = presentationScale > 0.0 ? presentationScale : 1.0
+    let origin = x + width * 0.5
+    return (origin, -width * 0.5 / shown, width / shown)
+}
+
 // Text is rasterized at TWICE the device resolution and drawn down through a linear
 // sampler — supersampling, and the reason it is here is worth writing down.
 //

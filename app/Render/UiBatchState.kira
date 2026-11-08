@@ -447,6 +447,9 @@ public struct UiBatchState {
     // The host's monospaced face, nothing where it has none and monospaced
     // runs are set in `textFace`.
     var monoFace: FontId? = .None
+    // The host's serif face, used by SwiftUI-style serif titles when present.
+    var serifFace: FontId? = .None
+    var roundedFace: FontId? = .None
     // The instance the face was last set to.
     var faceInstance: FaceInstance? = .None
     var fontSizeSet: Number = 0
@@ -456,6 +459,7 @@ public struct UiBatchState {
     var fontWeightSet: Number = 0
     // Which of the two faces was set last, by `UiBatchState.faceKey`.
     var fontFaceSet: Number = 0
+    var fontWidthSet: Number = 1.0
     var ascender: Number = 0.0
     var descender: Number = 0.0
     var lineAscent: Number = 0.0

@@ -296,7 +296,8 @@ extend Compositor {
         viewportWidth: Number,
         viewportHeight: Number,
         renderScale: Number,
-        windowTransparent: Bool
+        windowTransparent: Bool,
+        windowNativeBackdrop: Bool = false
     ) -> Number {
         let plan = self.tree.plan()
         self.retireAgedTextures(graphics)
@@ -310,6 +311,7 @@ extend Compositor {
             graphics: graphics,
             batch: move rootBatch,
             windowTransparent: windowTransparent,
+            windowNativeBackdrop: windowNativeBackdrop,
             fileTextures: move self.fileTextures
         }
         var drawableWidth = frame.drawableWidth()
@@ -323,7 +325,9 @@ extend Compositor {
             drawableWidth,
             drawableHeight
         )
+        backend.beginNativeGlass(viewportHeight)
         let drawn = plan.submitPass(plan.rootPass, passTextures, backend)
+        backend.finishNativeGlass()
         self.fileTextures = move backend.fileTextures
         self.retireFileTextures(backend.staleTextures)
         self.tree.clearDamage()

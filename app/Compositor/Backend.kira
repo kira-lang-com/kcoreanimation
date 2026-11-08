@@ -21,6 +21,10 @@ public class EmberFoundationBackend {
     // Whether the host window is composited with holes in it. Carried for the
     // surface-fill path; the page itself is cleared by the runner.
     var windowTransparent: Bool = false
+    // Only the macOS host can process compositor backdrop displacement.
+    var windowNativeBackdrop: Bool = false
+    var nativeGlassActive: Bool = false
+    var nativeGlassRegions: [CANativeGlassCoverage] = []
     // Set the moment anything visible is emitted this pass, so the executor can
     // skip presenting a pass that drew nothing.
     var drewVisibleUi: Bool = false
@@ -126,6 +130,17 @@ public class EmberFoundationBackend {
         }
         let originX = quad.centerX - width * 0.5
         let originY = quad.centerY - height * 0.5
+        // Real behind-window glass is a compositor effect, not a readback of
+        // other applications' pixels. The portable shader remains authoritative
+        // for opaque surfaces and offscreen render targets.
+        if self.tryNativeGlass(
+            originX, originY, width, height, cornerRadius,
+            fill, glass, opacity,
+            clipMinX, clipMinY, clipMaxX, clipMaxY,
+            quad.rotCos, quad.rotSin
+        ) {
+            return
+        }
         match glass.style {
             Some(style) -> {
                 // A recipe surface is laid out in the layer's space at the

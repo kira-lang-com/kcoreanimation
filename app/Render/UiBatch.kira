@@ -270,6 +270,8 @@ public function loadBatchFont(state: borrow mut UiBatchState) {
         var engine = nativeRecover<TextEngine>(textEngine())
         state.textFace = engine.face(.Default)
         state.monoFace = engine.lookupFont(.Monospaced)
+        state.serifFace = engine.lookupFont(.Serif)
+        state.roundedFace = engine.lookupFont(.Rounded)
     }
 }
 

@@ -123,11 +123,45 @@ public struct CASolid {
 // monospaced cut, where every character takes the same advance.
 public enum CAFontDesign {
     Default
+    Serif
+    Rounded
     Monospaced
     // The default face with every figure the same width, so a count or a
     // clock does not shift as its digits change, as SwiftUI's
     // `monospacedDigit()` sets it.
     MonospacedDigits
+}
+
+// The location at which a limited Text run loses ink when it no longer fits
+// its proposed width. Kept with the run so measurement and compositor line
+// breaking use the EXACT same choice.
+public enum CATextTruncationMode {
+    Head
+    Middle
+    Tail
+}
+
+// A paragraph's baseline-to-baseline height, distinct from the face's glyph
+// bounds and the additional space requested by `lineSpacing`. The same value
+// participates in both layout and placement of wrapped text runs.
+public enum CATextLineHeight {
+    Variable
+    Tight
+    Normal
+    Loose
+    Exact(Number)
+    Leading(Number)
+    Multiple(Number)
+}
+
+// Text.LineStyle.Pattern in the native renderer. Each pattern is actually
+// drawn as a succession of oriented strokes in the same clip as its glyphs.
+public enum CATextDecorationPattern {
+    Solid
+    Dot
+    Dash
+    DashDot
+    DashDotDot
 }
 
 public struct CAText {
@@ -136,6 +170,10 @@ public struct CAText {
     var size: Number = 15.0
     var weight: Number = 400.0
     var design: CAFontDesign = .Default
+    // Requested width relative to the font's standard 100%-width axis. The
+    // native `wdth` OpenType axis is used where the selected face supports it;
+    // a face without that axis keeps its own standard glyph outlines.
+    var widthRatio: Number = 1.0
     // Whether a run wider than its bounds breaks onto further lines at word
     // boundaries, as a wrapped text layer does, rather than running past them.
     var wraps: Bool = false
@@ -143,7 +181,36 @@ public struct CAText {
     // under an ellipsis, as SwiftUI's `.lineLimit(_:)`; 0 for as many as it
     // takes. And the room between two of its lines, as `.lineSpacing(_:)`.
     var lineLimit: Number = 0
+    var truncationMode: CATextTruncationMode = .Tail
+    // A Text may shrink its glyph size to fit within a line limit before it
+    // falls back to truncation. The same lower bound is consumed by layout and
+    // by the compositor's actual glyph rasterization, not by a clip mask.
+    var minimumScaleFactor: Number = 1.0
+    // Positive raises text from the ordinary baseline; negative lowers it.
+    // Layout reserves the absolute amount as additional height and the
+    // compositor offsets the glyphs inside that expanded box.
+    var baselineOffset: Number = 0.0
+    // Extra advance between shaped text clusters. Tracking also reserves a
+    // final advance; kerning does not. The rendered glyph pens use the same
+    // values that the paragraph-breaking and intrinsic-width code measures.
+    var letterSpacing: Number = 0.0
+    var trackingSpacing: Bool = false
+    // Permit a bounded reduction in inter-cluster spacing before the normal
+    // line-limit truncation path. The actual reduction is chosen from the
+    // paragraph's offered width, never once in widget construction.
+    var allowsTightening: Bool = false
     var lineSpacing: Number = 0.0
+    var lineHeight: CATextLineHeight = .Variable
+    var underline: Bool = false
+    var underlinePattern: CATextDecorationPattern = .Solid
+    var underlineColor: CAColor? = .None
+    var strikethrough: Bool = false
+    var strikethroughPattern: CATextDecorationPattern = .Solid
+    var strikethroughColor: CAColor? = .None
+    // The source string remains in the layout run so its intrinsic size and
+    // wrapping stay stable, but the compositor substitutes opaque skeleton
+    // bars for glyphs. This never exposes source letters in the color pass.
+    var redacted: Bool = false
     // Where each wrapped line sits across the layer's width: 0 at its leading
     // edge, 0.5 centered, 1 at its trailing edge.
     var alignment: Number = 0.0

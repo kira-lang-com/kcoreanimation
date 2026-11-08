@@ -1,0 +1,349 @@
+import Foundation
+import KCoreAnimation
+
+// A tiny rounding error in a *scaled* 13pt font size is enough for the old
+// cancellation path to choose 25px instead of 26px. The stable size uses only
+// the authored points and backing density, not its parent's current scale.
+construct AnimatedFontRasterizationIgnoresScaledSizeRoundoff() extends Test {
+    test {
+        let scale = 0.825
+        let font = 13.0
+        let old = glyphSizeKey(((font * scale) - 0.000001) / scale * 2.0)
+        let correct = glyphRasterSizeKey(font, 2.0)
+        return old == 25 && correct == 26
+    }
+    expect { let result: Result<Any, TestFailure> = .Ok(true) return result }
+}
+
+// During an insertion-scale spring, or a rotating/zooming parent transform,
+// font rasterization must use the unchanged nominal size at any actual
+// presentation scale. The finished quads, not the glyph face, are transformed.
+construct AnimatedGlyphRasterSizeNeverOscillates() extends Test {
+    test {
+        var vulnerable = false
+        for font in [11, 12, 13, 14, 15, 16, 17, 18, 20, 22, 24, 28] {
+            for backing in [1.0, 2.0, 3.0] {
+                let raster = backing * textOversampleAt(backing)
+                let nominal = glyphRasterSizeKey(font, backing)
+                for index in 0..2000 {
+                    let animated = 0.650285 + Number(index) * 0.00031
+                    let presentation = scaleTransform(animated, animated).textScale()
+                    // The legacy inverse scaling was vulnerable to even a
+                    // subpixel calculation error between caller and batch.
+                    if glyphSizeKey(
+                        (font * presentation - 0.000001) / presentation * raster
+                    ) != nominal {
+                        vulnerable = true
+                    }
+                    if glyphRasterSizeKey(font, backing) != nominal { return false }
+                }
+            }
+        }
+        return vulnerable
+    }
+    expect { let result: Result<Any, TestFailure> = .Ok(true) return result }
+}
+
+// An actual zoom scales the text's frame about its center. The local baseline
+// must remain at one stable glyph pixel while the rendered baseline follows
+// the frame's center smoothly, even at the spring's 1x crossing.
+construct AnimatedTextBaselineFollowsScaleWithoutJumping() extends Test {
+    test {
+        let center = 51.25
+        let restingHeight = 24.0
+        let faceAscent = 11.0
+        let faceDescent = 3.0
+        let backing = 2.0
+        let restingOffset = (faceAscent - faceDescent) / 2.0
+        var previousY = 0.0
+        var visited = false
+        for step in 0..1001 {
+            let scale = 0.90 + Number(step) * 0.0002
+            let height = restingHeight * scale
+            let top = center - height * 0.5
+            let (origin, localTop, localHeight) = textVerticalRunPlacement(top, height, scale)
+            // The transform (not the text font size) scales the local glyph.
+            let localBaseline = localTop + (localHeight - faceAscent - faceDescent) * 0.5
+                + faceAscent
+            let localDevice = trunc(localBaseline * backing + 0.5)
+            let displayedBaseline = origin + scale * localDevice / backing
+            let expected = center + scale * restingOffset
+            if abs(origin - center) > 0.000001 { return false }
+            if abs(localBaseline - restingOffset) > 0.000001 { return false }
+            if abs(displayedBaseline - expected) > 0.000001 { return false }
+            if visited && abs(displayedBaseline - previousY) > 0.01 { return false }
+            previousY = displayedBaseline
+            visited = true
+        }
+        return true
+    }
+    expect { let result: Result<Any, TestFailure> = .Ok(true) return result }
+}
+
+// A translating parent must not make the glyph's baseline snap independently
+// of its neighboring card/text. Quantizing the center per frame would produce
+// half-point hops on a Retina window.
+construct AnimatedTextBaselineFollowsTranslationWithoutJumping() extends Test {
+    test {
+        let backing = 2.0
+        let scale = 0.985
+        let height = 23.0 * scale
+        let ascent = 10.0
+        let descent = 2.0
+        var previous = 0.0
+        var visited = false
+        for step in 0..1000 {
+            let center = 78.35 + Number(step) * 0.001
+            let top = center - height * 0.5
+            let (origin, localTop, localHeight) = textVerticalRunPlacement(top, height, scale)
+            let baseline = localTop + (localHeight - ascent - descent) * 0.5 + ascent
+            let aligned = trunc(baseline * backing + 0.5) / backing
+            let displayed = origin + scale * aligned
+            if visited && abs(displayed - previous - 0.001) > 0.000001 { return false }
+            previous = displayed
+            visited = true
+        }
+        return true
+    }
+    expect { let result: Result<Any, TestFailure> = .Ok(true) return result }
+}
+
+// The preceding bug fix anchored Y, but X still snapped to the device pixel
+// grid on every frame. The glyph pen's subpixel phase would change as the
+// spring moved, with an especially large jump as its scale crossed 1x.
+construct AnimatedTextHorizontalPenFollowsScaleWithoutJumping() extends Test {
+    test {
+        let center = 102.35
+        let restWidth = 138.0
+        let backing = 2.0
+        let localPenOffset = 12.375
+        var previous = 0.0
+        var visited = false
+        for step in 0..1001 {
+            let animated = 0.90 + Number(step) * 0.0002
+            let width = restWidth * animated
+            let left = center - width * 0.5
+            let (origin, localLeft, localWidth) = textHorizontalRunPlacement(left, width, animated)
+            if abs(origin - center) > 0.000001 { return false }
+            if abs(localLeft + restWidth * 0.5) > 0.000001 { return false }
+            if abs(localWidth - restWidth) > 0.000001 { return false }
+            let phase = glyphPhaseOf((localLeft + localPenOffset) * backing)
+            let resting = glyphPhaseOf((-restWidth * 0.5 + localPenOffset) * backing)
+            if phase != resting { return false }
+            let displayed = origin + animated * (localLeft + localPenOffset)
+            let expected = center + animated * (-restWidth * 0.5 + localPenOffset)
+            if abs(displayed - expected) > 0.00001 { return false }
+            if visited && abs(displayed - previous) > 0.02 { return false }
+            previous = displayed
+            visited = true
+        }
+        return true
+    }
+    expect { let result: Result<Any, TestFailure> = .Ok(true) return result }
+}
+
+construct AnimatedTextHorizontalPenFollowsTranslationWithoutJumping() extends Test {
+    test {
+        let backing = 2.0
+        let animated = 0.985
+        let width = 125.0 * animated
+        let glyphOffset = 27.125
+        let localPen = -125.0 * 0.5 + glyphOffset
+        let stablePhase = glyphPhaseOf(localPen * backing)
+        var previous = 0.0
+        var visited = false
+        for step in 0..1000 {
+            let center = 81.35 + Number(step) * 0.001
+            let (origin, left, localWidth) = textHorizontalRunPlacement(
+                center - width * 0.5, width, animated
+            )
+            if abs(localWidth - 125.0) > 0.000001 { return false }
+            if glyphPhaseOf((left + glyphOffset) * backing) != stablePhase { return false }
+            let displayed = origin + animated * (left + glyphOffset)
+            if visited && abs(displayed - previous - 0.001) > 0.000001 { return false }
+            previous = displayed
+            visited = true
+        }
+        return true
+    }
+    expect { let result: Result<Any, TestFailure> = .Ok(true) return result }
+}
+
+// The original pixel-snap path demonstrably interrupted a smooth translation:
+// with 2x backing, an old snapped origin advances in 0.5pt steps even when
+// the parent moved just 0.001pt. The center-anchored path cannot do that.
+construct AnimatedTextOldScreenSnapIntroducedHorizontalJumps() extends Test {
+    test {
+        let backing = 2.0
+        let width = 123.0 * 0.985
+        let shown = 0.985
+        var oldPrevious = 0.0
+        var newPrevious = 0.0
+        var oldJumped = false
+        for step in 0..1000 {
+            let x = 40.35 + Number(step) * 0.001
+            let oldOrigin = floor(x * backing + 0.5) / backing
+            let oldPen = (x - oldOrigin) / shown
+            let oldPhase = glyphPhaseOf(oldPen * backing)
+            let (origin, local, localWidth) = textHorizontalRunPlacement(x, width, shown)
+            let newPhase = glyphPhaseOf(local * backing)
+            if newPhase != glyphPhaseOf(-width / shown * backing * 0.5) {
+                return false
+            }
+            if step > 0 && abs(oldOrigin - oldPrevious) > 0.25 {
+                oldJumped = true
+            }
+            if step > 0 && abs(origin - newPrevious - 0.001) > 0.000001 { return false }
+            // The old pen phase depends on that snapping boundary while the
+            // new local pen and phase do not; not every step needs a change.
+            if oldPhase < 0 { return false }
+            oldPrevious = oldOrigin
+            newPrevious = origin
+        }
+        return oldJumped
+    }
+    expect { let result: Result<Any, TestFailure> = .Ok(true) return result }
+}
+
+// A 2x window gives text a half-point device pixel. When the font's baseline
+// metric changes slightly during a weight animation, the old truncation
+// jumped an entire 0.5pt while the card itself moved smoothly. Exercise the
+// actual baseline calculation and device-position path, not only the box.
+construct AnimatedTextRasterBaselineMovesContinuously() extends Test {
+    test {
+        let backing = 2.0
+        let height = 24.0
+        let descender = 4.0
+        var previously = 0.0
+        var priorSnapped = 0.0
+        var oldJumped = false
+        for step in 0..1000 {
+            let center = 70.25 + Number(step) * 0.001
+            let ascender = 10.0 + Number(step) * 0.001
+            let (origin, runY, runH) = textVerticalRunPlacement(
+                center - height * 0.5, height, 1.0
+            )
+            let baseline = textRunBaseline(runY, runH, ascender, descender, 0, 0, false)
+            let pixel = textGlyphBaselineDevice(baseline, backing)
+            let displayed = origin + pixel / backing
+            let oldPixel = trunc(baseline * backing + 0.5)
+            let oldDisplayed = origin + oldPixel / backing
+            if step > 0 {
+                if abs(displayed - previously - 0.0015) > 0.000001 { return false }
+                if abs(oldDisplayed - priorSnapped - 0.0015) > 0.25 { oldJumped = true }
+            }
+            previously = displayed
+            priorSnapped = oldDisplayed
+        }
+        return oldJumped
+    }
+    expect { let result: Result<Any, TestFailure> = .Ok(true) return result }
+}
+
+// Card/text boxes can animate their height without changing the inherited
+// transform scale. The old code changed baseline formula the instant the box
+// crossed its font line height; the resulting discontinuity could be ~0.5pt.
+construct AnimatedTextInkBaselineCrossesLineHeightContinuously() extends Test {
+    test {
+        let ascender = 10.5
+        let descender = 3.5
+        let inkTop = 8.0
+        let inkBottom = 2.0
+        let center = 91.35
+        var previous = 0.0
+        var oldPrevious = 0.0
+        var sawOldJump = false
+        for step in 0..1000 {
+            let height = 13.50 + Number(step) * 0.001
+            let y = center - height * 0.5
+            let current = textRunBaseline(
+                y, height, ascender, descender, inkTop, inkBottom, true
+            )
+            let line = y + (height - ascender - descender) * 0.5 + ascender
+            let old = height >= ascender + descender
+                ? line
+                : y + (height - inkTop - inkBottom) * 0.5 + inkTop
+            if step > 0 {
+                if abs(current - previous) > 0.002 { return false }
+                if abs(old - oldPrevious) > 0.25 { sawOldJump = true }
+            }
+            previous = current
+            oldPrevious = old
+        }
+        return sawOldJump
+    }
+    expect { let result: Result<Any, TestFailure> = .Ok(true) return result }
+}
+
+// Even when both the layer's scale and its allocated height animate, the
+// computed local baseline must not pop from one pixel row or baseline rule
+// to another as the spring crosses 1x.
+construct AnimatedTextScaledAndResizedBaselineRemainsContinuous() extends Test {
+    test {
+        let backing = 2.0
+        let center = 100.125
+        var previous = 0.0
+        var visited = false
+        for step in 0..1000 {
+            let shown = 0.94 + Number(step) * 0.00012
+            let height = (13.5 + Number(step) * 0.001) * shown
+            let (origin, y, localHeight) = textVerticalRunPlacement(
+                center - height * 0.5, height, shown
+            )
+            let baseline = textRunBaseline(y, localHeight, 10.5, 3.5, 8.0, 2.0, true)
+            let placed = origin + shown * textGlyphBaselineDevice(baseline, backing) / backing
+            if visited && abs(placed - previous) > 0.004 { return false }
+            previous = placed
+            visited = true
+        }
+        return true
+    }
+    expect { let result: Result<Any, TestFailure> = .Ok(true) return result }
+}
+
+// Center-anchored text puts most glyph top edges at NEGATIVE local positions.
+// `trunc(-8.8)` used to start the raster quad at -8 instead of -9, cutting off
+// the glyph's first pixel until the position crossed another whole number.
+construct AnimatedGlyphBoundsNeverClipNegativeLocalTop() extends Test {
+    test {
+        var oldCropped = false
+        for index in 0..2000 {
+            let top: Float = Float(-14.0 + Number(index) * 0.007)
+            let left: Float = Float(-26.0 + Number(index) * 0.009)
+            let right = left + Float(10.4)
+            let bottom = top + Float(12.7)
+            let (x0, y0, x1, y1) = glyphOuterPixelBounds(
+                left, top, right, bottom, Float(0)
+            )
+            if x0 > left || y0 > top || x1 < right || y1 < bottom { return false }
+            if top < 0 && trunc(top) > top { oldCropped = true }
+        }
+        return oldCropped
+    }
+    expect { let result: Result<Any, TestFailure> = .Ok(true) return result }
+}
+
+// The quad may grow by one pixel as its local top crosses a whole row, but
+// the compensating atlas UV must keep the painted glyph in the SAME position.
+construct AnimatedGlyphNegativeBoundsKeepContinuousAtlasPosition() extends Test {
+    test {
+        let overs: Float = Float(2)
+        let screenY: Float = Float(-4)
+        var previous = Float(0)
+        var visited = false
+        for index in 0..1000 {
+            let top = Float(-8.5 + Number(index) * 0.003)
+            let (x0, y0, x1, y1) = glyphOuterPixelBounds(
+                Float(-12.4), top, Float(-5.1), top + Float(8.3), Float(0)
+            )
+            let atlasOffset = (screenY - y0) * overs - (top - y0) * overs
+            let expected = (screenY - top) * overs
+            if abs(atlasOffset - expected) > Float(0.00001) { return false }
+            if visited && abs(atlasOffset - previous) > Float(0.007) { return false }
+            previous = atlasOffset
+            visited = true
+        }
+        return true
+    }
+    expect { let result: Result<Any, TestFailure> = .Ok(true) return result }
+}

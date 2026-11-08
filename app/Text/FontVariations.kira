@@ -41,6 +41,7 @@ struct OutlineVector {
 @Open enum AxisTag: UN32 {
     Weight = 0x77676874
     OpticalSize = 0x6F70737A
+    Width = 0x77647468
 }
 
 // Byte positions and bits of the variation tables.
@@ -197,12 +198,28 @@ extend FontFile {
     // axis at the text's size in points, the unit OpenType states the axis
     // in, whatever the pixels it is drawn at, and the weight axis at `weight`.
     // Every other axis stands at its default.
-    function coordinates(opticalSize: Float, weight: Float) -> [Float] {
+    function coordinates(
+        opticalSize: Float,
+        weight: Float,
+        widthRatio: Float = 1.0
+    ) -> [Float] {
         var coordinates: [Float] = []
         for (index, axis) in variations.axes.enumerated() {
             let wanted = match axis.tag {
                 OpticalSize -> opticalSize
                 Weight -> weight
+                Width -> {
+                    // The `wdth` axis is expressed in percentages/nominal
+                    // designer values, not a universal 0..1 normalized width.
+                    // Interpolate relative to this font's own standard and
+                    // endpoints, retaining its natural 100%-width at 1.0.
+                    // Fonts without a wdth axis stay at their own outlines.
+                    let narrower = widthRatio < 1.0
+                    let distance = narrower
+                        ? (1.0 - widthRatio) / 0.3
+                        : (widthRatio - 1.0) / 0.2
+                    returnValueWidth(axis, clamp(distance, 0.0, 1.0), !narrower)
+                }
                 else -> axis.standard
             }
             var normal = normalized(axis, clamp(wanted, axis.minimum, axis.maximum))
@@ -240,6 +257,12 @@ extend FontFile {
         tuples.addDeltas(data, coordinates, outline, deltas)
         return deltas
     }
+}
+
+function returnValueWidth(axis: borrow FontAxis, fraction: Float, expands: Bool) -> Float {
+    return expands
+        ? axis.standard + (axis.maximum - axis.standard) * fraction
+        : axis.standard + (axis.minimum - axis.standard) * fraction
 }
 
 extend GlyphVariationTable {

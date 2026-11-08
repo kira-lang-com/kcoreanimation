@@ -184,10 +184,14 @@ extend CALayerTree {
             damaged = true
         }
         self.nodes[i].hit = layer.hittable
+        self.nodes[i].allowsHitTesting = layer.allowsHitTesting
         self.nodes[i].interactive = layer.interactive
         self.nodes[i].slidesPress = layer.slidesPress
         self.nodes[i].hitKey = layer.hitKey
-        self.nodes[i].scrolls = layer.scrollAxis != .None
+        self.nodes[i].hoverKey = layer.hoverKey
+        self.nodes[i].focusKey = layer.focusKey
+        self.nodes[i].focusesOnPointer = layer.focusesOnPointer
+        self.nodes[i].scrolls = layer.scrollAxis != .None && layer.acceptsScrollInput
         self.nodes[i].removal = layer.removal
         if damaged {
             self.nodes[i].damaged = true
@@ -262,16 +266,36 @@ extend CALayerTree {
     ) -> LayerId {
         self.beginReconcile()
         var rootId = self.rootId
-        if rootId == Layers.none {
+        let appearing = rootId == Layers.none
+        if appearing {
             rootId = self.makeLayer(Layers.none, root.key, root.content)
         }
         self.reuse(rootId)
-        self.applyLayerDescription(rootId, root, geometryImmediate)
+        // The root is described directly rather than through reconcileLayer,
+        // but still obeys the same Core Animation transaction semantics.
+        // A newly mounted root has nothing to animate from; a root with
+        // `disablesActions` must not implicitly ease a width/text update.
+        var timed = false
+        match root.animation {
+            Inherit -> {}
+            Timed(timing) -> {
+                self.beginTransaction(copy timing)
+                timed = true
+            }
+        }
+        if appearing || root.disablesActions {
+            self.beginTransaction(immediateTiming())
+            self.applyLayerDescription(rootId, root)
+            self.commitTransaction()
+        } else {
+            self.applyLayerDescription(rootId, root, geometryImmediate)
+        }
         var children: [LayerId] = []
         for child in root.sublayers {
             children.append(self.reconcileLayer(rootId, child, geometryImmediate))
         }
         self.setChildren(rootId, move children)
+        if timed { self.commitTransaction() }
         self.endReconcile()
         return rootId
     }

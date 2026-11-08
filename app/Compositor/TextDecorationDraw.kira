@@ -1,0 +1,155 @@
+import Foundation
+import Ember
+
+// A single visible stretch of a Text.LineStyle.Pattern. Offsets are measured
+// along the *actual shaped line advance*, not the original String's scalar
+// count, so ligatures, font-width axes, kerning and truncation all agree.
+public struct CATextDecorationSegment {
+    let offset: Number = 0.0
+    let length: Number = 0.0
+}
+
+public function foundationTextDecorationSegments(
+    length: Number,
+    thickness: Number,
+    pattern: CATextDecorationPattern
+) -> [CATextDecorationSegment] {
+    var segments: [CATextDecorationSegment] = []
+    if length <= 0.0 || thickness <= 0.0 { return move segments }
+    if pattern == .Solid {
+        segments.append(CATextDecorationSegment { offset: 0.0, length: length })
+        return move segments
+    }
+    let dot = max(thickness, 0.7)
+    let dash = max(thickness * 4.0, 2.5)
+    let gap = max(thickness * 2.0, 1.4)
+    var x = 0.0
+    var phase = 0
+    // A small point-size line is normally <1000 pt. Bound the number of quads
+    // against huge unbounded layout proposals while still drawing full text.
+    for step in 0..512 {
+        if x >= length { break }
+        let segmentLength = match pattern {
+            Dot -> dot
+            Dash -> dash
+            DashDot -> phase == 0 ? dash : dot
+            DashDotDot -> phase == 0 ? dash : dot
+            Solid -> length
+        }
+        let painted = min(segmentLength, length - x)
+        if painted > 0.0 {
+            segments.append(CATextDecorationSegment {
+                offset: x, length: painted
+            })
+        }
+        x += segmentLength + gap
+        match pattern {
+            DashDot -> phase = phase == 0 ? 1 : 0
+            DashDotDot -> phase = phase >= 2 ? 0 : phase + 1
+            else -> {}
+        }
+    }
+    return move segments
+}
+
+// Relative to each run's line-box center. Underlines are below the baseline,
+// strike lines pass through the x-height. Use the font size rather than the
+// entire proposed row height so oversized controls do not move decorations.
+public function foundationTextDecorationBaseline(
+    underline: Bool,
+    fontSize: Number
+) -> Number {
+    return underline ? fontSize * 0.34 : -fontSize * 0.045
+}
+
+extend EmberFoundationBackend {
+    function drawTextDecoration(
+        borrow mut self,
+        text: borrow CAText,
+        pattern: CATextDecorationPattern,
+        color: CAColor?,
+        underline: Bool,
+        quad: borrow CAOrientedQuad,
+        lineCenterX: Number,
+        lineCenterY: Number,
+        lineWidth: Number,
+        textSize: Number,
+        textScale: Number,
+        fallback: borrow RGBAColor,
+        clipMinX: Number,
+        clipMinY: Number,
+        clipMaxX: Number,
+        clipMaxY: Number,
+        clipRadius: Number,
+        clipShapeKind: Number,
+        opacity: Number
+    ) {
+        if lineWidth <= 0.0 { return }
+        let stroke = max(0.8, textSize * 0.056) * textScale
+        let across = foundationTextDecorationBaseline(underline, textSize) * textScale
+        let transparent = RGBAColor { a: 0.0 }
+        let ink = match color {
+            Some(value) -> value.toFoundation(opacity)
+            None -> RGBAColor {
+                r: fallback.r, g: fallback.g, b: fallback.b,
+                a: fallback.a * opacity
+            }
+        }
+        for piece in foundationTextDecorationSegments(lineWidth, stroke, pattern) {
+            // Shape the line in its local coordinates, then apply the same
+            // full rotation as the corresponding glyphs.
+            let localX = piece.offset + piece.length / 2.0 - lineWidth / 2.0
+            let cx = lineCenterX + quad.rotCos * localX - quad.rotSin * across
+            let cy = lineCenterY + quad.rotSin * localX + quad.rotCos * across
+            self.batch.pushLayerQuad(
+                cx, cy,
+                piece.length / 2.0,
+                stroke / 2.0,
+                quad.rotCos, quad.rotSin,
+                pattern == .Dot ? stroke / 2.0 : stroke / 4.0,
+                0.0,
+                ink,
+                transparent,
+                clipMinX, clipMinY, clipMaxX, clipMaxY,
+                clipRadius, clipShapeKind,
+                0.0, transparent, 0.0
+            )
+        }
+    }
+
+    function drawTextDecorationsForLine(
+        borrow mut self,
+        text: borrow CAText,
+        quad: borrow CAOrientedQuad,
+        lineCenterX: Number,
+        lineCenterY: Number,
+        lineWidth: Number,
+        size: Number,
+        textScale: Number,
+        fallback: borrow RGBAColor,
+        clipMinX: Number,
+        clipMinY: Number,
+        clipMaxX: Number,
+        clipMaxY: Number,
+        clipRadius: Number,
+        clipShapeKind: Number,
+        opacity: Number
+    ) {
+        if text.underline {
+            self.drawTextDecoration(
+                text, text.underlinePattern, copy text.underlineColor, true,
+                quad, lineCenterX, lineCenterY, lineWidth, size, textScale,
+                fallback, clipMinX, clipMinY, clipMaxX, clipMaxY,
+                clipRadius, clipShapeKind, opacity
+            )
+        }
+        if text.strikethrough {
+            self.drawTextDecoration(
+                text, text.strikethroughPattern, copy text.strikethroughColor, false,
+                quad, lineCenterX, lineCenterY, lineWidth, size, textScale,
+                fallback, clipMinX, clipMinY, clipMaxX, clipMaxY,
+                clipRadius, clipShapeKind, opacity
+            )
+        }
+    }
+}

@@ -1,0 +1,129 @@
+import Foundation
+import Ember
+import KiraLayout
+
+// A conservative region record for the root pass. Only rectangular, unrotated,
+// fully opaque fills and explicit destination-out cuts are authoritative.
+// Partial/complex coverage stays on the portable renderer.
+public struct CANativeGlassCoverage {
+    var rect: Rect = Rect {}
+    var clears: Bool = false
+}
+
+extend EmberFoundationBackend {
+    function beginNativeGlass(viewportHeight: Number) {
+        self.nativeGlassRegions = []
+        self.nativeGlassActive = false
+        if self.windowTransparent || self.windowNativeBackdrop {
+            self.nativeGlassActive = metalNativeGlassBegin(viewportHeight)
+        }
+    }
+
+    function finishNativeGlass() {
+        if self.nativeGlassActive {
+            metalNativeGlassEnd()
+            self.nativeGlassActive = false
+        }
+    }
+
+    // Record coverage changes in the same order as the GPU draws them. A
+    // destination-out rectangle exposes the native behind-window material;
+    // an opaque fill blocks it. A later fill supersedes an earlier cut.
+    function noteNativeGlassCoverage(
+        quad: borrow CAOrientedQuad,
+        radius: Number,
+        fill: borrow RGBAColor,
+        blend: CABlendMode,
+        shapeKind: Number,
+        clipMinX: Number,
+        clipMinY: Number,
+        clipMaxX: Number,
+        clipMaxY: Number
+    ) {
+        if !self.nativeGlassActive || quad.rotSin != 0.0 || quad.rotCos != 1.0 {
+            return
+        }
+        if fill.a < 0.999 {
+            return
+        }
+        if blend != .Normal && blend != .DestinationOut {
+            return
+        }
+        // Rounded and nonrectangular opaque surfaces still block the real
+        // backdrop. Their full bounds are conservatively treated as opaque.
+        // Only a complete rectangular destination-out cut can expose it.
+        if blend == .DestinationOut && (radius != 0.0 || shapeKind != 0.0) {
+            return
+        }
+        let x = quad.centerX - quad.halfW
+        let y = quad.centerY - quad.halfH
+        let minX = max(x, clipMinX)
+        let minY = max(y, clipMinY)
+        let maxX = min(x + quad.halfW * 2.0, clipMaxX)
+        let maxY = min(y + quad.halfH * 2.0, clipMaxY)
+        if maxX <= minX || maxY <= minY { return }
+        self.nativeGlassRegions.append(CANativeGlassCoverage {
+            rect: Rect {
+                x: minX, y: minY,
+                width: maxX - minX, height: maxY - minY
+            },
+            clears: blend == .DestinationOut
+        })
+    }
+
+    function nativeGlassCanSample(x: Number, y: Number, width: Number, height: Number) -> Bool {
+        if !self.nativeGlassActive { return false }
+        var transparent = self.windowTransparent
+        let right = x + width
+        let bottom = y + height
+        for coverage in self.nativeGlassRegions {
+            let rect = coverage.rect
+            if rect.x >= right || rect.y >= bottom ||
+                rect.x + rect.width <= x || rect.y + rect.height <= y {
+                continue
+            }
+            // Any partial overlap makes the result uncertain; keep the
+            // local renderer instead of refracting desktop through content.
+            let complete = rect.x <= x && rect.y <= y &&
+                rect.x + rect.width >= right &&
+                rect.y + rect.height >= bottom
+            if !complete { return false }
+            transparent = coverage.clears
+        }
+        return transparent
+    }
+
+    function tryNativeGlass(
+        x: Number,
+        y: Number,
+        width: Number,
+        height: Number,
+        radius: Number,
+        fill: borrow RGBAColor,
+        glass: borrow CAGlass,
+        opacity: Number,
+        clipMinX: Number,
+        clipMinY: Number,
+        clipMaxX: Number,
+        clipMaxY: Number,
+        rotCos: Number,
+        rotSin: Number
+    ) -> Bool {
+        if rotSin != 0.0 || rotCos != 1.0 || glass.morphBlend != 0.0 {
+            return false
+        }
+        if x < clipMinX || y < clipMinY ||
+            x + width > clipMaxX || y + height > clipMaxY {
+            return false
+        }
+        if !self.nativeGlassCanSample(x, y, width, height) {
+            return false
+        }
+        let bend = max(0.0, glass.edgeRefraction)
+        let blur = max(0.0, glass.blurAt(width, height) * GlassBlur.farRadius)
+        return metalNativeGlassSurface(
+            x, y, width, height, radius, bend, blur,
+            fill.r, fill.g, fill.b, opacity
+        )
+    }
+}

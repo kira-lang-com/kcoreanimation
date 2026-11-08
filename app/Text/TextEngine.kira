@@ -42,6 +42,17 @@ namespace SystemFonts {
         "/System/Library/Fonts/SFNSMono.ttf",
         "/System/Library/Fonts/Menlo.ttc"
     ]
+    let appleSerif: [String] = [
+        "/System/Library/Fonts/NewYork.ttf",
+        "/System/Library/Fonts/Times.ttc"
+    ]
+    let appleRounded: [String] = ["/System/Library/Fonts/SFNSRounded.ttf"]
+    let windowsSerif: [String] = ["C:/Windows/Fonts/times.ttf"]
+    let linuxSerif: [String] = [
+        "/usr/share/fonts/truetype/liberation2/LiberationSerif-Regular.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
+        "/usr/share/fonts/liberation-serif-fonts/LiberationSerif-Regular.ttf"
+    ]
     let windowsMonospaced: [String] = [
         "C:/Windows/Fonts/CascadiaMono.ttf",
         "C:/Windows/Fonts/consola.ttf"
@@ -158,6 +169,18 @@ extend TextEngine {
                     Missing -> return lookupFont(.Default)
                 }
             }
+            Serif -> {
+                match lookup(.Serif) {
+                    Found(font) -> return .Some(font)
+                    Missing -> return lookupFont(.Default)
+                }
+            }
+            Rounded -> {
+                match lookup(.Rounded) {
+                    Found(font) -> return .Some(font)
+                    Missing -> return lookupFont(.Default)
+                }
+            }
             Default, MonospacedDigits -> return lookupFont(.Default)
         }
     }
@@ -228,6 +251,22 @@ function fontPaths(design: borrow CAFontDesign, only: borrow String = "") -> [St
                 Unknown -> {}
             }
         }
+        Serif -> {
+            if only.count > 0 { return [copy only] }
+            match targetPlatform!() {
+                MacOS, Ios -> paths = copy SystemFonts.appleSerif
+                Windows -> paths = copy SystemFonts.windowsSerif
+                Linux -> paths = copy SystemFonts.linuxSerif
+                Tessera, Android, Wasm, Unknown -> {}
+            }
+        }
+        Rounded -> {
+            if only.count > 0 { return [copy only] }
+            match targetPlatform!() {
+                MacOS, Ios -> paths = copy SystemFonts.appleRounded
+                Windows, Linux, Tessera, Android, Wasm, Unknown -> {}
+            }
+        }
     }
     return paths
 }
@@ -249,11 +288,13 @@ extend TextEngine {
         size: Number,
         points: Number,
         weight: Number,
-        tabular: Bool
+        tabular: Bool,
+        widthRatio: Number = 1.0
     ) -> FaceInstance {
         let halfPixels = max(round(size * 2), 1)
         let halfPoints = max(round(points * 2), 1)
         let wholeWeight = round(weight)
+        let widthKey = round(clamp(widthRatio, 0.5, 1.5) * 100.0)
         // The key packed into one number rather than spelled out: formatting
         // and hashing a string per run cost more than the lookup it found.
         let field = TextCache.instanceField
@@ -263,8 +304,9 @@ extend TextEngine {
             ((font.raw * field + halfPixels) * field + halfPoints) * field + wholeWeight
         ) * 2
             + (tabular ? 1 : 0)
+        let axisName = name * 151.0 + widthKey
         if keyed {
-            match instances.value(name) {
+            match instances.value(axisName) {
                 Some(known) -> return known
                 None -> {}
             }
@@ -276,11 +318,12 @@ extend TextEngine {
             halfPixels / 2,
             halfPoints / 2,
             wholeWeight,
-            tabular
+            tabular,
+            widthKey / 100.0
         )
         if !keyed { return made }
         if instances.count() >= TextCache.instances { instances.removeAll() }
-        instances.set(name, copy made)
+        instances.set(axisName, copy made)
         return made
     }
 
@@ -321,7 +364,8 @@ extend FontFile {
         pixels: Number,
         points: Number,
         weight: Number,
-        tabular: Bool
+        tabular: Bool,
+        widthRatio: Number = 1.0
     ) -> FaceInstance {
         var perEm = round(pixels * 64) / 64
         if integerPpem { perEm = max(round(perEm), 1) }
@@ -331,7 +375,7 @@ extend FontFile {
             key: key,
             tabular: tabular,
             scale: scale,
-            coordinates: coordinates(Float(points), Float(weight)),
+            coordinates: coordinates(Float(points), Float(weight), Float(widthRatio)),
             ascender: Number(round(ascender * scale)),
             descender: Number(-round(descender * scale)),
             lineHeight: Number(round((ascender - descender + lineGap) * scale)),

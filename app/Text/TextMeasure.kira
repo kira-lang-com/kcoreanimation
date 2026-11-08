@@ -12,16 +12,21 @@ extend TextEngine {
         text: borrow String,
         size: Number,
         points: Number,
-        weight: Number
+        weight: Number,
+        spacing: Number = 0.0,
+        trailingSpacing: Bool = false,
+        widthRatio: Number = 1.0
     ) -> Number {
         let font = match face(design) {
             Some(font) -> font
             None -> return 0
         }
-        let instance = instance(font, size, points, weight, design == .MonospacedDigits)
+        let instance = instance(font, size, points, weight, design == .MonospacedDigits, widthRatio)
         let key = "\(instance.key) \(text)"
         match runs.value(key) {
-            Some(known) -> return known
+            Some(known) -> return max(0.0, known + runExtraSpacing(
+                instance, text, spacing, trailingSpacing
+            ))
             None -> {}
         }
         var width: Number = 0
@@ -30,7 +35,35 @@ extend TextEngine {
         }
         if runs.count() >= TextCache.runs { runs.removeAll() }
         runs.set(move key, width)
-        return width
+        return max(0.0, width + runExtraSpacing(
+            instance, text, spacing, trailingSpacing
+        ))
+    }
+
+    // A shaped cluster is the unit to which KCoreAnimation's GPOS marks and
+    // ligatures attach. Apply letter spacing BETWEEN clusters, never between
+    // glyphs belonging to one cluster (e.g. a letter with a combining mark).
+    // SwiftUI tracking additionally reserves a final space after the last
+    // cluster. Kerning does not reserve that final advance.
+    function runExtraSpacing(
+        borrow mut self,
+        instance: borrow FaceInstance,
+        text: borrow String,
+        spacing: Number,
+        trailingSpacing: Bool
+    ) -> Number {
+        if spacing == 0.0 { return 0.0 }
+        let run = shapedRun(instance, text)
+        var clusters: Number = 0
+        var previous: Number = -1
+        for glyph in run {
+            if glyph.cluster != previous {
+                clusters++
+                previous = glyph.cluster
+            }
+        }
+        let gaps = trailingSpacing ? clusters : max(clusters - 1.0, 0.0)
+        return spacing * gaps
     }
 
     // The instance a run in `design` at `size` pixels for text of `points`,
@@ -40,10 +73,13 @@ extend TextEngine {
         design: borrow CAFontDesign,
         size: Number,
         points: Number,
-        weight: Number
+        weight: Number,
+        widthRatio: Number = 1.0
     ) -> FaceInstance? {
         return match face(design) {
-            Some(font) -> .Some(instance(font, size, points, weight, design == .MonospacedDigits))
+            Some(font) -> .Some(instance(
+                font, size, points, weight, design == .MonospacedDigits, widthRatio
+            ))
             None -> .None
         }
     }
@@ -56,7 +92,8 @@ extend TextEngine {
         text: borrow String,
         size: Number,
         points: Number,
-        weight: Number
+        weight: Number,
+        widthRatio: Number = 1.0
     ) -> TextInk? {
         if text.count == 0 || size <= 0 { return .None }
         let font = match face(design) {
@@ -69,7 +106,8 @@ extend TextEngine {
             size * TextCache.inkScale,
             points,
             round(weight / step) * step,
-            design == .MonospacedDigits
+            design == .MonospacedDigits,
+            widthRatio
         )
         let key = "\(instance.key) \(text)"
         match inks.value(key) {

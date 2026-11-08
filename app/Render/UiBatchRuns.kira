@@ -237,6 +237,11 @@ extend UiBatch {
         w: Number,
         h: Number,
         color: borrow RGBAColor,
+        // The original font size in logical points, BEFORE the layer's
+        // presentation scale. A glyph is rasterized once at this size and
+        // its quad follows `displayScale`; multiplying and dividing by the
+        // animated scale first loses floating-point precision and can make
+        // a 26px glyph alternate between 25 and 26px during a spring.
         sizePx: Number,
         weightAxis: Number,
         clipMinX: Number,
@@ -271,6 +276,11 @@ extend UiBatch {
         // Set on the face's own ascent and descent, as a label is; see
         // `CAText.labelMetrics`.
         labelMetrics: Bool = false,
+        // Extra spacing is measured and applied once per shaped cluster, so a
+        // combining mark does not drift away from its base glyph. Tracking's
+        // extra final advance belongs to line width, not to glyph placement.
+        letterSpacing: Number = 0.0,
+        widthRatio: Number = 1.0,
     ) {
         unsafe {
             // Recover the compositor state ONCE for the whole string. Every per-glyph step
@@ -302,34 +312,29 @@ extend UiBatch {
             // through, its glyphs would snap to a different pixel size and its
             // baseline to a different pixel row frame by frame, and it would shake
             // against everything else moving with it.
-            var shown: Number = 1.0
-            if displayScale > 0.0 && (displayScale > 1.0001 || displayScale < 0.9999) {
-                shown = displayScale
-            }
-            // The origin is the device pixel nearest the run's corner, so the
-            // whole-pixel decisions made about it are the ones the run makes at
-            // rest: when the scale arrives at 1 the glyphs are already where the
-            // settled run puts them, and nothing hops a pixel as it lands.
-            let originX = shown == 1.0 ? 0.0 : floor(x * scale + 0.5) / scale
-            let originY = shown == 1.0 ? 0.0 : floor(y * scale + 0.5) / scale
-            let runX = (x - originX) / shown
-            let runY = (y - originY) / shown
-            let runW = w / shown
-            let runH = h / shown
+            let shown = displayScale > 0.0 ? displayScale : 1.0
+            // Keep the vertical glyph baseline in the run's own coordinates.
+            // The *whole* box moves and scales around its center without any
+            // per-frame quantization of its screen-space Y origin. Snapping
+            // that origin made the glyphs jump up/down one pixel, especially
+            // as a spring crossed the old 1.0001 scale threshold.
+            let (originX, runX, runW) = textHorizontalRunPlacement(x, w, shown)
+            let (originY, runY, runH) = textVerticalRunPlacement(y, h, shown)
             let leftInk = inkLeft / shown
             let rightInk = inkRight / shown
             let topInk = inkTop / shown
             let bottomInk = inkBottom / shown
-            let sizeKey = glyphSizeKey(sizePx / shown * rasterScale)
+            let sizeKey = glyphRasterSizeKey(sizePx, scale)
             let weightKey = glyphWeightKey(weightAxis)
             let faceKey = state.faceKey(design)
-            let metricKey = (sizeKey * 1000 + weightKey) * 2 + faceKey
+            let metricKey = ((sizeKey * 1000 + weightKey) * 5 + faceKey) * 151
+                + round(clamp(widthRatio, 0.5, 1.5) * 100.0)
             let (faceAscender, faceDescender, lineAscent, lineDescent) = match state.metricsFor(
                 metricKey
             ) {
                 Some(metric) -> metric
                 None -> {
-                    if !state.setFace(sizeKey, weightKey, faceKey) {
+                    if !state.setFace(sizeKey, weightKey, faceKey, widthRatio) {
                         return
                     }
                     state.metrics.append(state.faceMetrics(metricKey))
@@ -360,24 +365,15 @@ extend UiBatch {
             if rightInk > leftInk && topInk > 0.0 && bottomInk >= 0.0 {
                 hasInk = true
             }
-            let lineBox = ascender + descender
-            var baseline = runY + (runH - lineBox) / 2.0 + ascender
-            if hasInk && runH < lineBox {
-                let inkHeight = topInk + bottomInk
-                if runH > inkHeight {
-                    baseline = runY + (runH - inkHeight) / 2.0 + topInk
-                } else {
-                    baseline = runY + topInk
-                }
-            }
-            // The baseline lands on a WHOLE device pixel. Horizontal position is resolved
-            // to a quarter pixel by rasterizing the outline at that phase (see the phase
-            // handling below), but there is no vertical equivalent and the platform does
-            // not have one either: for horizontal text macOS quantizes y outright. Leaving
-            // it fractional makes the sampler resample every glyph vertically — a uniform
-            // softness across all text, which is exactly what a run of unhinted glyphs
-            // must NOT have, or the whole thing reads as blurry rather than as smooth.
-            let baselineDevice = trunc(baseline * scale + 0.5)
+            let baseline = textRunBaseline(
+                runY, runH, ascender, descender,
+                topInk, bottomInk, hasInk
+            )
+            // Preserve subpixel movement through the run's height/weight
+            // animation. The glyph quad is expanded to device pixels below,
+            // with UV slack for its fractional Y position; separately rounding
+            // this baseline made the letters jump against the animated card.
+            let baselineDevice = textGlyphBaselineDevice(baseline, scale)
             // Adaptive only where a capture exists to read (from the first glass layer on).
             // The sample point is the RUN's center, carried on every glyph of the run, so a
             // string picks ONE ink and reads as one piece of text — sampling per glyph would
@@ -464,7 +460,7 @@ extend UiBatch {
 
             // The run shaped in the instance its glyphs are drawn from, so
             // ligatures and kerning land as measuring placed them.
-            if !state.setFace(sizeKey, weightKey, faceKey) {
+            if !state.setFace(sizeKey, weightKey, faceKey, widthRatio) {
                 return
             }
             let runInstance = match state.faceInstance {
@@ -477,7 +473,13 @@ extend UiBatch {
             var span = 0
             var lastByte: Number = 0
             var ink = RGBAColor { r: color.r, g: color.g, b: color.b, a: color.a }
+            var previousCluster: Number = -1
+            let spacingF = Float(letterSpacing)
             for shaped in shapedRun {
+                if previousCluster >= 0 && shaped.cluster != previousCluster {
+                    pen += spacingF
+                }
+                previousCluster = shaped.cluster
                 let glyph = shaped.glyph
                 if spans.count > 0 {
                     let byte = shaped.cluster
@@ -508,7 +510,7 @@ extend UiBatch {
                 let key = glyphCacheKey(Number(glyph.raw), sizeKey, weightKey, faceKey, phase)
                 var slotIndex = glyphIndex.value(key)
                 // --- inline rasterization on miss ---
-                if slotIndex == .None && !state.setFace(sizeKey, weightKey, faceKey) {
+                if slotIndex == .None && !state.setFace(sizeKey, weightKey, faceKey, widthRatio) {
                     break
                 }
                 if slotIndex == .None {
@@ -596,10 +598,9 @@ extend UiBatch {
                             // is taken from the atlas's own one-texel gutter, which is
                             // transparent. Every pixel the glyph touches is rasterized,
                             // and the sampling stays exactly two texels to a pixel.
-                            let x0 = trunc(leftDev) - padF
-                            let y0 = trunc(topDev) - padF
-                            let x1 = trunc(rightDev) + 1.0 + padF
-                            let y1 = trunc(bottomDev) + 1.0 + padF
+                            let (x0, y0, x1, y1) = glyphOuterPixelBounds(
+                                leftDev, topDev, rightDev, bottomDev, padF
+                            )
                             var gx = x0 / scaleF
                             var gy = y0 / scaleF
                             let gw = (x1 - x0) / scaleF

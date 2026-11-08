@@ -80,9 +80,13 @@ public struct CALayerNode {
     var capturesBackdrop: Bool = false
     var level: CALevel = .Inline
     var hit: Bool = false
+    var allowsHitTesting: Bool = true
     var interactive: Bool = false
     var slidesPress: Bool = false
     var hitKey: Number = 0
+    var hoverKey: Number = 0
+    var focusKey: Number = 0
+    var focusesOnPointer: Bool = false
     var scrolls: Bool = false
     // Lifted onto the overlay list: skipped by the in-place walk and drawn from
     // the canvas root instead, so it escapes its parent's clip and order.

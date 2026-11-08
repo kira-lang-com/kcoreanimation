@@ -38,6 +38,12 @@ public struct CALayoutIntent {
     // here, which is how a column of readable text keeps its measure on a wide
     // window. The floor still wins where the two cross.
     var maxWidth: Number = -1.0
+    // The perpendicular flexible frame ceiling, negative for unbounded.
+    var maxHeight: Number = -1.0
+    // Ideal extents are the size a flexible frame proposes when its parent
+    // does not resolve an axis. They do not override a fixed extent.
+    var idealWidth: Number = -1.0
+    var idealHeight: Number = -1.0
     // The size the layer's own content wants (a run of text, a glyph), when it
     // neither fills nor is fixed.
     var intrinsicWidth: Number = 0.0
@@ -47,8 +53,53 @@ public struct CALayoutIntent {
     var paddingTop: Number = 0.0
     var paddingTrailing: Number = 0.0
     var paddingBottom: Number = 0.0
+    // Optional, row-scoped list geometry. A presence bit distinguishes an
+    // edge not mentioned from an edge explicitly reset to its native default
+    // (`nil`), so multiple `.listRowInsets` calls override only their edges.
+    // These fields are consumed by KiraUI's list row layout, never rendered.
+    var hasListRowInsetTop: Bool = false
+    var listRowInsetTop: Number? = .None
+    var hasListRowInsetLeading: Bool = false
+    var listRowInsetLeading: Number? = .None
+    var hasListRowInsetBottom: Bool = false
+    var listRowInsetBottom: Number? = .None
+    var hasListRowInsetTrailing: Bool = false
+    var listRowInsetTrailing: Number? = .None
+    // Row-scoped List separator preferences. Presence is distinct from the
+    // optional value: `.Automatic`/a nil tint must reset an inner override,
+    // not be mistaken for no modifier at all. KCoreAnimation stores only
+    // geometry and paint values, never KiraUI's presentation enums.
+    var hasListRowSeparatorTop: Bool = false
+    var listRowSeparatorTop: Bool? = .None
+    var hasListRowSeparatorBottom: Bool = false
+    var listRowSeparatorBottom: Bool? = .None
+    var hasListRowSeparatorTintTop: Bool = false
+    var listRowSeparatorTintTop: CAColor? = .None
+    var hasListRowSeparatorTintBottom: Bool = false
+    var listRowSeparatorTintBottom: CAColor? = .None
+    // Row-local hover preferences are consumed only once the owning List has
+    // measured its complete cell. The numeric policy is a CoreAnimation
+    // transport detail: 0 resets to style default, 1 automatic, 2 highlight,
+    // 3 lift; KCoreAnimation does not import KiraUI presentation enums.
+    var hasListRowHoverEffect: Bool = false
+    var listRowHoverEffectMode: Number = 0.0
+    var hasListRowHoverEffectDisabled: Bool = false
+    var listRowHoverEffectDisabled: Bool = false
+    // Section-scoped overrides consumed by List after all child sections have
+    // lowered. Nil is an explicit return to the list style's default, not 0.
+    var hasListSectionMarginTop: Bool = false
+    var listSectionMarginTop: Number? = .None
+    var hasListSectionMarginLeading: Bool = false
+    var listSectionMarginLeading: Number? = .None
+    var hasListSectionMarginBottom: Bool = false
+    var listSectionMarginBottom: Number? = .None
+    var hasListSectionMarginTrailing: Bool = false
+    var listSectionMarginTrailing: Number? = .None
     // A flex weight for a sublayer that shares leftover main-axis space.
     var flex: Number = 0
+    // Compression order within stacks, independent of the flex weight used
+    // for distributing surplus space. Higher values resist compression.
+    var layoutPriority: Number = 0.0
     // Whether a sublayer also takes a share of what its row has left across
     // (`expandsWidth`) or its column has left down (`expandsHeight`), on top
     // of what it measures, as SwiftUI's `.frame(maxWidth: .infinity)` does.
@@ -75,6 +126,12 @@ public struct CALayoutIntent {
     // by default, which is where a layer's sublayers are positioned when nothing
     // asks otherwise.
     var alignment: Point = Point { x: 0.0, y: 0.0 }
+    // A positioned view still occupies the complete size its parent offers.
+    // Unlike `offset`, this point names where the child's center is placed in
+    // that offered rectangle, with no dependency on its measured dimensions.
+    // The toolkit resolves this during placement, before offsets/hit testing.
+    var centersChildAtPosition: Bool = false
+    var childCenter: Point = Point {}
     // Where the layer is drawn relative to where it was placed, without moving
     // anything around it: the space it takes stays where layout put it.
     var offset: Point = Point { x: 0.0, y: 0.0 }
@@ -153,6 +210,18 @@ public struct CALayoutIntent {
     // cell, how many columns it spans.
     var gridRow: Bool = false
     var gridCellColumns: Number = 1
+    // A cell can be measured without contributing its width or height to
+    // its grid tracks, as Divider does with SwiftUI's unsized axes.
+    var gridUnsizedHorizontal: Bool = false
+    var gridUnsizedVertical: Bool = false
+    // An explicit cell anchor overrides the grid's horizontal alignment and
+    // the row's vertical alignment for placement within this one cell.
+    var hasGridCellAnchor: Bool = false
+    var gridCellAnchor: Point = Point { x: 0.5, y: 0.5 }
+    // A column alignment declaration on one cell applies to every cell of
+    // that column. Grid placement resolves it before positioning any row.
+    var hasGridColumnAlignment: Bool = false
+    var gridColumnAlignment: Number = 0.5
     // The width over the height the layer keeps, as SwiftUI's
     // `.aspectRatio(_:contentMode:)` does: the largest box of that shape that
     // fits the room it is offered, or with `aspectFills` the smallest that
@@ -275,6 +344,72 @@ extend CADisplacement {
 // the sibling key; the CALayerTree owns the stable LayerId assigned to it.
 public struct CALayerDescription {
     var key: Number = 0
+    // Structural layout hint from KiraUI, not a rendering effect. A `Section`
+    // stays a section when a custom View or modifier delegates its layer;
+    // InsetGroupedList uses this to avoid wrapping it in a second grouped card.
+    var groupedSection: Bool = false
+    // Non-rendering geometry observation identity. KiraUI's layout pass
+    // reports the final snapped/offset geometry to this observer after all
+    // children have been placed. This metadata never changes hit testing or
+    // makes an otherwise intrinsic view expand to fill its proposal.
+    var geometryObserverKey: Number = 0.0
+    // Visibility observers use geometry only. They remain non-intercepting,
+    // with no synthetic click or gesture area and no additional layout box.
+    var scrollVisibilityKey: Number = 0.0
+    // Presentation-only preferences carried by the described sheet content.
+    // The modal presenter consumes these before it constructs its card; the
+    // compositor and hit tester do not interpret them as rendering effects.
+    var hasInteractiveDismissDisabled: Bool = false
+    var interactiveDismissDisabled: Bool = false
+    var hasPresentationCornerRadius: Bool = false
+    var presentationCornerRadius: Number? = .None
+    var hasPresentationDetents: Bool = false
+    // Concrete heights in the current container's points, resolved before
+    // the modal host builds its adaptive card. Numeric transport keeps KCA
+    // independent of SwiftUI presentation types and KiraUI Binding ownership.
+    var presentationDetentHeights: [Number] = []
+    var presentationSelectedHeight: Number = 0.0
+    var presentationSelectionKey: Number = 0.0
+    var hasPresentationDragIndicator: Bool = false
+    // 0 = Automatic, 1 = Visible, 2 = Hidden.
+    var presentationDragIndicator: Number = 0.0
+    var hasPresentationBackgroundInteraction: Bool = false
+    // 0 = Automatic, 1 = Enabled, 2 = Disabled, 3 = EnabledUpThrough.
+    var presentationBackgroundInteraction: Number = 0.0
+    // For EnabledUpThrough, the selected detent's height is compared against
+    // this resolved allowed height, in the same viewport as the sheet.
+    var presentationBackgroundInteractiveThroughHeight: Number = 0.0
+    // Presentation-only decoration, hoisted with the sheet rather than
+    // painted behind the View that declared the presentation. The array
+    // carries retained layer descriptions without embedding a recursive
+    // optional CALayerDescription value inside CALayerDescription itself.
+    var hasPresentationBackground: Bool = false
+    var presentationBackgroundLayers: [CALayerDescription] = []
+    var presentationBackgroundAlignment: Point = Point { x: 0.5, y: 0.5 }
+    // Compact presentation preferences are interpreted by the Sheet/Popover
+    // host once it knows both horizontal and vertical window size classes.
+    var hasPresentationCompactAdaptation: Bool = false
+    var presentationHorizontalAdaptation: Number = 0.0
+    var presentationVerticalAdaptation: Number = 0.0
+    // Swipe ownership within a resizable presentation: automatic, scrolls
+    // first, or resizes first. Only the real scroll/gesture router consumes it.
+    var hasPresentationContentInteraction: Bool = false
+    var presentationContentInteraction: Number = 0.0
+    var hasPresentationSizing: Bool = false
+    var presentationSizingWidth: Number = 0.0
+    var presentationSizingHeight: Number = 0.0
+    var presentationSizingStickyHorizontal: Bool = false
+    var presentationSizingStickyVertical: Bool = false
+    // Preference consumed by the window's native Inspector column. A fixed
+    // width and a bounded ideal width share this same optional min/max pair;
+    // the presence flag avoids confusing an omitted preference with zero.
+    var hasInspectorColumnWidth: Bool = false
+    var inspectorColumnMinWidth: Number? = .None
+    var inspectorColumnIdealWidth: Number = 0.0
+    var inspectorColumnMaxWidth: Number? = .None
+    var hasPresentationPlacement: Bool = false
+    // 0 automatic, 1 center, 2 leading, 3 trailing.
+    var presentationPlacement: Number = 0.0
     // What made the layer, as SwiftUI's structural identity counts a view's
     // type: an unkeyed layer is the one an earlier build made only if the
     // same kind made both, so a view taking the place of another of another
@@ -335,6 +470,10 @@ public struct CALayerDescription {
     var blendingGroup: Bool = false
     var capturesBackdrop: Bool = false
     var hittable: Bool = false
+    // Suppresses hit testing for this entire retained subtree, without
+    // suppressing drawing, layout or accessibility. A descendant cannot
+    // opt back in while its ancestor excludes pointer input.
+    var allowsHitTesting: Bool = true
     // Whether the layer answers a press anywhere on it as a whole, as SwiftUI's
     // interactive glass does: a press on a control inside it is reported
     // against this layer too, under its `hitKey`, so the surface can move with
@@ -345,6 +484,19 @@ public struct CALayerDescription {
     // over the others, and the one it lifts on is the one chosen.
     var slidesPress: Bool = false
     var hitKey: Number = 0
+    // Independent hover observation region. Unlike hitKey, it never captures
+    // or changes a press: a hoverable label may contain its own clickable
+    // buttons, and a disabled press target can still describe pointer entry.
+    var hoverKey: Number = 0
+    // A focusable view participates in keyboard navigation independently of
+    // press hit testing. Only editing-style focus takes pointer focus: an
+    // activation-only control still responds to its normal click separately.
+    var focusKey: Number = 0
+    var focusesOnPointer: Bool = false
+    // Build-time keyboard-command scope identity. KiraUI associates commands
+    // with focusable descendants (or an outer focusable ancestor); Core
+    // Animation never retains a closure or dispatches a keyboard command.
+    var commandKey: Number = 0
     // The accessibility element this layer is, by the key its toolkit
     // registered the element under, as `hitKey` names its press: what the
     // element says and does is the toolkit's, and the compositor stores the
@@ -356,6 +508,10 @@ public struct CALayerDescription {
     // under a point, under its `hitKey`, so a wheel or a pan can be sent to
     // it. `.None` for a layer that does not scroll.
     var scrollAxis: CAAxis = .None
+    // Layout still needs `scrollAxis` for unbounded measurement when scrolling
+    // is disabled. This controls only scroll hit-test registration, so the
+    // content keeps its normal size and position without accepting drag/wheel.
+    var acceptsScrollInput: Bool = true
     // The wash the layer lights with while the pointer rests on it, as UIKit's
     // highlight hover effect: laid over its fill by the tree, which is told
     // what the pointer is over, so nothing above it rebuilds to show it. Clear

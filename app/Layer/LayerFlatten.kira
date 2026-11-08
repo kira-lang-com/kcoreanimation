@@ -46,6 +46,9 @@ public struct CADrawItem {
     var interactive: Bool = false
     var slidesPress: Bool = false
     var hitKey: Number = 0
+    var hoverKey: Number = 0
+    var focusKey: Number = 0
+    var focusesOnPointer: Bool = false
     var scrolls: Bool = false
 }
 

@@ -281,6 +281,8 @@ extend UiBatch {
             }
             state.textFace = .None
             state.monoFace = .None
+            state.serifFace = .None
+            state.roundedFace = .None
             state.faceInstance = .None
         }
     }

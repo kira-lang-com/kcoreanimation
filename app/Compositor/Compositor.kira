@@ -77,6 +77,10 @@ extend CAOrientedQuad {
         backend: borrow mut EmberFoundationBackend,
         blend: CABlendMode = .Normal
     ) {
+        backend.noteNativeGlassCoverage(
+            self, radius, fill, blend, shapeKind,
+            clipMinX, clipMinY, clipMaxX, clipMaxY
+        )
         backend.batch.pushLayerQuad(
             self.centerX,
             self.centerY,
@@ -165,35 +169,111 @@ extend EmberFoundationBackend {
         let ink = shadow ? copy fill : text.blend.ink(fill)
         let adaptive = text.adaptiveInk && !shadow
         let before = self.batch.quadCount()
+        let effectiveSpacing = foundationTextTightenedSpacing(
+            text.content, text.size, text.weight, layoutWidth, text.design,
+            text.lineLimit, text.letterSpacing, text.trackingSpacing,
+            text.allowsTightening, text.widthRatio
+        )
+        // Compute the same chosen font size that contentSize measured at this
+        // proposed width. It affects both line breaks and rendered glyphs;
+        // shrinking the layout alone would still draw oversized clipped text.
+        let textSize = foundationTextFittedSize(
+            text.content, text.size, text.weight, layoutWidth, text.design,
+            text.lineLimit, text.minimumScaleFactor,
+            effectiveSpacing, text.trackingSpacing, text.widthRatio
+        )
+        if text.redacted {
+            // Preserve original shaping and line breaks, but do not submit
+            // the source glyphs (or their shadows) to the renderer. Each line
+            // becomes a rounded bar occupying its actual measured advance.
+            if shadow { return }
+            let lines = foundationTextLines(
+                text.content, textSize, text.weight, layoutWidth, text.design,
+                text.lineLimit, text.truncationMode,
+                effectiveSpacing, text.trackingSpacing, text.widthRatio
+            )
+            let pitch = foundationTextResolvedLineHeight(
+                textSize, text.weight, text.design, text.lineHeight
+            ) * textScale
+            let barHeight = max(2.0, min(textSize * textScale * 0.58, pitch * 0.72))
+            let barColor = RGBAColor {
+                r: fill.r, g: fill.g, b: fill.b,
+                a: min(fill.a * opacity, 1.0) * 0.25
+            }
+            let transparent = RGBAColor { a: 0.0 }
+            for (index, line) in lines.enumerated() {
+                let lineWidth = min(layoutWidth, foundationTextRunWidth(
+                    content: line, size: textSize, weight: text.weight,
+                    design: text.design, spacing: effectiveSpacing,
+                    trailingSpacing: text.trackingSpacing,
+                    widthRatio: text.widthRatio
+                )) * textScale
+                if lineWidth <= 0.0 { continue }
+                let along = (pitch + text.lineSpacing * textScale) * Number(index)
+                    + pitch / 2.0 - frame.height / 2.0
+                    + max(-text.baselineOffset, 0.0) * textScale
+                let across = (frame.width - lineWidth) * text.alignment
+                    - frame.width / 2.0 + lineWidth / 2.0
+                let cx = quad.centerX + quad.rotCos * across - quad.rotSin * along
+                let cy = quad.centerY + quad.rotSin * across + quad.rotCos * along
+                self.batch.pushLayerQuad(
+                    cx, cy,
+                    lineWidth / 2.0, barHeight / 2.0,
+                    quad.rotCos, quad.rotSin,
+                    barHeight * 0.25, 0.0,
+                    barColor, transparent,
+                    clipMinX, clipMinY, clipMaxX, clipMaxY,
+                    clipRadius, clipShapeKind,
+                    0.0, transparent, 0.0
+                )
+            }
+            return
+        }
         if text.wraps && (
             foundationTextBreaks(text.content) || foundationTextRunWidth(
                 content: text.content,
-                size: text.size,
+                size: textSize,
                 weight: text.weight,
-                design: text.design
+                design: text.design,
+                spacing: effectiveSpacing,
+                trailingSpacing: text.trackingSpacing,
+                widthRatio: text.widthRatio
             ) > layoutWidth + 0.5
         ) {
             let lines = foundationTextLines(
                 text.content,
-                text.size,
+                textSize,
                 text.weight,
                 layoutWidth,
                 text.design,
-                text.lineLimit
+                text.lineLimit,
+                text.truncationMode,
+                effectiveSpacing,
+                text.trackingSpacing,
+                text.widthRatio
             )
-            let pitch = foundationTextLineBox(text.size, text.weight, text.design) * textScale
+            // The paragraph pitch and the glyph box are independent: exact
+            // line heights can be smaller or larger than the font's own ink.
+            let pitch = foundationTextResolvedLineHeight(
+                textSize, text.weight, text.design, text.lineHeight
+            ) * textScale
+            let glyphBox = foundationTextLineBox(textSize, text.weight, text.design) * textScale
             for (index, line) in lines.enumerated() {
                 // The line box's center, down the layer's axis from its top edge and
                 // across it by what the line leaves of the layer's width.
                 let along = (pitch + text.lineSpacing * textScale) * Number(
                     index
                 ) + pitch / 2.0 - frame.height / 2.0
+                    + max(-text.baselineOffset, 0.0) * textScale
                 let across = (
                     frame.width - foundationTextRunWidth(
                         content: line,
-                        size: text.size,
+                        size: textSize,
                         weight: text.weight,
-                        design: text.design
+                        design: text.design,
+                        spacing: effectiveSpacing,
+                        trailingSpacing: text.trackingSpacing,
+                        widthRatio: text.widthRatio
                     ) * textScale
                 ) * text.alignment
                 let centerX = quad.centerX + quad.rotCos * across - quad.rotSin * along
@@ -202,11 +282,11 @@ extend EmberFoundationBackend {
                     self.graphics,
                     line,
                     centerX - frame.width / 2.0,
-                    centerY - pitch / 2.0,
+                    centerY - glyphBox / 2.0,
                     frame.width,
-                    pitch,
+                    glyphBox,
                     ink,
-                    text.size * textScale,
+                    textSize,
                     weight,
                     clipMinX,
                     clipMinY,
@@ -229,8 +309,27 @@ extend EmberFoundationBackend {
                     shadowBlur,
                     clipRadius: clipRadius,
                     clipShapeKind: clipShapeKind,
-                    labelMetrics: text.labelMetrics
+                    labelMetrics: text.labelMetrics,
+                    letterSpacing: effectiveSpacing,
+                    widthRatio: text.widthRatio
                 )
+                if !shadow && (text.underline || text.strikethrough) {
+                    let visibleWidth = min(layoutWidth, foundationTextRunWidth(
+                        content: line, size: textSize, weight: text.weight,
+                        design: text.design, spacing: effectiveSpacing,
+                        trailingSpacing: text.trackingSpacing,
+                        widthRatio: text.widthRatio
+                    )) * textScale
+                    let localX = -frame.width / 2.0 + across + visibleWidth / 2.0
+                    self.drawTextDecorationsForLine(
+                        text, quad,
+                        quad.centerX + quad.rotCos * localX - quad.rotSin * along,
+                        quad.centerY + quad.rotSin * localX + quad.rotCos * along,
+                        visibleWidth, textSize, textScale, ink,
+                        clipMinX, clipMinY, clipMaxX, clipMaxY,
+                        clipRadius, clipShapeKind, opacity
+                    )
+                }
             }
             if !shadow { self.batch.routeBlendRange(before, text.blend) }
             return
@@ -243,12 +342,13 @@ extend EmberFoundationBackend {
         var inkRight = text.inkRight
         var inkTop = text.inkTop
         var inkBottom = text.inkBottom
-        if abs(weight - text.weight) > 0.5 {
+        if abs(weight - text.weight) > 0.5 || abs(textSize - text.size) > 0.01 {
             let ink = foundationTextRunInkEdges(
                 content: text.content,
-                size: text.size,
+                size: textSize,
                 weight: weight,
-                design: text.design
+                design: text.design,
+                widthRatio: text.widthRatio
             )
             inkLeft = ink.left
             inkRight = ink.right
@@ -258,12 +358,12 @@ extend EmberFoundationBackend {
         self.batch.pushText(
             self.graphics,
             text.content,
-            frame.x,
-            frame.y,
+            frame.x + quad.rotSin * text.baselineOffset * textScale / 2.0,
+            frame.y - quad.rotCos * text.baselineOffset * textScale / 2.0,
             frame.width,
             frame.height,
             ink,
-            text.size * textScale,
+            textSize,
             weight,
             clipMinX,
             clipMinY,
@@ -286,8 +386,29 @@ extend EmberFoundationBackend {
             shadowBlur,
             clipRadius: clipRadius,
             clipShapeKind: clipShapeKind,
-            labelMetrics: text.labelMetrics
+            labelMetrics: text.labelMetrics,
+            letterSpacing: effectiveSpacing,
+            widthRatio: text.widthRatio
         )
+        if !shadow && (text.underline || text.strikethrough) {
+            let visibleWidth = min(layoutWidth, foundationTextRunWidth(
+                content: text.content, size: textSize, weight: text.weight,
+                design: text.design, spacing: effectiveSpacing,
+                trailingSpacing: text.trackingSpacing,
+                widthRatio: text.widthRatio
+            )) * textScale
+            let localX = -frame.width / 2.0
+                + (frame.width - visibleWidth) * text.alignment + visibleWidth / 2.0
+            let localY = -text.baselineOffset * textScale / 2.0
+            self.drawTextDecorationsForLine(
+                text, quad,
+                quad.centerX + quad.rotCos * localX - quad.rotSin * localY,
+                quad.centerY + quad.rotSin * localX + quad.rotCos * localY,
+                visibleWidth, textSize, textScale, ink,
+                clipMinX, clipMinY, clipMaxX, clipMaxY,
+                clipRadius, clipShapeKind, opacity
+            )
+        }
         if !shadow { self.batch.routeBlendRange(before, text.blend) }
     }
 }
